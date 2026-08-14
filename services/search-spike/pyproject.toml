@@ -9,6 +9,9 @@ description = "Servicio del spike de búsqueda visual de XTrace: CLI interna (FR
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
+    "imagehash>=4.3.2",
+    "numpy>=2.4.6",
+    "pillow>=12.3.0",
     "typer>=0.15,<1",
 ]
 
