@@ -46,6 +46,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 ## Fase 1 — Fundacional (bloqueante)
 
 ### PR-002 · [P] `EmbeddingProvider` (ABC) + `FakeEmbeddingProvider`
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P0 · **Complejidad**: S · **Rol**: implementer · **Riesgo**: bajo
 - **Spec/Req**: FR-005 · ADR-0007 · contracts §3
 - **Objetivo**: Interfaz `EmbeddingProvider` (embed_images batch, `dimension`, `model_id`) y
@@ -58,6 +59,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: PR-003, PR-004
 
 ### PR-003 · [P] `VectorStore` (ABC) + `InMemoryVectorStore`
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P0 · **Complejidad**: S · **Rol**: implementer · **Riesgo**: bajo
 - **Spec/Req**: FR-006 · ADR-0004/0007 · contracts §2
 - **Objetivo**: Interfaz `VectorStore` (`upsert_frames`, `ann_search`, `delete_video`,
@@ -71,6 +73,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: PR-002, PR-004
 
 ### PR-004 · [P] Módulo pHash
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P0 · **Complejidad**: XS · **Rol**: implementer · **Riesgo**: bajo
 - **Spec/Req**: FR-004 · ADR-0005
 - **Objetivo**: `hashing/phash.py`: pHash 64-bit desde imagen + distancia de Hamming.
@@ -129,6 +132,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 ## Fase 2 — US1: Indexar dataset local (P1) 🎯
 
 ### PR-008 · Ingesta: dataset loader + extracción de frames (FFmpeg)
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P1 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: medio
 - **Spec/Req**: FR-001, FR-002 · ADR-0006
 - **Objetivo**: `ingest/dataset.py` (recorrer dataset local, `local_ref` estable) y
