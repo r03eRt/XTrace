@@ -23,3 +23,13 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+  # Servicio Python del spike de búsqueda visual (PR-001 · FR-017 · ADR-0003).
+  # Aislado de `web`: solo se lanza de forma explícita con el perfil `spike`:
+  #   docker compose --profile spike up spike
+  spike:
+    build:
+      context: services/search-spike
+      dockerfile: Dockerfile
+    profiles: ["spike"]
+    command: --help
