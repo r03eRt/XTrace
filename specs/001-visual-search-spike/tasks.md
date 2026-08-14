@@ -26,6 +26,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 ## Fase 0 — Setup
 
 ### PR-001 · Bootstrap del servicio Python + CI
+- **Estado**: DONE (implementado + revisado APPROVED; pendiente de aprobación humana para merge)
 - **Prioridad**: P0 · **Complejidad**: S · **Rol**: implementer · **Riesgo**: bajo
 - **Spec/Req**: FR-017 · ADR-0003
 - **Objetivo**: Crear el esqueleto de `services/search-spike/` (paquete `xtrace_spike`,

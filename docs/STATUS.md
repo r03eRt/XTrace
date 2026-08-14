@@ -4,17 +4,23 @@
 > orquestador tras cada PR. Fuente de verdad de requisitos: `docs/PRODUCT_IDEA.md` y
 > `specs/`. Contrato: `AGENTS.md` + `.specify/memory/constitution.md`.
 
-**Última actualización**: 2026-08-14 · por Opus (orquestador de arranque).
+**Última actualización**: 2026-08-14 · por DeepSeek V4 Pro (orquestador).
 
 ## Setup de agentes (esta ejecución)
 
-- **Orquestador**: DeepSeek Pro v4 → asigna tareas, resuelve dependencias, actualiza este
+- **Orquestador**: DeepSeek V4 Pro (`deepseek-v4-pro`) → asigna tareas, resuelve dependencias, actualiza este
   archivo y `tasks.md`. **No** implementa. Único que edita `tasks.md`.
-- **Implementador**: DeepSeek v3 Flash → ejecuta **una** tarea a la vez respetando su
+- **Implementador**: DeepSeek V4 Flash (`deepseek-v4-flash`) → ejecuta **una** tarea a la vez respetando su
   `allowed_paths`. Carga skill `task-execution` antes de tocar archivos.
 - **Revisor**: un agente **distinto** al implementador (idealmente otro proveedor). Carga
   `task-review`. No implementa. Con PR-016 (puerta de decisión) revisa un modelo distinto.
 - Handoff obligatorio por PR en `docs/handoffs/PR-0NN.md` (plantilla en `docs/handoffs/`).
+
+### Política de coste/tokens (modelos)
+
+- **`deepseek-v4-pro`** (orquestador): SOLO para orquestación y puertas de decisión (p. ej. PR-016). Coste ≈ $0.435 / $0.87 por 1M tokens (in/out).
+- **`deepseek-v4-flash`** (implementador y revisor DeepSeek): modelo por defecto de ejecución, para ahorrar tokens. Coste ≈ $0.14 / $0.28 por 1M tokens.
+- **Enforcement**: el orquestador fija el modelo del implementador vía `workflow.agent({ provider: "deepseek-official", model: "deepseek-v4-flash" })`, porque la tool `subagent` no expone selector de modelo (hereda el default `deepseek-v4-pro`). El revisor, si es DeepSeek, usa también flash; idealmente otro proveedor (constitución §5).
 
 ## Fase actual
 
@@ -23,7 +29,7 @@ Estado spec: **APPROVED** (2026-08-14). Documentación de diseño **completa**:
 `plan.md`, `data-model.md`, `contracts/`, `quickstart.md`, `tasks.md`, ADR-0003..0008,
 `docs/architecture/visual-search-spike.md`.
 
-**La implementación aún NO ha comenzado.**
+**Implementación en curso.** PR-001 (bootstrap Python + CI) implementado y revisado (APPROVED); Ola A pendiente de aprobación humana.
 
 ## Roadmap de la fase
 
@@ -31,11 +37,9 @@ Estado spec: **APPROVED** (2026-08-14). Documentación de diseño **completa**:
 objetivos, dependencias, `allowed_paths`, tests y criterios. Grafo de dependencias y plan
 de paralelización incluidos allí.
 
-- **PRs completados**: — (ninguno)
-- **PRs abiertos**: — (ninguno)
-- **Siguiente tarea (primer PR)**: **PR-001 · Bootstrap del servicio Python + CI**
-  (`services/search-spike/` + workflow `python-quality`). Es la base de todo; sin
-  dependencias.
+- **PRs completados**: PR-001 (implementado + revisado APPROVED; pendiente de aprobación humana para merge).
+- **PRs abiertos**: PR-001 · `feature/001-visual-search-spike-PR-001-bootstrap-python-service-ci` (4 commits, sin merge).
+- **Siguiente tarea**: Ola A — PR-002/003/004/008 en paralelo (tras aprobación/merge de PR-001).
 
 ## Primer PR recomendado y por qué
 
