@@ -85,6 +85,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: PR-002, PR-003
 
 ### PR-005 · `SiglipLocalProvider` + mini-benchmark de modelo/dimensión
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature; D=768)
 - **Prioridad**: P0 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: medio
 - **Spec/Req**: FR-005 · ADR-0005 · plan §Risks (fija `D`)
 - **Objetivo**: Implementación real con SigLIP2 (fallback OpenCLIP) tras `EmbeddingProvider`;

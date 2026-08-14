@@ -29,7 +29,7 @@ Estado spec: **APPROVED** (2026-08-14). Documentación de diseño **completa**:
 `plan.md`, `data-model.md`, `contracts/`, `quickstart.md`, `tasks.md`, ADR-0003..0008,
 `docs/architecture/visual-search-spike.md`.
 
-**Implementación en curso.** PR-001 + Ola A (PR-002/003/004/008) + PR-009 (dedupe) implementados, revisados (APPROVED) y mergeados a `feature/001-visual-search-spike`; pendiente de CI + aprobación humana para `main`. En curso: PR-005 (SigLIP).
+**Implementación en curso.** PR-001 + Ola A (PR-002/003/004/008) + Ola B (PR-005 SigLIP, PR-009 dedupe) implementados, revisados (APPROVED) y mergeados a `feature/001-visual-search-spike`; pendiente de CI + aprobación humana para `main`. Ola C pendiente.
 
 ## Roadmap de la fase
 
@@ -37,9 +37,9 @@ Estado spec: **APPROVED** (2026-08-14). Documentación de diseño **completa**:
 objetivos, dependencias, `allowed_paths`, tests y criterios. Grafo de dependencias y plan
 de paralelización incluidos allí.
 
-- **PRs completados**: PR-001, PR-002, PR-003, PR-004, PR-008, PR-009 (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`).
-- **PRs abiertos**: — (6 PRs mergeados a la rama de integración; pendiente push/PR + CI + aprobación humana para `main`).
-- **Siguiente tarea**: PR-005 (SigLIP + fijar `D`) — en curso.
+- **PRs completados**: PR-001, PR-002, PR-003, PR-004, PR-005, PR-008, PR-009 (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`).
+- **PRs abiertos**: — (7 PRs mergeados a la rama de integración; pendiente push/PR + CI + aprobación humana para `main`).
+- **Siguiente tarea**: Ola C — PR-006 (migración DB pgvector + pgTAP) → PR-007 (PgVectorStore).
 
 ## Primer PR recomendado y por qué
 
@@ -61,8 +61,7 @@ frames/pipeline (spec §101: *VALIDATE SEARCH FIRST, SCALE CRAWLING SECOND*).
 
 ## Decisiones pendientes
 
-- Dimensión `D` del embedding: se fija en **PR-005** (elección de modelo SigLIP) y se
-  anexa al ADR-0005 antes de la migración **PR-006**.
+- ~~Dimensión `D`~~ → **FIJADA: D = 768** (SigLIP v1 ViT-B-16-SigLIP, torch 2.2.2 CPU Intel-Mac, PR-005; anexado a ADR-0005). La usará la migración PR-006.
 - Uso de `halfvec` vs `vector`: decidir con benchmark (PR-016), documentar en ADR-0004.
 
 ## Deuda técnica / diferido
