@@ -17,7 +17,7 @@ Contrato estable (specs/001-visual-search-spike/contracts/README.md §3):
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 from PIL import Image
@@ -33,7 +33,7 @@ class EmbeddingProvider(Protocol):
     dimension: int
     """Dimensión D de los vectores devueltos (shape (N, D))."""
 
-    def embed_images(self, images: Sequence[Image.Image]) -> np.ndarray:
+    def embed_images(self, images: Sequence[Image.Image]) -> np.ndarray[Any, Any]:
         """Embedding del lote de imágenes.
 
         Args:

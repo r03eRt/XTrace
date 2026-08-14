@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Sequence
+from typing import Any, cast
 
 import numpy as np
 from PIL import Image
@@ -26,14 +27,16 @@ class FakeEmbeddingProvider(EmbeddingProvider):
         self.dimension = dimension
         self.model_id = model_id
 
-    def embed_images(self, images: Sequence[Image.Image]) -> np.ndarray:
+    def embed_images(self, images: Sequence[Image.Image]) -> np.ndarray[Any, Any]:
         """Embedding determinista del lote: shape (N, D), filas L2-normalizadas."""
         if len(images) == 0:
             return np.zeros((0, self.dimension), dtype=np.float32)
-        vectors = np.stack([self._vector_from_image(image) for image in images])
+        vectors: np.ndarray[Any, Any] = np.stack(
+            [self._vector_from_image(image) for image in images]
+        )
         return vectors
 
-    def _vector_from_image(self, image: Image.Image) -> np.ndarray:
+    def _vector_from_image(self, image: Image.Image) -> np.ndarray[Any, Any]:
         """Vector unitario de dimension derivado de los bytes de la imagen.
 
         Bloques de 32 bytes de SHA-256(píxeles RGB + contador) se concatenan
@@ -53,4 +56,4 @@ class FakeEmbeddingProvider(EmbeddingProvider):
             raise ValueError(
                 f"FakeEmbeddingProvider: hash degenerado (norma 0) con dimension={self.dimension}"
             )
-        return vector / norm
+        return cast(np.ndarray[Any, Any], vector / norm)

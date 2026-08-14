@@ -107,7 +107,7 @@ class SiglipLocalProvider(EmbeddingProvider):
         self._ensure_loaded()
         return self._probe_dimension()
 
-    def embed_images(self, images: Sequence[Image.Image]) -> np.ndarray:
+    def embed_images(self, images: Sequence[Image.Image]) -> np.ndarray[Any, Any]:
         """Embedding del lote (contracts §3): shape (N, D), float32, filas L2-normalizadas.
 
         Procesa en sub-batches de `batch_size` (FR-005) y devuelve el
@@ -118,7 +118,7 @@ class SiglipLocalProvider(EmbeddingProvider):
         torch = self._torch
         if len(images) == 0:
             return np.zeros((0, self.dimension), dtype=np.float32)
-        chunks: list[np.ndarray] = []
+        chunks: list[np.ndarray[Any, Any]] = []
         with torch.no_grad():
             for start in range(0, len(images), self.batch_size):
                 batch = images[start : start + self.batch_size]
@@ -131,7 +131,7 @@ class SiglipLocalProvider(EmbeddingProvider):
             raise ValueError(
                 f"SiglipLocalProvider: vector degenerado (norma 0) con model={self.model_name}"
             )
-        normalized: np.ndarray = vectors / norms
+        normalized: np.ndarray[Any, Any] = vectors / norms
         return normalized
 
     def _ensure_loaded(self) -> None:
