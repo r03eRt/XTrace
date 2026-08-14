@@ -29,7 +29,7 @@ Estado spec: **APPROVED** (2026-08-14). Documentación de diseño **completa**:
 `plan.md`, `data-model.md`, `contracts/`, `quickstart.md`, `tasks.md`, ADR-0003..0008,
 `docs/architecture/visual-search-spike.md`.
 
-**Implementación en curso.** PR-001 + Ola A (PR-002/003/004/008) implementados, revisados (APPROVED) y mergeados a `feature/001-visual-search-spike`; pendiente de CI + aprobación humana para `main`. Ola B pendiente.
+**Implementación en curso.** PR-001 + Ola A (PR-002/003/004/008) + PR-009 (dedupe) implementados, revisados (APPROVED) y mergeados a `feature/001-visual-search-spike`; pendiente de CI + aprobación humana para `main`. En curso: PR-005 (SigLIP).
 
 ## Roadmap de la fase
 
@@ -37,9 +37,9 @@ Estado spec: **APPROVED** (2026-08-14). Documentación de diseño **completa**:
 objetivos, dependencias, `allowed_paths`, tests y criterios. Grafo de dependencias y plan
 de paralelización incluidos allí.
 
-- **PRs completados**: PR-001, PR-002, PR-003, PR-004, PR-008 (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`).
-- **PRs abiertos**: — (5 PRs mergeados a la rama de integración; pendiente push/PR + CI + aprobación humana para `main`).
-- **Siguiente tarea**: Ola B — PR-005 (SigLIP + fijar `D`) y PR-009 (dedupe pHash), en paralelo.
+- **PRs completados**: PR-001, PR-002, PR-003, PR-004, PR-008, PR-009 (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`).
+- **PRs abiertos**: — (6 PRs mergeados a la rama de integración; pendiente push/PR + CI + aprobación humana para `main`).
+- **Siguiente tarea**: PR-005 (SigLIP + fijar `D`) — en curso.
 
 ## Primer PR recomendado y por qué
 

@@ -148,6 +148,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: PR-007
 
 ### PR-009 · Deduplicación de frames por pHash
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P1 · **Complejidad**: S · **Rol**: implementer · **Riesgo**: bajo
 - **Spec/Req**: FR-003
 - **Objetivo**: `ingest/dedupe.py`: reducir frames casi idénticos con umbral Hamming
