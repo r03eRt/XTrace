@@ -46,5 +46,6 @@ docker compose --profile spike up spike
 ## CI
 
 `.github/workflows/python-quality.yml` ejecuta `ruff check` + `ruff format --check`
-+ `mypy` + `pytest` sobre Python 3.11. Es aditivo: no altera la pipeline JS
-(`quality.yml`).
+
+- `mypy` + `pytest` sobre Python 3.11. Es aditivo: no altera la pipeline JS
+  (`quality.yml`).

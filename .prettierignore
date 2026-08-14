@@ -10,3 +10,14 @@ tests/e2e/screenshots/
 supabase/.branches/
 supabase/.temp/
 .vercel/
+
+# Python service artifacts (services/search-spike)
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+
+# Spec Kit / semantic docs (no Prettier)
+specs/
+docs/

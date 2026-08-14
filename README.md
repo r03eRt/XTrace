@@ -24,9 +24,9 @@ combina **frames + perceptual hashes (pHash) + visual embeddings (SigLIP) + vect
   `specs/001-visual-search-spike/` (`spec.md`, `plan.md`, `data-model.md`, `contracts/`,
   `tasks.md`) + ADR-0003…0008 + `docs/architecture/visual-search-spike.md`.
 - **Implementación en curso** (Fase 1 · spike): **PR-001** (bootstrap del servicio Python
-  + CI) y la **Ola A** (PR-002 `EmbeddingProvider`, PR-003 `VectorStore`, PR-004 `pHash`,
-  PR-008 ingest FFmpeg) **completados** y mergeados a `feature/001-visual-search-spike`.
-  Siguiente: **Ola B** (PR-005 SigLIP + PR-009 dedupe).
+  - CI) y la **Ola A** (PR-002 `EmbeddingProvider`, PR-003 `VectorStore`, PR-004 `pHash`,
+    PR-008 ingest FFmpeg) **completados** y mergeados a `feature/001-visual-search-spike`.
+    Siguiente: **Ola B** (PR-005 SigLIP + PR-009 dedupe).
 - Detalle vivo (PRs completados/abiertos, blockers, decisiones pendientes, costes):
   **`docs/STATUS.md`**.
 
@@ -41,11 +41,11 @@ de fuentes, frames, embeddings, ranking y frescura** del índice.
 
 ### Actores
 
-| Actor | Rol |
-| --- | --- |
+| Actor                          | Rol                                                                                                        |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
 | **Invitado** (principal en v1) | Busca por imagen/clip/URL, ve resultados, abre ficha, accede a la fuente original. Sin cuenta obligatoria. |
-| **Administrador** | Gestiona fuentes, crawlers, jobs, reindexado, métricas y reports/takedowns. Requiere auth. |
-| **Crawler / worker** (interno) | discover → metadata → visual assets → frames → hashes → embeddings → índice. |
+| **Administrador**              | Gestiona fuentes, crawlers, jobs, reindexado, métricas y reports/takedowns. Requiere auth.                 |
+| **Crawler / worker** (interno) | discover → metadata → visual assets → frames → hashes → embeddings → índice.                               |
 
 ### Flujos principales
 
@@ -90,20 +90,20 @@ Ver diagramas detallados en `docs/architecture/`.
 
 ## Stack y decisiones
 
-| Componente | Elección | Notas |
-| --- | --- | --- |
-| Frontend | Next.js · TypeScript · React · Tailwind · shadcn/ui | Vercel Hobby. **Diferido** (post-spike). |
-| Backend API | Python · FastAPI | `/search/*`, admin. **Diferido**. |
-| Servicio del spike | Python 3.11 · Typer (CLI) · uv | `services/search-spike/` (ADR-0003/0008). |
-| Vector store | Supabase Postgres + **pgvector + HNSW** | `VectorStore` (ADR-0004). Evaluar `halfvec`. |
-| Visual embeddings | SigLIP2 (fallback OpenCLIP) | `EmbeddingProvider`. Batch. |
-| Perceptual hash | pHash (64-bit) + Hamming | `imagehash` + Pillow (ADR-0005). |
-| Media | FFmpeg / FFprobe | frames, storyboards/sprites, previews. |
-| Crawler | Python · httpx · selectolax · BeautifulSoup | `SourceAdapter`. **Post-spike**. |
-| Colas | tabla `jobs` en Postgres (`FOR UPDATE SKIP LOCKED`) | **No Redis** en v1. |
-| GPU | serverless (Modal) solo con embeddings pendientes | no GPU 24/7. |
-| E2E | **WebdriverIO** (`.e2e.ts`, Chrome headless) | Playwright/Cypress prohibidos como framework E2E. |
-| Infra objetivo | Vercel Hobby + Supabase Free + R2 free + local | dev **0–10 €/mes**; MVP **0–25 €/mes**. |
+| Componente         | Elección                                            | Notas                                             |
+| ------------------ | --------------------------------------------------- | ------------------------------------------------- |
+| Frontend           | Next.js · TypeScript · React · Tailwind · shadcn/ui | Vercel Hobby. **Diferido** (post-spike).          |
+| Backend API        | Python · FastAPI                                    | `/search/*`, admin. **Diferido**.                 |
+| Servicio del spike | Python 3.11 · Typer (CLI) · uv                      | `services/search-spike/` (ADR-0003/0008).         |
+| Vector store       | Supabase Postgres + **pgvector + HNSW**             | `VectorStore` (ADR-0004). Evaluar `halfvec`.      |
+| Visual embeddings  | SigLIP2 (fallback OpenCLIP)                         | `EmbeddingProvider`. Batch.                       |
+| Perceptual hash    | pHash (64-bit) + Hamming                            | `imagehash` + Pillow (ADR-0005).                  |
+| Media              | FFmpeg / FFprobe                                    | frames, storyboards/sprites, previews.            |
+| Crawler            | Python · httpx · selectolax · BeautifulSoup         | `SourceAdapter`. **Post-spike**.                  |
+| Colas              | tabla `jobs` en Postgres (`FOR UPDATE SKIP LOCKED`) | **No Redis** en v1.                               |
+| GPU                | serverless (Modal) solo con embeddings pendientes   | no GPU 24/7.                                      |
+| E2E                | **WebdriverIO** (`.e2e.ts`, Chrome headless)        | Playwright/Cypress prohibidos como framework E2E. |
+| Infra objetivo     | Vercel Hobby + Supabase Free + R2 free + local      | dev **0–10 €/mes**; MVP **0–25 €/mes**.           |
 
 Principios: **cheap first · local first · managed when useful · scale when proven ·
 measure first · replaceable infrastructure**.
