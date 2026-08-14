@@ -4,18 +4,18 @@ project_id = "proyect-skeleton"
 
 [api]
 enabled = true
-port = 54321
+port = 55321
 schemas = ["public"]
 extra_search_path = ["public"]
 max_rows = 1000
 
 [db]
-port = 54322
+port = 55322
 major_version = 15
 
 [studio]
 enabled = true
-port = 54323
+port = 55323
 
 [auth]
 enabled = true
@@ -26,3 +26,12 @@ enable_signup = true
 
 [storage]
 enabled = true
+
+[inbucket]
+enabled = true
+port = 55324
+
+[analytics]
+enabled = true
+port = 55327
+vector_port = 55328
