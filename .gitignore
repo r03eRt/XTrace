@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Next.js
+.next/
+out/
+next-env.d.ts
+
+# Production
+build/
+dist/
+
+# Environment (nunca commitear secretos)
+.env
+.env.local
+.env.*.local
+.env.development
+.env.preview
+.env.production
+
+# Supabase local
+supabase/.branches/
+supabase/.temp/
+**/.supabase/
+
+# Testing / evidencias
+coverage/
+tests/e2e/.reports/
+tests/e2e/screenshots/
+tests/e2e/logs/
+*.log
+
+# Vercel
+.vercel/
+
+# Agent folders (pueden contener credenciales/tokens)
+.agents/**/.cache/
+.agents/**/credentials*
+.claude/
+.codex/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+
+# TypeScript incremental build info
+*.tsbuildinfo

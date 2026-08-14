@@ -1,0 +1,3 @@
+-- Seed reproducible para desarrollo local. NO usar datos reales de producción.
+-- Se ejecuta con `pnpm supabase:reset`.
+-- Añade aquí datos de test y usuarios de test cuando existan tablas.

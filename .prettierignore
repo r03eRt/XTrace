@@ -1,0 +1,12 @@
+node_modules/
+.next/
+out/
+build/
+dist/
+coverage/
+pnpm-lock.yaml
+tests/e2e/.reports/
+tests/e2e/screenshots/
+supabase/.branches/
+supabase/.temp/
+.vercel/

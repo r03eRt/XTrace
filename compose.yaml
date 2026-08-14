@@ -1,0 +1,25 @@
+# Entorno de desarrollo de la app Next.js.
+# Supabase local se gestiona con su propia CLI sobre Docker: `pnpm supabase:start`.
+# No dupliques aquí toda la infraestructura de Supabase.
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: build
+    command: pnpm dev
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+    env_file:
+      - .env.local
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -1,0 +1,57 @@
+name: e2e
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *"
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install (reproducible)
+        run: pnpm install --frozen-lockfile
+
+      - name: Start Supabase local
+        run: pnpm supabase:start
+
+      - name: Prepare database
+        run: pnpm supabase:reset
+
+      - name: Build & start app
+        run: |
+          pnpm build
+          pnpm start &
+          npx wait-on http://localhost:3000
+
+      - name: WebdriverIO smoke (Chrome, headless)
+        env:
+          WDIO_HEADLESS: "true"
+          WDIO_BASE_URL: http://localhost:3000
+        run: pnpm test:e2e:smoke
+
+      - name: Upload screenshots & logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-evidence
+          path: |
+            tests/e2e/screenshots/
+            tests/e2e/logs/
+            tests/e2e/.reports/
+          if-no-files-found: ignore

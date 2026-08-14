@@ -1,0 +1,21 @@
+name: spec-compliance
+
+on:
+  pull_request:
+
+jobs:
+  spec-compliance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify spec status
+        run: bash scripts/verify-spec-status.sh
+
+      - name: Verify workflow artifacts (spec/plan/tasks/handoff/checklist)
+        run: bash scripts/verify-workflow.sh
+
+      - name: Verify task contracts
+        run: bash scripts/verify-task-contract.sh
