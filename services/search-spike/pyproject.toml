@@ -25,6 +25,12 @@ dev = [
 [project.scripts]
 xtrace-spike = "xtrace_spike.cli:app"
 
+[project.optional-dependencies]
+siglip = [
+    "open-clip-torch<3",
+    "torch<2.3",
+]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100
