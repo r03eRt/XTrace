@@ -34,3 +34,9 @@ PR de embeddings tras un mini-benchmark (precision/recall, frames/s, VRAM, dimen
 - (+) Cobertura amplia de transformaciones; señal barata (pHash) + señal robusta (embedding).
 - (+) Dedupe reutiliza pHash, reduciendo embeddings innecesarios (coste).
 - (−) Dos representaciones por frame (almacenamiento y cómputo); mitigado por dedupe y batch.
+
+## Anexo PR-005 — dimensión fijada
+
+**D = 768 con ViT-B-16-SigLIP** (open_clip, pretrained "webli", SigLIP **v1**), CPU local
+Intel-Mac con torch 2.2.2 — elección fijada por el mini-benchmark de PR-005. La usará el
+esquema DB (PR-006).
