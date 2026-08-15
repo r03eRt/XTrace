@@ -29,7 +29,7 @@ Estado spec: **APPROVED** (2026-08-14). Documentación de diseño **completa**:
 `plan.md`, `data-model.md`, `contracts/`, `quickstart.md`, `tasks.md`, ADR-0003..0008,
 `docs/architecture/visual-search-spike.md`.
 
-**Implementación en curso.** PR-001…PR-014 (14 PRs) + FIX-phash implementados, revisados (APPROVED) y mergeados a `feature/001-visual-search-spike`. **Milestone 1 mergeado a `main`** (PR #1, CI verde). **US1 (indexar) y US2 (buscar por imagen) FUNCIONALES end-to-end** (CLI: index/stats/search/exclude). Siguiente: PR-015/016 (benchmark, requiere dataset real del operador).
+**Implementación en curso.** PR-001…PR-016 (16 PRs) + FIX-phash implementados, revisados (APPROVED) y mergeados a `feature/001-visual-search-spike`. **Milestone 1 mergeado a `main`** (PR #1, CI verde). **US1/US2/US4 funcionales** (CLI: index/stats/search/exclude/benchmark). **Dataset real del operador recibido (43 vídeos en `dataset/`, gitignored) — medición SC-001 en curso.**
 
 ## Roadmap de la fase
 
@@ -37,9 +37,9 @@ Estado spec: **APPROVED** (2026-08-14). Documentación de diseño **completa**:
 objetivos, dependencias, `allowed_paths`, tests y criterios. Grafo de dependencias y plan
 de paralelización incluidos allí.
 
-- **PRs completados**: PR-001…PR-014 (14 PRs) + FIX-phash (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`; milestone 1 mergeado a `main`).
-- **PRs abiertos**: — (14 PRs + 1 fix en la rama de integración).
-- **Siguiente tarea**: PR-015 (generador dataset benchmark ~210 casos) y PR-016 (runner + CLI `benchmark`) — requieren **dataset local real** del operador para la puerta SC-001.
+- **PRs completados**: PR-001…PR-016 (16 PRs) + FIX-phash (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`; milestone 1 mergeado a `main`).
+- **PRs abiertos**: — (16 PRs + 1 fix en la rama de integración).
+- **Siguiente tarea**: PR-017 (barrido frames/vídeo 10/30/60) y PR-018 (cierre) — tras medir SC-001 con el dataset real (en curso).
 
 ## Primer PR recomendado y por qué
 
@@ -56,8 +56,8 @@ frames/pipeline (spec §101: *VALIDATE SEARCH FIRST, SCALE CRAWLING SECOND*).
 
 ## Blockers conocidos
 
-- Ninguno técnico. Requiere **dataset local** aportado por el operador para PR-008+ y
-  benchmark (fuera del control del agente).
+- ~~Dataset local~~ → **RESUELTO**: el operador aportó 43 vídeos en `dataset/` (gitignored,
+  nunca commitear).
 
 ## Decisiones pendientes
 

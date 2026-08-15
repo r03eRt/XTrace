@@ -235,6 +235,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 ## Fase 4 — US4: Benchmark y decisión (P2)
 
 ### PR-015 · Generador del dataset de benchmark (~210 casos) + fixtures
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P2 · **Complejidad**: M · **Rol**: tester · **Riesgo**: medio
 - **Spec/Req**: FR-015, D3 · spec §70/§76
 - **Objetivo**: `benchmark/dataset.py`: a partir de vídeos indexados, generar variantes
@@ -248,6 +249,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: PR-012/013/014 (archivos distintos, tras PR-011)
 
 ### PR-016 · Runner de benchmark + CLI `benchmark`
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P2 · **Complejidad**: M · **Rol**: tester · **Riesgo**: medio
 - **Spec/Req**: FR-016, SC-001/002/003/007 · contracts §1
 - **Objetivo**: `benchmark/runner.py`: ejecutar casos, calcular Top-1/5/10, FPR negativas,
