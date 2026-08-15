@@ -102,6 +102,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: — (produce `D`, precede al esquema)
 
 ### PR-006 · Migración DB (pgvector + esquema + índices) + pgTAP
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P0 · **Complejidad**: M · **Rol**: data-specialist · **Riesgo**: medio
 - **Spec/Req**: FR-006/007/008/018, SC-005 · ADR-0004/0006 · `data-model.md`
 - **Objetivo**: Migración Supabase: `create extension vector`; tablas `videos`, `frames`,
