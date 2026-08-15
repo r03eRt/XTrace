@@ -4,6 +4,11 @@ Comandos (contratos en `specs/001-visual-search-spike/contracts/README.md` §1):
 - `index` (PR-011): ingiere el dataset local a través del pipeline (PR-010)
   y emite `{"videos_indexed": n, "videos_failed": m, "frames": f, "vectors": v}`.
 - `stats` (PR-011): métricas del índice (videos/frames/vectors + backend).
+- `search` (PR-014): búsqueda por imagen con validación de entrada
+  (fichero regular, ≤ 10 MB y firma MIME, spec §80 · ASSUMPTION-6) y
+  borrado inmediato de la media de consulta (FR-018 · ADR-0006); salida del
+  contrato CLI §1 (search_id/processing_ms/results).
+- `exclude` (PR-014): excluye un vídeo del índice (FR-014).
 
 Contrato de salida (contracts §1): SIEMPRE JSON por stdout; los logs de
 progreso van a stderr. Códigos de salida: 0 = éxito; 2 = error de
@@ -29,11 +34,15 @@ import functools
 import json
 import os
 import tempfile
+import time
+import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, NoReturn
 
 import typer
+from PIL import Image, UnidentifiedImageError
 
 from xtrace_spike import __version__
 from xtrace_spike.embeddings.fake import FakeEmbeddingProvider
@@ -49,7 +58,15 @@ from xtrace_spike.indexing import (
 from xtrace_spike.ingest.dataset import DatasetError, scan_dataset
 from xtrace_spike.ingest.dedupe import DEFAULT_HAMMING_THRESHOLD
 from xtrace_spike.ingest.frames import DEFAULT_FRAMES_PER_VIDEO
-from xtrace_spike.repo import DATABASE_URL_ENV
+from xtrace_spike.repo import DATABASE_URL_ENV, PgRepo, parse_uuid
+from xtrace_spike.search import DEFAULT_TOP_K, ImageSearch, ImageSearchResult
+from xtrace_spike.search.ranking import DEFAULT_MIN_SCORE, rank_candidates
+from xtrace_spike.security import (
+    QueryMediaContext,
+    QueryMediaError,
+    open_query_image,
+    validate_query_image,
+)
 from xtrace_spike.vectorstore.base import VectorStore
 from xtrace_spike.vectorstore.in_memory import InMemoryVectorStore
 from xtrace_spike.vectorstore.pgvector import PgVectorStore
@@ -83,7 +100,8 @@ def main(
         ),
     ] = False,
 ) -> None:
-    """Punto de entrada de la CLI; los subcomandos index/stats llegan en PR-011."""
+    """Punto de entrada de la CLI; los subcomandos index/stats (PR-011) y
+    search/exclude (PR-014) se registran como comandos de la app."""
 
 
 app = typer.Typer(
@@ -145,6 +163,76 @@ def resolve_embedding_provider(provider: str | None) -> EmbeddingProvider:
     if chosen == "siglip":
         return SiglipLocalProvider()
     raise ValueError(f"proveedor de embeddings desconocido: {chosen!r} (opciones: fake, siglip)")
+
+
+def _resolve_frame_phashes(backend: CliBackend, result: ImageSearchResult) -> dict[str, int]:
+    """pHash de los mejores frames para la evidencia pHash del ranking (FR-013).
+
+    Postgres: PgRepo.get_frame_phashes (pHash persistido en frames.phash,
+    decisión PR-013). In-memory: InMemoryVectorStore.get_frame expone el
+    pHash real del frame (PR-003 · FIX-phash). Cualquier otro backend
+    (inexistente hoy) devuelve {} → evidencia pHash neutra (PR-013).
+    """
+    frame_ids = [candidate.best_frame_id for candidate in result.candidates]
+    if isinstance(backend.store, PgVectorStore):
+        return asyncio.run(PgRepo().get_frame_phashes(frame_ids))
+    if isinstance(backend.store, InMemoryVectorStore):
+        phashes: dict[str, int] = {}
+        for frame_id in frame_ids:
+            record = asyncio.run(backend.store.get_frame(frame_id))
+            if record is not None:
+                phashes[frame_id] = record["phash"]
+        return phashes
+    return {}
+
+
+async def _fetch_local_refs(video_ids: Sequence[str]) -> dict[str, str | None]:
+    """local_ref de los vídeos desde public.videos (contracts §1 · PR-010).
+
+    El valor real de local_ref lo fija el pipeline de indexación (PR-010);
+    aquí se lee la columna para el JSON de search. Los video_ids provienen
+    de los resultados rankeados (sus vídeos existen por FK, PR-007).
+    """
+    video_uuids = [parse_uuid(video_id, "video_id") for video_id in video_ids]
+    if not video_uuids:
+        return {}
+    async with await PgRepo().connect() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "select id::text, local_ref from public.videos where id = any(%s::uuid[])",
+                ([str(video_uuid) for video_uuid in video_uuids],),
+            )
+            rows = await cur.fetchall()
+    return {str(row[0]): str(row[1]) for row in rows}
+
+
+def _resolve_local_refs(backend: CliBackend, video_ids: Sequence[str]) -> dict[str, str | None]:
+    """local_ref por vídeo para el JSON de search (contracts §1).
+
+    Postgres: _fetch_local_refs vía PgRepo (el local_ref real del vídeo).
+    In-memory: el store y el estado de vídeo no exponen el local_ref (sin
+    getter en el contrato VideoStateStore), así que los resultados llevan
+    local_ref: null (decisión PR-014, documentada en el handoff).
+    """
+    if not isinstance(backend.store, PgVectorStore):
+        return {}
+    return asyncio.run(_fetch_local_refs(video_ids))
+
+
+def _open_query_image(path: Path) -> Image.Image:
+    """Abre la imagen de consulta; contenido ilegible → error de validación (exit 2).
+
+    open_query_image (security.py) fuerza la decodificación (load()). Una
+    imagen con firma válida pero contenido ilegible se trata como media de
+    entrada inválida (ADR-0008): UnidentifiedImageError (PIL) se traduce a
+    QueryMediaError; el resto de OSErrors (I/O real) se propaga como fallo
+    de ejecución (exit 1). El borrado de la media ya está garantizado por el
+    context manager del llamador (FR-018).
+    """
+    try:
+        return open_query_image(path)
+    except UnidentifiedImageError as exc:
+        raise QueryMediaError(f"la imagen de consulta no se puede decodificar: {exc}") from exc
 
 
 def _emit_json(payload: dict[str, Any]) -> None:
@@ -256,6 +344,123 @@ def stats(
                 "embedding_provider": embeddings.model_id,
             }
         )
+    except ValueError as exc:
+        _fail(str(exc), type(exc).__name__, exit_code=2)
+    except Exception as exc:
+        _fail(str(exc), type(exc).__name__, exit_code=1)
+
+
+@app.command(help="Busca un vídeo por imagen (FR-010/017/018, contracts §1).")
+def search(
+    image: Annotated[
+        Path,
+        typer.Option(
+            "--image",
+            help="Imagen de consulta (JPEG/PNG/WebP ≤ 10 MB; se borra tras procesar, FR-018).",
+        ),
+    ],
+    top_k: Annotated[
+        int,
+        typer.Option("--top-k", help="Nº de frames candidatos del ANN (contracts §1)."),
+    ] = DEFAULT_TOP_K,
+    min_score: Annotated[
+        float,
+        typer.Option(
+            "--min-score",
+            help="Umbral de match en [0, 1]; descarta resultados débiles (SC-002).",
+        ),
+    ] = DEFAULT_MIN_SCORE,
+    provider: Annotated[
+        str | None,
+        typer.Option("--provider", help="Proveedor de embeddings: fake (default) o siglip."),
+    ] = None,
+) -> None:
+    """Busca por imagen y devuelve los vídeos rankeados (FR-010/012/013/017).
+
+    Cadena completa (PR-012/013/014): validate_query_image (fichero regular,
+    ≤ 10 MB y firma MIME, spec §80) → copia a temporal seguro → ImageSearch
+    (normalizar → pHash → embed → ANN → agrupar) → rank_candidates
+    (match_score, timestamp y evidencia, FR-012/013; vídeos excluidos fuera,
+    FR-014) → JSON del contrato CLI §1.
+
+    La media de consulta se borra inmediatamente tras procesar (FR-018 ·
+    ADR-0006), garantizado en try/finally aunque la búsqueda falle (FR-009 ·
+    SC-006); una media rechazada por validación no se toca. local_ref llega
+    desde la DB (backend postgres) o queda null en in-memory (documentado).
+    """
+    started = time.perf_counter()
+    try:
+        validate_query_image(image)
+        backend = build_backend()
+        embeddings = resolve_embedding_provider(provider)
+        searcher = ImageSearch(store=backend.store, embeddings=embeddings, top_k=top_k)
+        if not 0.0 <= min_score <= 1.0:
+            raise ValueError(f"min_score debe estar en [0, 1] (recibido {min_score})")
+        with QueryMediaContext.from_file(image, work_root=WORK_ROOT) as media:
+            assert media.secure_copy is not None
+            query_image = _open_query_image(media.secure_copy)
+            typer.echo(
+                f"search: backend={backend.label} proveedor={embeddings.model_id} "
+                f"top_k={top_k} min_score={min_score} imagen={image}",
+                err=True,
+            )
+            result = asyncio.run(searcher.search_image(query_image))
+            frame_phashes = _resolve_frame_phashes(backend, result)
+            ranked = rank_candidates(result, frame_phashes=frame_phashes, min_score=min_score)
+            local_refs = _resolve_local_refs(backend, [item.video_id for item in ranked])
+            results = [
+                {
+                    "video_id": item.video_id,
+                    "local_ref": local_refs.get(item.video_id),
+                    "match_score": item.match_score,
+                    "matching_frames": item.matching_frames,
+                    "match_timestamp_ms": item.match_timestamp_ms,
+                    "evidence": {
+                        "visual": item.visual_similarity,
+                        "phash": item.phash_score,
+                    },
+                }
+                for item in ranked
+            ]
+        _emit_json(
+            {
+                "search_id": str(uuid.uuid4()),
+                "processing_ms": round((time.perf_counter() - started) * 1000),
+                "results": results,
+            }
+        )
+    except QueryMediaError as exc:
+        _fail(str(exc), type(exc).__name__, exit_code=2)
+    except ValueError as exc:
+        _fail(str(exc), type(exc).__name__, exit_code=2)
+    except Exception as exc:
+        _fail(str(exc), type(exc).__name__, exit_code=1)
+
+
+@app.command(help="Excluye un vídeo del índice (FR-014, contracts §1).")
+def exclude(
+    video: Annotated[
+        str,
+        typer.Option("--video", help="video_id del vídeo a excluir (UUID, contracts §2)."),
+    ],
+) -> None:
+    """Marca el vídeo como excluido: deja de aparecer en search (FR-014).
+
+    Postgres: PgRepo.exclude (solo videos.excluded = true, sin borrar
+    registros — FR-014). In-memory: InMemoryVectorStore.delete_video
+    (elimina los frames del vídeo y lo marca excluido; equivalente en
+    memoria, PR-003 — el índice in-memory es volátil por diseño, ADR-0006).
+    Salida JSON: {"video_id", "excluded", "changed"} (el JSON de este
+    comando no está en el contrato CLI §1; se documenta en el handoff PR-014).
+    """
+    try:
+        backend = build_backend()
+        if isinstance(backend.store, PgVectorStore):
+            changed = asyncio.run(PgRepo().exclude(video))
+            _emit_json({"video_id": video, "excluded": True, "changed": changed})
+        else:
+            asyncio.run(backend.store.delete_video(video))
+            _emit_json({"video_id": video, "excluded": True, "changed": True})
     except ValueError as exc:
         _fail(str(exc), type(exc).__name__, exit_code=2)
     except Exception as exc:
