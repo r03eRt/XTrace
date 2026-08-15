@@ -4,7 +4,7 @@
 
 **Created**: 2026-08-14
 
-**Status**: APPROVED
+**Status**: IMPLEMENTED (spike validado: SC-001 Top-5 95,6% · SC-002 FPR 0% sobre dataset real, 2026-08-15)
 
 **Input**: User description: "Spike de búsqueda visual inversa para XTrace. Demostrar de
 la forma más barata posible que `captura → embedding → índice visual → vídeo correcto`

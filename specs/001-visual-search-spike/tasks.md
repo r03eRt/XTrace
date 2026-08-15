@@ -264,6 +264,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: —
 
 ### PR-017 · Barrido frames/vídeo (10/30/60) + informe de decisión
+- **Estado**: DONE (informe medido con dataset real + recomendación 30 frames/vídeo; revisado y mergeado)
 - **Prioridad**: P2 · **Complejidad**: S · **Rol**: tester · **Riesgo**: bajo
 - **Spec/Req**: SC-001, hipótesis principal (spec §77) · plan §Risks
 - **Objetivo**: Ejecutar el benchmark con varias configuraciones de frames/vídeo y producir
@@ -280,6 +281,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 ## Fase 5 — Cierre
 
 ### PR-018 · Cierre: STATUS, quickstart validado y readiness de converge
+- **Estado**: DONE (quickstart actualizado a uv/comandos reales; spec 001 IMPLEMENTED)
 - **Prioridad**: P2 · **Complejidad**: S · **Rol**: docs · **Riesgo**: bajo
 - **Spec/Req**: cobertura completa spec 001
 - **Objetivo**: Actualizar `docs/STATUS.md`, validar `quickstart.md`, marcar spec 001

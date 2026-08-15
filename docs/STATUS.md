@@ -25,11 +25,11 @@
 ## Fase actual
 
 **Fase 1 — Visual Search Spike** (`specs/001-visual-search-spike`).
-Estado spec: **APPROVED** (2026-08-14). Documentación de diseño **completa**:
+Estado spec: **IMPLEMENTED** (2026-08-15; spike validado con dataset real). Documentación de diseño **completa**:
 `plan.md`, `data-model.md`, `contracts/`, `quickstart.md`, `tasks.md`, ADR-0003..0008,
 `docs/architecture/visual-search-spike.md`.
 
-**Implementación en curso.** PR-001…PR-016 (16 PRs) + FIX-phash implementados, revisados (APPROVED) y mergeados a `feature/001-visual-search-spike`. **Milestone 1 mergeado a `main`** (PR #1, CI verde). **US1/US2/US4 funcionales** (CLI: index/stats/search/exclude/benchmark). **Dataset real del operador recibido (43 vídeos en `dataset/`, gitignored) — medición SC-001 en curso.**
+**Spike COMPLETADO.** PR-001…PR-018 (18 PRs) + FIX-phash implementados, revisados (APPROVED) y mergeados a `feature/001-visual-search-spike`. **Milestone 1 mergeado a `main`** (PR #1, CI verde). **US1/US2/US4 funcionales** (CLI: index/stats/search/exclude/benchmark). **Puerta SC-001/SC-002 SUPERADA con el dataset real del operador (43 vídeos).** Pendiente: merge del milestone final (PR-016..018) a `main` + speckit-analyze/converge.
 
 ## Roadmap de la fase
 
@@ -37,9 +37,9 @@ Estado spec: **APPROVED** (2026-08-14). Documentación de diseño **completa**:
 objetivos, dependencias, `allowed_paths`, tests y criterios. Grafo de dependencias y plan
 de paralelización incluidos allí.
 
-- **PRs completados**: PR-001…PR-016 (16 PRs) + FIX-phash (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`; milestone 1 mergeado a `main`).
-- **PRs abiertos**: — (16 PRs + 1 fix en la rama de integración).
-- **Siguiente tarea**: PR-017 (barrido frames/vídeo 10/30/60) y PR-018 (cierre) — tras medir SC-001 con el dataset real (en curso).
+- **PRs completados**: PR-001…PR-018 (18 PRs) + FIX-phash (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`; milestone 1 mergeado a `main`).
+- **PRs abiertos**: — (18 PRs + 1 fix en la rama de integración; pendiente PR final a `main`).
+- **Siguiente**: speckit-analyze + converge → PR final (feature → main) → Fase 2 (Source SDK / crawler).
 
 ## Primer PR recomendado y por qué
 
