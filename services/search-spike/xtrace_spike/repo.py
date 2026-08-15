@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 import psycopg
@@ -78,3 +79,71 @@ class PgRepo:
                     (video_uuid, local_ref or video_id),
                 )
                 return cur.rowcount == 1
+
+    async def exclude(self, video_id: str, *, excluded: bool = True) -> bool:
+        """Marca (o desmarca) un vídeo como excluido del índice (FR-014).
+
+        Solo actualiza `videos.excluded`: el vídeo deja de aparecer en los
+        resultados sin borrar necesariamente sus registros (FR-014), ya que
+        los filtros de exclusión viven en la columna — `ann_search` con
+        `exclude_videos=True` (PR-007) y el ranking de PR-013 vía
+        `excluded_videos`/filtro del llamador. Los frames permanecen en el
+        índice.
+
+        Args:
+            video_id: id del vídeo (UUID del contrato VectorStore).
+            excluded: True marca como excluido; False lo devuelve al índice.
+
+        Returns:
+            True si el estado cambió (el vídeo existe y su flag no era el
+            pedido); False si el vídeo no existe o ya tenía ese estado.
+        """
+        video_uuid = parse_uuid(video_id, "video_id")
+        async with await self.connect() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "update public.videos set excluded = %s "
+                    "where id = %s and excluded is distinct from %s",
+                    (excluded, video_uuid, excluded),
+                )
+                return cur.rowcount == 1
+
+    async def get_frame_phashes(self, frame_ids: Sequence[str]) -> dict[str, int]:
+        """Lee el pHash persistido de los frames para el ranking (FR-013 · FR-006).
+
+        La evidencia pHash del ranking (PR-013, ADR-0005) necesita el pHash
+        del mejor frame de cada candidato: este método devuelve un mapeo
+        `frame_id -> phash` (entero SIN signo de 64 bits, salida de
+        `compute_phash`, PR-004) solo para los `frame_ids` que existen
+        (los ausentes se omiten; el ranking trata la ausencia como evidencia
+        0). El llamador típico es la CLI search (PR-014):
+
+            phashes = await repo.get_frame_phashes(
+                [c.best_frame_id for c in result.candidates]
+            )
+            ranked = rank_candidates(result, frame_phashes=phashes)
+
+        La columna `frames.phash` es bigint con signo (migración PR-006); se
+        decodifica con `phash_from_db` (vectorstore/pgvector.py). El import
+        es a nivel de función para evitar el ciclo de módulos (pgvector.py
+        importa este módulo a nivel de módulo).
+
+        Args:
+            frame_ids: ids de frame del contrato VectorStore (UUID).
+
+        Returns:
+            Mapeo frame_id -> pHash sin signo de 64 bits.
+        """
+        from xtrace_spike.vectorstore.pgvector import phash_from_db
+
+        if not frame_ids:
+            return {}
+        frame_uuids = [parse_uuid(frame_id, "frame_id") for frame_id in frame_ids]
+        async with await self.connect() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "select id::text, phash from public.frames where id = any(%s::uuid[])",
+                    ([str(frame_uuid) for frame_uuid in frame_uuids],),
+                )
+                rows = await cur.fetchall()
+        return {str(row[0]): phash_from_db(row[1]) for row in rows}
