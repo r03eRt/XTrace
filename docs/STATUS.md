@@ -29,7 +29,7 @@ Estado spec: **APPROVED** (2026-08-14). Documentación de diseño **completa**:
 `plan.md`, `data-model.md`, `contracts/`, `quickstart.md`, `tasks.md`, ADR-0003..0008,
 `docs/architecture/visual-search-spike.md`.
 
-**Implementación en curso.** PR-001 + Ola A (PR-002/003/004/008) + Ola B (PR-005, PR-009) + PR-006 (migración pgvector) implementados, revisados (APPROVED) y mergeados a `feature/001-visual-search-spike`. **Milestone 1 mergeado a `main`** (PR #1, CI verde). En curso: PR-007 (PgVectorStore).
+**Implementación en curso.** PR-001 + Ola A (PR-002/003/004/008) + Ola B (PR-005, PR-009) + Ola C (PR-006 pgvector, PR-007 PgVectorStore) implementados, revisados (APPROVED) y mergeados a `feature/001-visual-search-spike`. **Milestone 1 mergeado a `main`** (PR #1, CI verde). Siguiente: PR-010 (pipeline de indexación).
 
 ## Roadmap de la fase
 
@@ -37,9 +37,9 @@ Estado spec: **APPROVED** (2026-08-14). Documentación de diseño **completa**:
 objetivos, dependencias, `allowed_paths`, tests y criterios. Grafo de dependencias y plan
 de paralelización incluidos allí.
 
-- **PRs completados**: PR-001, PR-002, PR-003, PR-004, PR-005, PR-006, PR-008, PR-009 (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`; milestone 1 mergeado a `main`).
-- **PRs abiertos**: — (8 PRs en la rama de integración).
-- **Siguiente tarea**: PR-007 (PgVectorStore sobre pgvector/HNSW) — en curso.
+- **PRs completados**: PR-001, PR-002, PR-003, PR-004, PR-005, PR-006, PR-007, PR-008, PR-009 (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`; milestone 1 mergeado a `main`).
+- **PRs abiertos**: — (9 PRs en la rama de integración).
+- **Siguiente tarea**: PR-010 (pipeline de indexación: ingest→dedupe→embed→upsert, idempotente + cleanup).
 
 ## Primer PR recomendado y por qué
 

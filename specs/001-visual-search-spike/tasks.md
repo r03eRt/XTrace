@@ -116,6 +116,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: — (bloquea PgVectorStore)
 
 ### PR-007 · `PgVectorStore` (impl `VectorStore` sobre pgvector) + integration
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P0 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: medio
 - **Spec/Req**: FR-006, SC-003 · ADR-0004
 - **Objetivo**: Implementar `VectorStore` con pgvector/HNSW (coseno), upsert idempotente,
