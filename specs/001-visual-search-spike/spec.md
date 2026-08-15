@@ -4,7 +4,7 @@
 
 **Created**: 2026-08-14
 
-**Status**: IMPLEMENTED (spike validado: SC-001 Top-5 95,6% · SC-002 FPR 0% sobre dataset real, 2026-08-15)
+**Status**: IMPLEMENTED
 
 **Input**: User description: "Spike de búsqueda visual inversa para XTrace. Demostrar de
 la forma más barata posible que `captura → embedding → índice visual → vídeo correcto`
@@ -13,7 +13,9 @@ invertir en crawling masivo. VALIDATE SEARCH FIRST, SCALE CRAWLING SECOND."
 
 > Origen de requisitos: `docs/PRODUCT_IDEA.md` (descubrimiento cerrado, `READY_FOR_SPEC`).
 > ✅ **Aprobada por el humano responsable el 2026-08-14** (aprobación explícita:
-> "Especificacion aprobada"). Estado: `APPROVED`.
+> "Especificacion aprobada"). Estado: `APPROVED` → **`IMPLEMENTED`** (2026-08-15):
+> spike validado con dataset real del operador (43 vídeos) — SC-001 Top-5 95,6%,
+> SC-002 FPR 0%, umbral 0.8; recomendación 30 frames/vídeo (PR-017).
 >
 > Esta spec describe **qué** y **por qué**. Las decisiones técnicas concretas
 > (librerías, modelo exacto, esquema físico, proveedor de cómputo) se fijan en
