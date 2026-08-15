@@ -4,7 +4,7 @@
 
 **Created**: 2026-08-15
 
-**Status**: READY_FOR_REVIEW
+**Status**: APPROVED
 
 **Input**: User description: "Fase 2 — el motor ya está validado (spike 001). Ahora toca cómo
 llenar el índice desde webs: contrato `SourceAdapter` + entidad normalizada `VideoSource` +
@@ -341,9 +341,8 @@ implementación.
 
 ## Approval
 
-**Estado**: `READY_FOR_REVIEW` — ronda de clarificación cerrada (5/5 preguntas resueltas).
-Pendiente de **aprobación humana** (frase exacta: **`Especificación aprobada`**) antes de
-`technical-planning`.
+**Estado**: `APPROVED` — aprobada por el humano responsable el 2026-08-15 (aprobación
+explícita: **"Especificación aprobada"**). Habilitado el paso a `technical-planning`.
 
 ## Historial de decisiones
 
@@ -364,3 +363,5 @@ Pendiente de **aprobación humana** (frase exacta: **`Especificación aprobada`*
   *Decisión del humano responsable.*
 - **2026-08-15 · D5 (Q5)**: Los **rate limits** por adapter se configuran con **defaults en
   código + override por variable de entorno**. *Decisión del humano responsable.*
+- **2026-08-15 · Aprobación**: spec **`APPROVED`** por el humano responsable (frase exacta
+  "Especificación aprobada"). Se habilita `technical-planning`.
