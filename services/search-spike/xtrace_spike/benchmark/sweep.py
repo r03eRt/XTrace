@@ -43,8 +43,8 @@ import json
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any, cast
 
 DEFAULT_FRAMES: tuple[int, ...] = (10, 30, 60)
@@ -83,8 +83,7 @@ def _run(cli: list[str], dry_run: bool) -> dict[str, Any] | None:
     proc = subprocess.run(cli, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(
-            f"comando falló (exit {proc.returncode}): {' '.join(cli)} "
-            f"stderr: {proc.stderr[-2000:]}"
+            f"comando falló (exit {proc.returncode}): {' '.join(cli)} stderr: {proc.stderr[-2000:]}"
         )
     return cast(dict[str, Any], json.loads(proc.stdout))
 
@@ -229,9 +228,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "frames_configs": [report["frames_per_video_config"] for report in reports],
             "reports": reports,
         }
-        (args.out / "summary.json").write_text(
-            json.dumps(summary, indent=2, sort_keys=True) + "\n"
-        )
+        (args.out / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
         _print_summary(reports)
     return 0
 
