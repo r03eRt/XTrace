@@ -12,15 +12,15 @@ Comandos equivalentes por configuración (lo que este script ejecuta):
 
     # N=10
     uv run xtrace-spike index --dataset <DATASET> --frames-per-video 10 --provider siglip
-    uv run xtrace-spike benchmark --cases <CASES> --min-score 0.8 --provider siglip
+    uv run xtrace-spike benchmark --cases <CASES> --top-k 10 --min-score 0.8 --provider siglip
 
     # N=30
     uv run xtrace-spike index --dataset <DATASET> --frames-per-video 30 --provider siglip
-    uv run xtrace-spike benchmark --cases <CASES> --min-score 0.8 --provider siglip
+    uv run xtrace-spike benchmark --cases <CASES> --top-k 10 --min-score 0.8 --provider siglip
 
     # N=60
     uv run xtrace-spike index --dataset <DATASET> --frames-per-video 60 --provider siglip
-    uv run xtrace-spike benchmark --cases <CASES> --min-score 0.8 --provider siglip
+    uv run xtrace-spike benchmark --cases <CASES> --top-k 10 --min-score 0.8 --provider siglip
 
 Uso:
 
@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -75,8 +76,15 @@ def _cli_prefix() -> list[str]:
     return [sys.executable, "-c", "from xtrace_spike.cli import app; app()"]
 
 
-def _run(cli: list[str], dry_run: bool) -> dict[str, Any] | None:
-    """Ejecuta un comando CLI y devuelve su JSON de stdout (None en dry-run)."""
+def _run(cli: list[str], dry_run: bool, parse_stdout: bool) -> dict[str, Any] | None:
+    """Ejecuta un comando CLI y, si parse_stdout, devuelve su JSON de stdout.
+
+    Solo "benchmark" emite el informe JSON del contrato CLI §1 por stdout
+    (PR-016) y se parsea, de forma defensiva (stdout no-JSON -> error
+    claro). "index" no se parsea: su stdout no es JSON utilizable en todos
+    los providers (con siglip aparecen mensajes de carga del modelo);
+    solo interesa el exit code (0 = indexación correcta). None en dry-run.
+    """
     if dry_run:
         print("$ " + " ".join(cli))
         return None
@@ -85,7 +93,15 @@ def _run(cli: list[str], dry_run: bool) -> dict[str, Any] | None:
         raise RuntimeError(
             f"comando falló (exit {proc.returncode}): {' '.join(cli)} stderr: {proc.stderr[-2000:]}"
         )
-    return cast(dict[str, Any], json.loads(proc.stdout))
+    if not parse_stdout:
+        return None
+    try:
+        return cast(dict[str, Any], json.loads(proc.stdout))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"stdout del comando no es JSON utilizable: {exc} "
+            f"(comando: {' '.join(cli)}; stderr: {proc.stderr[-2000:]})"
+        ) from exc
 
 
 def _sweep(
@@ -115,6 +131,7 @@ def _sweep(
                 provider,
             ],
             dry_run=dry_run,
+            parse_stdout=False,  # index: solo exit code (stdout no utilizable)
         )
         report = _run(
             [
@@ -130,6 +147,7 @@ def _sweep(
                 provider,
             ],
             dry_run=dry_run,
+            parse_stdout=True,  # benchmark: informe JSON del contrato CLI §1
         )
         if report is None:
             continue
@@ -190,7 +208,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--provider",
         default=DEFAULT_PROVIDER,
-        help="proveedor de embeddings: fake (default) o siglip",
+        help="proveedor de embeddings: siglip (default) o fake",
     )
     parser.add_argument(
         "--top-k",
@@ -212,6 +230,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(list(argv) if argv is not None else None)
     if not args.frames:
         parser.error("--frames requiere al menos un valor")
+    if not args.dry_run and not os.environ.get("SUPABASE_DB_URL"):
+        parser.error(
+            "SUPABASE_DB_URL no está definida: index y benchmark deben "
+            "compartir índice (backend pgvector/HNSW persistente, PR-007); "
+            "sin ella el backend in-memory es volátil entre procesos "
+            "(ADR-0006) y el sweep sería inválido"
+        )
 
     reports = _sweep(
         dataset=args.dataset,
