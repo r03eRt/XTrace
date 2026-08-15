@@ -164,6 +164,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: —
 
 ### PR-010 · Pipeline de indexación (idempotente + cleanup)
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P1 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: medio
 - **Spec/Req**: FR-005/006/007/008/009, SC-005/006 · ADR-0006
 - **Objetivo**: `indexing/pipeline.py`: ingest→dedupe→embed(batch)→`VectorStore.upsert`,
