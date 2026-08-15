@@ -1,0 +1,58 @@
+# CI del servicio crawler (PR-019 · FR-003 · ADR-0011 · plan §CI strategy).
+# Aditivo: job independiente que NO altera la pipeline JS (quality.yml) ni el
+# job del spike (python-quality.yml). Se dispara también ante cambios en
+# services/search-spike/** porque xtrace_spike es dependencia editable (ADR-0011).
+name: python-crawler-quality
+
+on:
+  pull_request:
+    paths:
+      - "services/crawler/**"
+      - "services/search-spike/**"
+      - ".github/workflows/python-crawler-quality.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/crawler/**"
+      - "services/search-spike/**"
+      - ".github/workflows/python-crawler-quality.yml"
+
+concurrency:
+  group: python-crawler-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-crawler-quality:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/crawler
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies (reproducible)
+        run: uv sync --locked
+
+      - name: Lint (ruff check)
+        run: uv run ruff check
+
+      - name: Format check (ruff format --check)
+        run: uv run ruff format --check
+
+      - name: Typecheck (mypy)
+        # Solo xtrace_crawler: xtrace_spike (dep editable, ADR-0011) no publica
+        # py.typed, asi que mypy sobre tests falla con [import-untyped] en CI
+        # (decision de revision PR-019, opcion a). El gate local que pasa es
+        # `uv run mypy xtrace_crawler`.
+        run: uv run mypy xtrace_crawler
+
+      - name: Tests (pytest)
+        run: uv run pytest
