@@ -8,6 +8,10 @@ Comandos (contratos en `specs/001-visual-search-spike/contracts/README.md` §1):
   (fichero regular, ≤ 10 MB y firma MIME, spec §80 · ASSUMPTION-6) y
   borrado inmediato de la media de consulta (FR-018 · ADR-0006); salida del
   contrato CLI §1 (search_id/processing_ms/results).
+- `benchmark` (PR-016): ejecuta el benchmark (FR-016) sobre el dataset de
+  casos generado (PR-015, manifest.json) y emite el informe reproducible del
+  contrato CLI §1 (top1/5/10, FPR negativas, latencia p50/p95, frames/vídeo,
+  tamaño del índice, throughput) para evaluar SC-001/SC-002/SC-003/SC-007.
 - `exclude` (PR-014): excluye un vídeo del índice (FR-014).
 
 Contrato de salida (contracts §1): SIEMPRE JSON por stdout; los logs de
@@ -45,6 +49,8 @@ import typer
 from PIL import Image, UnidentifiedImageError
 
 from xtrace_spike import __version__
+from xtrace_spike.benchmark import load_manifest
+from xtrace_spike.benchmark.runner import BenchmarkRunner
 from xtrace_spike.embeddings.fake import FakeEmbeddingProvider
 from xtrace_spike.embeddings.provider import EmbeddingProvider
 from xtrace_spike.embeddings.siglip_local import SiglipLocalProvider
@@ -431,6 +437,88 @@ def search(
         )
     except QueryMediaError as exc:
         _fail(str(exc), type(exc).__name__, exit_code=2)
+    except ValueError as exc:
+        _fail(str(exc), type(exc).__name__, exit_code=2)
+    except Exception as exc:
+        _fail(str(exc), type(exc).__name__, exit_code=1)
+
+
+def _benchmark_manifest_path(cases: Path) -> Path:
+    """Manifest del dataset de benchmark: directorio (manifest.json) o fichero directo.
+
+    El comando `benchmark` acepta el directorio de casos generado por
+    PR-015 (contiene manifest.json) o la ruta del manifest en sí; un path
+    inexistente o un directorio sin manifest es un error de uso (exit 2).
+    """
+    if cases.is_dir():
+        manifest = cases / "manifest.json"
+        if not manifest.is_file():
+            raise ValueError(f"no se encuentra manifest.json en el directorio de casos '{cases}'")
+        return manifest
+    if cases.is_file():
+        return cases
+    raise ValueError(f"la ruta de casos '{cases}' no existe ni es un directorio")
+
+
+@app.command(help="Ejecuta el benchmark y emite el informe del contrato CLI §1 (FR-016/017).")
+def benchmark(
+    cases: Annotated[
+        Path,
+        typer.Option(
+            "--cases",
+            help="Directorio del dataset de benchmark (manifest.json, PR-015) o el manifest.",
+        ),
+    ],
+    top_k: Annotated[
+        int,
+        typer.Option("--top-k", help="Nº de frames candidatos del ANN (contracts §1)."),
+    ] = DEFAULT_TOP_K,
+    min_score: Annotated[
+        float,
+        typer.Option(
+            "--min-score",
+            help="Umbral de match en [0, 1]; FPR de negativas (SC-002, PR-013).",
+        ),
+    ] = DEFAULT_MIN_SCORE,
+    provider: Annotated[
+        str | None,
+        typer.Option("--provider", help="Proveedor de embeddings: fake (default) o siglip."),
+    ] = None,
+) -> None:
+    """Ejecuta el benchmark y emite el informe reproducible del contrato CLI §1 (FR-016).
+
+    Cadena (PR-015/016): carga los casos del manifest (load_manifest), los
+    ejecuta contra el índice del backend con la cadena de búsqueda real
+    (ImageSearch + rank_candidates, PR-012/013) y agrega el informe:
+    top1/top5/top10 sobre positivos (SC-001), FPR de negativas con el umbral
+    `min_score` (SC-002), latencia p50/p95 (SC-003), frames/vídeo y tamaño
+    del índice desde VectorStore.stats(), y throughput de embeddings medido
+    durante el run. Reproducible (SC-007): sin timestamps ni aleatoriedad
+    (salvo latencia/throughput, que fluctúan y se reportan con precisión
+    estable). Las consultas del dataset NO se borran (no son media del
+    operador; FR-018 aplica a la CLI search, PR-014).
+    """
+    try:
+        backend = build_backend()
+        embeddings = resolve_embedding_provider(provider)
+        runner = BenchmarkRunner(
+            store=backend.store,
+            embeddings=embeddings,
+            top_k=top_k,
+            min_score=min_score,
+        )
+        manifest = _benchmark_manifest_path(cases)
+        benchmark_cases = load_manifest(manifest)
+        if not benchmark_cases:
+            raise ValueError(f"el manifest '{manifest}' no contiene casos")
+        typer.echo(
+            f"benchmark: backend={backend.label} proveedor={embeddings.model_id} "
+            f"casos={len(benchmark_cases)} top_k={top_k} min_score={min_score} "
+            f"manifest={manifest}",
+            err=True,
+        )
+        report = asyncio.run(runner.run(benchmark_cases))
+        _emit_json(report.to_dict())
     except ValueError as exc:
         _fail(str(exc), type(exc).__name__, exit_code=2)
     except Exception as exc:
