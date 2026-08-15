@@ -24,28 +24,37 @@
 
 ## Fase actual
 
-**Fase 1 — Visual Search Spike** (`specs/001-visual-search-spike`).
-Estado spec: **IMPLEMENTED** (2026-08-15; spike validado con dataset real). Documentación de diseño **completa**:
-`plan.md`, `data-model.md`, `contracts/`, `quickstart.md`, `tasks.md`, ADR-0003..0008,
-`docs/architecture/visual-search-spike.md`.
+**Fase 2 — Source SDK + Primer Crawler** (`specs/002-source-sdk-crawler`).
+Estado spec: **APPROVED** (2026-08-15; aprobación humana explícita). Documentación de
+diseño **completa**: `plan.md`, `data-model.md`, `contracts/`, `quickstart.md`, `tasks.md`,
+ADR-0009..0011.
 
-**Spike COMPLETADO.** PR-001…PR-018 (18 PRs) + FIX-phash implementados, revisados (APPROVED) y **mergeados a `main`** (PR #1 milestone 1 + PR #2 cierre, ambos con CI verde). **US1/US2/US4 funcionales** (CLI: index/stats/search/exclude/benchmark). **Puerta SC-001/SC-002 SUPERADA con el dataset real del operador (43 vídeos).** Pendiente: speckit-analyze/converge (opcional) → Fase 2.
+**En curso**: implementación de PR-019…PR-033 (roadmap en
+`specs/002-source-sdk-crawler/tasks.md`). Ningún PR completado todavía.
+
+**Fase 1 (anterior) — Visual Search Spike**: **COMPLETADA.** PR-001…PR-018 (18 PRs) +
+FIX-phash implementados, revisados (APPROVED) y **mergeados a `main`**. **US1/US2/US4
+funcionales** (CLI: index/stats/search/exclude/benchmark). **Puerta SC-001/SC-002 SUPERADA
+con el dataset real del operador (43 vídeos).**
 
 ## Roadmap de la fase
 
-18 PRs (PR-001 … PR-018), ninguno XL. Ver `specs/001-visual-search-spike/tasks.md` para
+15 PRs (PR-019 … PR-033), ninguno XL. Ver `specs/002-source-sdk-crawler/tasks.md` para
 objetivos, dependencias, `allowed_paths`, tests y criterios. Grafo de dependencias y plan
 de paralelización incluidos allí.
 
-- **PRs completados**: PR-001…PR-018 (18 PRs) + FIX-phash — **todo mergeado a `main`** (PR #1 y PR #2, CI verde).
-- **PRs abiertos**: — (spike cerrado; 19 ramas de PR preservadas en GitHub).
-- **Siguiente**: Fase 2 — Source SDK (`SourceAdapter`) → primer crawler → FastAPI → frontend (según `docs/PRODUCT_IDEA.md`).
+- **PRs completados**: — (fase recién iniciada)
+- **PRs abiertos**: — (arrancar con la Ola A: PR-020/022/023/024/025 tras PR-019)
+- **Siguiente**: PR-019 (bootstrap del servicio `services/crawler/` + CI) → Ola A en paralelo.
+- **Puerta legal**: el adapter real de xvideos permanece deshabilitado hasta la revisión
+  legal/ToS/robots del humano (SEC-002); el desarrollo no depende de ello (mock/fixtures).
 
 ## Primer PR recomendado y por qué
 
-**PR-001**. Habilita el toolchain Python (ruff/mypy/pytest) y la CI sin romper la pipeline
-JS del skeleton. Desbloquea la Ola A (PR-002/003/004/008 en paralelo). Es pequeño, de bajo
-riesgo y necesario antes de cualquier lógica de dominio.
+**PR-019**. Bootstrap del servicio `services/crawler/` (paquete `xtrace_crawler`, toolchain
+uv/ruff/mypy/pytest, dependencia editable al spike — ADR-0011) + job de CI dedicado, sin
+romper la pipeline JS ni el job del spike. Desbloquea la Ola A (PR-020/022/023/024/025 en
+paralelo). Es pequeño, de bajo riesgo y necesario antes de cualquier lógica de dominio.
 
 ## Puerta de decisión del spike
 
