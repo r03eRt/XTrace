@@ -141,7 +141,7 @@ def resolve_embedding_provider(provider: str | None) -> EmbeddingProvider:
     """
     chosen = provider or os.environ.get(EMBEDDING_PROVIDER_ENV, "").strip().lower() or "fake"
     if chosen == "fake":
-        return FakeEmbeddingProvider()
+        return FakeEmbeddingProvider(dimension=768)  # D fijada por PR-005
     if chosen == "siglip":
         return SiglipLocalProvider()
     raise ValueError(f"proveedor de embeddings desconocido: {chosen!r} (opciones: fake, siglip)")

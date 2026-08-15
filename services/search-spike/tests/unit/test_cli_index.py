@@ -185,6 +185,16 @@ def test_embedding_provider_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(resolve_embedding_provider(None), FakeEmbeddingProvider)
 
 
+def test_default_fake_provider_dimension_768() -> None:
+    """Regresión (bug post-PR-011): el provider fake por defecto debe producir D=768.
+
+    Antes devolvía FakeEmbeddingProvider() con dimension=512, incompatible con
+    vector(768) del esquema -> la indexación real fallaba con
+    "Dimensiones de embedding distintas: 512 != 768".
+    """
+    assert resolve_embedding_provider(None).dimension == 768
+
+
 def test_index_and_stats_help_exit_zero() -> None:
     """`index --help` y `stats --help` salen con 0 y documentan las opciones (FR-017)."""
     for command in (["index"], ["stats"]):
