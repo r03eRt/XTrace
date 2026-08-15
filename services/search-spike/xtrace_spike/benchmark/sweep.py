@@ -44,7 +44,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any, cast
 
 DEFAULT_FRAMES: tuple[int, ...] = (10, 30, 60)
 DEFAULT_MIN_SCORE: float = 0.8
@@ -85,7 +86,7 @@ def _run(cli: list[str], dry_run: bool) -> dict[str, Any] | None:
             f"comando falló (exit {proc.returncode}): {' '.join(cli)} "
             f"stderr: {proc.stderr[-2000:]}"
         )
-    return json.loads(proc.stdout)
+    return cast(dict[str, Any], json.loads(proc.stdout))
 
 
 def _sweep(
