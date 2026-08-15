@@ -29,7 +29,7 @@ Estado spec: **IMPLEMENTED** (2026-08-15; spike validado con dataset real). Docu
 `plan.md`, `data-model.md`, `contracts/`, `quickstart.md`, `tasks.md`, ADR-0003..0008,
 `docs/architecture/visual-search-spike.md`.
 
-**Spike COMPLETADO.** PR-001…PR-018 (18 PRs) + FIX-phash implementados, revisados (APPROVED) y mergeados a `feature/001-visual-search-spike`. **Milestone 1 mergeado a `main`** (PR #1, CI verde). **US1/US2/US4 funcionales** (CLI: index/stats/search/exclude/benchmark). **Puerta SC-001/SC-002 SUPERADA con el dataset real del operador (43 vídeos).** Pendiente: merge del milestone final (PR-016..018) a `main` + speckit-analyze/converge.
+**Spike COMPLETADO.** PR-001…PR-018 (18 PRs) + FIX-phash implementados, revisados (APPROVED) y **mergeados a `main`** (PR #1 milestone 1 + PR #2 cierre, ambos con CI verde). **US1/US2/US4 funcionales** (CLI: index/stats/search/exclude/benchmark). **Puerta SC-001/SC-002 SUPERADA con el dataset real del operador (43 vídeos).** Pendiente: speckit-analyze/converge (opcional) → Fase 2.
 
 ## Roadmap de la fase
 
@@ -37,9 +37,9 @@ Estado spec: **IMPLEMENTED** (2026-08-15; spike validado con dataset real). Docu
 objetivos, dependencias, `allowed_paths`, tests y criterios. Grafo de dependencias y plan
 de paralelización incluidos allí.
 
-- **PRs completados**: PR-001…PR-018 (18 PRs) + FIX-phash (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`; milestone 1 mergeado a `main`).
-- **PRs abiertos**: — (18 PRs + 1 fix en la rama de integración; pendiente PR final a `main`).
-- **Siguiente**: speckit-analyze + converge → PR final (feature → main) → Fase 2 (Source SDK / crawler).
+- **PRs completados**: PR-001…PR-018 (18 PRs) + FIX-phash — **todo mergeado a `main`** (PR #1 y PR #2, CI verde).
+- **PRs abiertos**: — (spike cerrado; 19 ramas de PR preservadas en GitHub).
+- **Siguiente**: Fase 2 — Source SDK (`SourceAdapter`) → primer crawler → FastAPI → frontend (según `docs/PRODUCT_IDEA.md`).
 
 ## Primer PR recomendado y por qué
 
@@ -56,6 +56,12 @@ riesgo y necesario antes de cualquier lógica de dominio.
 - **SC-003: latencia < 3 s → OK** (p50/p95 reportados ≈ 0-2 ms de la consulta; el coste real está en el embedding ~0.25-0.4 s/imagen en CPU, throughput medido ~2.4-3.9 fps).
 - Conclusión: **VALIDATE SEARCH FIRST ✔ — se puede escalar el crawling** (decidir 30 vs 60 frames/vídeo en PR-017).
 - **Validación manual del operador (2026-08-15):** un frame real subido por el operador fue buscado y el sistema devolvió el vídeo correcto (`4920517166559660298.mp4`) con timestamp acertado (~1,69 s) y score 0.872.
+- **Validación manual del operador (2026-08-15, 2ª ronda):** 3 capturas reales del operador
+  (`capturas-test/`, gitignored — no commitear) → **3/3 Top-1 correctos** (confirmado por el
+  operador): `MAYO 2026 (386).mp4` score 0.938 @ ~51 s · `MAYO 2026 (389).mp4` score 0.912
+  @ ~39,5 s · `010+AMWF+Petite+Teen+Deepthroats...480p.mp4` score 0.945 @ ~30:32. Capturas
+  no idénticas (pHash 0.72-0.84), resueltas por el embedding visual. Latencia de consulta
+  en CPU local 7-11 s (embeddings en CPU; no afecta a la puerta de corrección).
 
 ## Blockers conocidos
 
@@ -69,6 +75,10 @@ riesgo y necesario antes de cualquier lógica de dominio.
 
 ## Deuda técnica / diferido
 
+- **Plan de despliegue público** — al llegar a la fase de exposición pública/MVP, preparar
+  propuesta de despliegue en **VPS propio** (~5–10 €/mes: Postgres+pgvector, FastAPI,
+  crawler, Next.js; la BD en el VPS, no en portátil), preferencia del operador frente a
+  Supabase Pro/Vercel gestionados (decisión 2026-08-15).
 - **Búsqueda por clip + consistencia temporal** (FR-011, SC-004) — diferida (Decisión D1),
   próxima feature.
 - Crawler, `SourceAdapter` de fuentes reales (erome, xvideos, xhamster, redgifs, pornhub),
