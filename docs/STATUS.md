@@ -29,7 +29,7 @@ Estado spec: **APPROVED** (2026-08-14). Documentación de diseño **completa**:
 `plan.md`, `data-model.md`, `contracts/`, `quickstart.md`, `tasks.md`, ADR-0003..0008,
 `docs/architecture/visual-search-spike.md`.
 
-**Implementación en curso.** PR-001 + Ola A (PR-002/003/004/008) + Ola B (PR-005, PR-009) + Ola C (PR-006 pgvector, PR-007 PgVectorStore) implementados, revisados (APPROVED) y mergeados a `feature/001-visual-search-spike`. **Milestone 1 mergeado a `main`** (PR #1, CI verde). Siguiente: PR-010 (pipeline de indexación).
+**Implementación en curso.** PR-001…PR-014 (14 PRs) + FIX-phash implementados, revisados (APPROVED) y mergeados a `feature/001-visual-search-spike`. **Milestone 1 mergeado a `main`** (PR #1, CI verde). **US1 (indexar) y US2 (buscar por imagen) FUNCIONALES end-to-end** (CLI: index/stats/search/exclude). Siguiente: PR-015/016 (benchmark, requiere dataset real del operador).
 
 ## Roadmap de la fase
 
@@ -37,9 +37,9 @@ Estado spec: **APPROVED** (2026-08-14). Documentación de diseño **completa**:
 objetivos, dependencias, `allowed_paths`, tests y criterios. Grafo de dependencias y plan
 de paralelización incluidos allí.
 
-- **PRs completados**: PR-001…PR-012 (12 PRs) + FIX-phash (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`; milestone 1 mergeado a `main`).
-- **PRs abiertos**: — (12 PRs + 1 fix en la rama de integración).
-- **Siguiente tarea**: PR-013 (ranking configurable + timestamp + exclusión) → PR-014 (CLI `search`/`exclude`).
+- **PRs completados**: PR-001…PR-014 (14 PRs) + FIX-phash (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`; milestone 1 mergeado a `main`).
+- **PRs abiertos**: — (14 PRs + 1 fix en la rama de integración).
+- **Siguiente tarea**: PR-015 (generador dataset benchmark ~210 casos) y PR-016 (runner + CLI `benchmark`) — requieren **dataset local real** del operador para la puerta SC-001.
 
 ## Primer PR recomendado y por qué
 

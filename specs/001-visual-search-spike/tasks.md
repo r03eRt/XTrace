@@ -218,6 +218,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: —
 
 ### PR-014 · CLI `search` + `exclude` + validación de entrada + borrado inmediato
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P1 · **Complejidad**: S · **Rol**: implementer · **Riesgo**: medio (SEC)
 - **Spec/Req**: FR-014, FR-017, FR-018, SEC/privacidad · ADR-0006/0008
 - **Objetivo**: Comandos `search` y `exclude`; validar MIME/firma/tamaño (≤10 MB), rutas
