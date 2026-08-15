@@ -55,6 +55,7 @@ riesgo y necesario antes de cualquier lógica de dominio.
 - **SC-002: FPR ≤ 10% → CUMPLE: 0%** con umbral de match 0.8 (a 0.5-0.7 las negativas pasan; a 0.9 se pierde Top-5: 71,7%). **Umbral recomendado: 0.8.**
 - **SC-003: latencia < 3 s → OK** (p50/p95 reportados ≈ 0-2 ms de la consulta; el coste real está en el embedding ~0.25-0.4 s/imagen en CPU, throughput medido ~2.4-3.9 fps).
 - Conclusión: **VALIDATE SEARCH FIRST ✔ — se puede escalar el crawling** (decidir 30 vs 60 frames/vídeo en PR-017).
+- **Validación manual del operador (2026-08-15):** un frame real subido por el operador fue buscado y el sistema devolvió el vídeo correcto (`4920517166559660298.mp4`) con timestamp acertado (~1,69 s) y score 0.872.
 
 ## Blockers conocidos
 
