@@ -48,7 +48,11 @@ jobs:
         run: uv run ruff format --check
 
       - name: Typecheck (mypy)
-        run: uv run mypy xtrace_crawler tests
+        # Solo xtrace_crawler: xtrace_spike (dep editable, ADR-0011) no publica
+        # py.typed, asi que mypy sobre tests falla con [import-untyped] en CI
+        # (decision de revision PR-019, opcion a). El gate local que pasa es
+        # `uv run mypy xtrace_crawler`.
+        run: uv run mypy xtrace_crawler
 
       - name: Tests (pytest)
         run: uv run pytest
