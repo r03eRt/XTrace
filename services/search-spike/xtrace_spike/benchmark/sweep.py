@@ -82,8 +82,7 @@ def _run(cli: list[str], dry_run: bool) -> dict[str, Any] | None:
     proc = subprocess.run(cli, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(
-            f"comando falló (exit {proc.returncode}): {' '.join(cli)}
-"
+            f"comando falló (exit {proc.returncode}): {' '.join(cli)} "
             f"stderr: {proc.stderr[-2000:]}"
         )
     return json.loads(proc.stdout)
