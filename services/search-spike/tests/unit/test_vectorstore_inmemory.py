@@ -23,11 +23,13 @@ def _record(
     video_id: str,
     embedding: list[float],
     timestamp_ms: int | None = None,
+    phash: int = 0,
 ) -> FrameRecord:
     return FrameRecord(
         frame_id=frame_id,
         video_id=video_id,
         timestamp_ms=timestamp_ms,
+        phash=phash,
         embedding=embedding,
     )
 
@@ -77,6 +79,29 @@ def test_ann_search_returns_top_k_nearest() -> None:
     assert len(asyncio.run(store.ann_search([1.0, 0.0], k=2))) == 2
     assert len(asyncio.run(store.ann_search([1.0, 0.0], k=0))) == 0
     assert len(asyncio.run(store.ann_search([1.0, 0.0], k=-1))) == 0
+
+
+def test_upsert_preserves_real_phash_in_frame_record() -> None:
+    """FIX-phash · FR-004/FR-006: el FrameRecord conserva el pHash real (no 0).
+
+    El pHash viaja en el contrato y el doble in-memory lo guarda tal cual
+    (entero sin signo de 64 bits, p. ej. con bit 63 a 1 como los pHash
+    reales de imagehash); `get_frame` lo devuelve para inspección.
+    """
+    store = InMemoryVectorStore()
+    real_phash = 0x8000_0000_0000_0001
+    asyncio.run(
+        store.upsert_frames([_record("f1", "v1", [1.0, 0.0], timestamp_ms=1000, phash=real_phash)])
+    )
+    stored = asyncio.run(store.get_frame("f1"))
+    assert stored is not None
+    assert stored["phash"] == real_phash
+    assert stored["phash"] != 0  # nunca el centinela
+    assert stored["frame_id"] == "f1"
+    assert stored["video_id"] == "v1"
+    assert stored["timestamp_ms"] == 1000
+    assert stored["embedding"] == (1.0, 0.0)
+    assert asyncio.run(store.get_frame("missing")) is None
 
 
 def test_upsert_is_idempotent_by_frame_id() -> None:

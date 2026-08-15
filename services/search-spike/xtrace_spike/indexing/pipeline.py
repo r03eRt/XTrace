@@ -3,8 +3,14 @@
 Orquesta, por vídeo del dataset, la cadena completa:
 
     scan (ingest/dataset.py, llamador) -> extract_frames (PR-008)
-    -> dedupe_frames (PR-009) -> embed_images en batches (FR-005)
+    -> dedupe_frames (PR-009) -> pHash + embed_images en batches (FR-004/FR-005)
     -> VectorStore.upsert_frames (FR-006) -> estado del vídeo (FR-007)
+
+El pHash de cada frame representativo (FR-004) se calcula con
+hashing.phash.compute_phash — la misma función que usa el dedupe (PR-009) —
+y viaja en el FrameRecord (FIX-phash) para que el índice lo persista
+(InMemory y PgVectorStore): frames.phash deja de ser un centinela y queda
+con la firma real del frame.
 
 Depende solo de las interfaces (ADR-0007): `VectorStore`, `EmbeddingProvider`
 y `VideoStateStore` se inyectan por constructor. En tests se usan
@@ -45,7 +51,7 @@ import numpy as np
 from PIL import Image
 
 from xtrace_spike.embeddings.provider import EmbeddingProvider
-from xtrace_spike.hashing.phash import PHASH_BITS
+from xtrace_spike.hashing.phash import PHASH_BITS, compute_phash
 from xtrace_spike.indexing.state import (
     STATUS_FAILED,
     STATUS_INDEXED,
@@ -271,6 +277,14 @@ class IndexingPipeline:
         abren/cierran por lote y el proveedor debe devolver shape (N, D). Los
         ids de frame son estables (FR-008) y los embeddings se convierten a
         float nativo (serializable y compatible con el contrato).
+
+        El pHash de cada frame (FR-004, FIX-phash) se calcula con
+        `compute_phash` sobre la misma imagen ya abierta del lote (sin
+        relectura de disco) y viaja en el FrameRecord para que el índice lo
+        persista. Es la misma función que usa el dedupe (PR-009); su valor
+        interno no es accesible desde aquí (ingest/dedupe.py queda fuera del
+        alcance de FIX-phash), así que el coste extra es solo el DCT, no una
+        nueva apertura del fichero.
         """
         records: list[FrameRecord] = []
         no_timestamp_ordinal = 0
@@ -281,10 +295,11 @@ class IndexingPipeline:
             try:
                 vectors = self._embeddings.embed_images(images)
                 self._check_embedding_shape(vectors, len(chunk))
+                phashes = [compute_phash(image) for image in images]
             finally:
                 for image in images:
                     image.close()
-            for frame, vector in zip(chunk, vectors, strict=True):
+            for frame, vector, phash in zip(chunk, vectors, phashes, strict=True):
                 frame_seq = _frame_seq(frame, no_timestamp_ordinal)
                 if frame.timestamp_ms is None:
                     no_timestamp_ordinal += 1
@@ -293,6 +308,7 @@ class IndexingPipeline:
                         frame_id=frame_id_for(video_id, frame_seq),
                         video_id=video_id,
                         timestamp_ms=frame.timestamp_ms,
+                        phash=phash,
                         embedding=[float(value) for value in vector],
                     )
                 )

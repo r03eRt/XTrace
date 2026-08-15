@@ -37,6 +37,7 @@ from PIL import Image
 
 from tests.fixtures import make_corrupt_video, make_test_video
 from xtrace_spike.embeddings.fake import FakeEmbeddingProvider
+from xtrace_spike.hashing.phash import compute_phash
 from xtrace_spike.indexing import (
     IndexingConfig,
     IndexingPipeline,
@@ -46,6 +47,8 @@ from xtrace_spike.indexing import (
     video_id_for,
 )
 from xtrace_spike.ingest.dataset import scan_dataset
+from xtrace_spike.ingest.dedupe import dedupe_frames
+from xtrace_spike.ingest.frames import extract_frames
 from xtrace_spike.repo import resolve_dsn
 from xtrace_spike.vectorstore.in_memory import InMemoryVectorStore
 
@@ -183,6 +186,52 @@ def test_index_dataset_indexes_all_videos_end_to_end(tmp_path: Path) -> None:
     hits = _run(store.ann_search(_query(), k=100))
     assert {h["video_id"] for h in hits} == {video_id_for(v.local_ref) for v in videos}
     assert all(h["timestamp_ms"] is not None for h in hits)
+
+
+# ---------------------------------------------------------------------------
+# FIX-phash · FR-004/FR-006 · el FrameRecord lleva el pHash REAL del frame
+# ---------------------------------------------------------------------------
+
+
+def test_pipeline_persists_real_phash_per_frame(tmp_path: Path) -> None:
+    """FIX-phash · FR-004/FR-006: el pHash almacenado es el real (no 0).
+
+    Se compara cada FrameRecord persistido contra el pHash calculado por
+    compute_phash sobre el frame, en una extracción + dedupe independiente
+    con la misma configuración del pipeline (mismos frame_ids estables,
+    FR-008): el índice conserva la firma perceptual real de cada frame
+    representativo.
+    """
+    _require_ffmpeg()
+    root = tmp_path / "dataset"
+    root.mkdir()
+    make_test_video(root / "a.mp4")
+    video = scan_dataset(root)[0]
+    video_id = video_id_for(video.local_ref)
+
+    expected: dict[str, int] = {}
+    with extract_frames(video, work_root=tmp_path / "work", frames_per_video=5) as extraction:
+        for frame in dedupe_frames(extraction.frames):
+            with Image.open(frame.path) as image:
+                expected[frame_id_for(video_id, frame.timestamp_ms)] = compute_phash(image)
+    assert expected, "el fixture debe producir al menos un frame representativo"
+
+    store = InMemoryVectorStore()
+    report = _run(
+        _pipeline(
+            store,
+            FakeEmbeddingProvider(dimension=_EMBEDDING_DIMENSION),
+            frames_per_video=5,
+        ).index_dataset([video], work_root=tmp_path / "work")
+    )
+
+    assert report.videos_indexed == 1
+    assert report.frames == len(expected)
+    for frame_id, real_phash in expected.items():
+        stored = _run(store.get_frame(frame_id))
+        assert stored is not None, f"frame {frame_id} no indexado"
+        assert stored["phash"] == real_phash
+        assert stored["phash"] != 0  # nunca el centinela 0
 
 
 # ---------------------------------------------------------------------------

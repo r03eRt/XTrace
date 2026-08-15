@@ -14,11 +14,18 @@ from xtrace_spike.vectorstore.base import FrameHit, FrameRecord, VectorStoreStat
 
 @dataclass(frozen=True, slots=True)
 class _StoredFrame:
-    """Frame indexado: identidad + embedding inmutable (tuple)."""
+    """Frame indexado: identidad + phash + embedding inmutable (tuple).
+
+    El pHash (FIX-phash · FR-004/FR-006) se conserva tal cual lo entrega el
+    contrato (entero sin signo de 64 bits, salida de compute_phash): el doble
+    in-memory no tiene columna física, así que no aplica la codificación con
+    signo de PgVectorStore.
+    """
 
     frame_id: str
     video_id: str
     timestamp_ms: int | None
+    phash: int
     embedding: tuple[float, ...]
 
 
@@ -39,7 +46,8 @@ class InMemoryVectorStore:
 
     Semántica documentada (paridad de contrato con `PgVectorStore`, PR-007):
     - `upsert_frames` es idempotente por `frame_id` (FR-008): re-upsert reemplaza,
-      no duplica. Devuelve el nº de registros procesados.
+      no duplica. Devuelve el nº de registros procesados. Conserva el pHash del
+      frame (FIX-phash · FR-004/FR-006): `get_frame` lo devuelve tal cual.
     - `delete_video` elimina los frames del vídeo y marca el vídeo como excluido
       (equivalente en memoria a la columna `videos.excluded`, FR-014): un re-upsert
       posterior no lo devuelve a los resultados con `exclude_videos=True`.
@@ -57,9 +65,28 @@ class InMemoryVectorStore:
                 frame_id=record["frame_id"],
                 video_id=record["video_id"],
                 timestamp_ms=record["timestamp_ms"],
+                phash=record["phash"],
                 embedding=tuple(record["embedding"]),
             )
         return len(frames)
+
+    async def get_frame(self, frame_id: str) -> FrameRecord | None:
+        """Devuelve el registro almacenado (incluye el pHash real, FIX-phash).
+
+        Acceso de inspeccion para tests y consumidores del indice (p. ej. el
+        ranking de PR-013): None si el frame no esta indexado. Sin impacto en
+        el contrato VectorStore (metodo propio de la implementacion).
+        """
+        frame = self._frames.get(frame_id)
+        if frame is None:
+            return None
+        return FrameRecord(
+            frame_id=frame.frame_id,
+            video_id=frame.video_id,
+            timestamp_ms=frame.timestamp_ms,
+            phash=frame.phash,
+            embedding=frame.embedding,
+        )
 
     async def ann_search(
         self,
