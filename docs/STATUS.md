@@ -37,9 +37,9 @@ Estado spec: **APPROVED** (2026-08-14). Documentación de diseño **completa**:
 objetivos, dependencias, `allowed_paths`, tests y criterios. Grafo de dependencias y plan
 de paralelización incluidos allí.
 
-- **PRs completados**: PR-001, PR-002, PR-003, PR-004, PR-005, PR-006, PR-007, PR-008, PR-009, PR-010 (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`; milestone 1 mergeado a `main`).
-- **PRs abiertos**: — (10 PRs en la rama de integración).
-- **Siguiente tarea**: PR-011 (CLI `index` + `stats`) → luego PR-012/013/014 (búsqueda) y PR-015 (benchmark dataset).
+- **PRs completados**: PR-001…PR-012 (12 PRs) + FIX-phash (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`; milestone 1 mergeado a `main`).
+- **PRs abiertos**: — (12 PRs + 1 fix en la rama de integración).
+- **Siguiente tarea**: PR-013 (ranking configurable + timestamp + exclusión) → PR-014 (CLI `search`/`exclude`).
 
 ## Primer PR recomendado y por qué
 
@@ -71,10 +71,9 @@ frames/pipeline (spec §101: *VALIDATE SEARCH FIRST, SCALE CRAWLING SECOND*).
 - Crawler, `SourceAdapter` de fuentes reales (erome, xvideos, xhamster, redgifs, pornhub),
   FastAPI, frontend Next.js, admin, compliance pública — features posteriores del MVP
   (ver `docs/PRODUCT_IDEA.md`).
-- **Persistir pHash en frames**: el contrato `FrameRecord` no transporta `phash`, así que
-  `PgVectorStore` inserta el centinela 0 (hallazgo PR-010). Necesario para FR-004/006/013
-  (evidencia pHash en ranking). Corregir el contrato (añadir `phash` a `FrameRecord`) **antes
-  de PR-013**.
+- ~~Persistir pHash en frames~~ → **RESUELTO (FIX-phash)**: `FrameRecord.phash` añadido;
+  InMemory+Pg persisten el pHash real con codec bigint↔uint64. Pendiente para PR-013:
+  exponer lectura del phash desde PgVectorStore (`get_frame` solo existe en InMemory).
 
 ## Plan de coste (objetivo)
 

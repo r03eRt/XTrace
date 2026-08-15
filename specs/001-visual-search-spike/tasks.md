@@ -194,6 +194,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 ## Fase 3 — US2: Búsqueda por imagen (P1) 🎯
 
 ### PR-012 · Pipeline de búsqueda por imagen
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P1 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: medio
 - **Spec/Req**: FR-010, FR-012 · contracts §1
 - **Objetivo**: `search/image_search.py`: normalizar→pHash→embed→`ann_search`→recuperar
