@@ -50,3 +50,6 @@ Thumbs.db
 
 # TypeScript incremental build info
 *.tsbuildinfo
+
+# Dataset local del operador (media propia; NUNCA commitear)
+dataset/

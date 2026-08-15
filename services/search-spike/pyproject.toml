@@ -12,6 +12,7 @@ dependencies = [
     "imagehash>=4.3.2",
     "numpy>=1.26,<2",
     "pillow>=12.3.0",
+    "psycopg[binary]>=3.3.4",
     "typer>=0.15,<1",
 ]
 

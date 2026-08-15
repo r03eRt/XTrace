@@ -25,11 +25,11 @@
 ## Fase actual
 
 **Fase 1 — Visual Search Spike** (`specs/001-visual-search-spike`).
-Estado spec: **APPROVED** (2026-08-14). Documentación de diseño **completa**:
+Estado spec: **IMPLEMENTED** (2026-08-15; spike validado con dataset real). Documentación de diseño **completa**:
 `plan.md`, `data-model.md`, `contracts/`, `quickstart.md`, `tasks.md`, ADR-0003..0008,
 `docs/architecture/visual-search-spike.md`.
 
-**Implementación en curso.** PR-001 + Ola A (PR-002/003/004/008) + Ola B (PR-005 SigLIP, PR-009 dedupe) implementados, revisados (APPROVED) y mergeados a `feature/001-visual-search-spike`; pendiente de CI + aprobación humana para `main`. Ola C pendiente.
+**Spike COMPLETADO.** PR-001…PR-018 (18 PRs) + FIX-phash implementados, revisados (APPROVED) y mergeados a `feature/001-visual-search-spike`. **Milestone 1 mergeado a `main`** (PR #1, CI verde). **US1/US2/US4 funcionales** (CLI: index/stats/search/exclude/benchmark). **Puerta SC-001/SC-002 SUPERADA con el dataset real del operador (43 vídeos).** Pendiente: merge del milestone final (PR-016..018) a `main` + speckit-analyze/converge.
 
 ## Roadmap de la fase
 
@@ -37,9 +37,9 @@ Estado spec: **APPROVED** (2026-08-14). Documentación de diseño **completa**:
 objetivos, dependencias, `allowed_paths`, tests y criterios. Grafo de dependencias y plan
 de paralelización incluidos allí.
 
-- **PRs completados**: PR-001, PR-002, PR-003, PR-004, PR-005, PR-008, PR-009 (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`).
-- **PRs abiertos**: — (7 PRs mergeados a la rama de integración; pendiente push/PR + CI + aprobación humana para `main`).
-- **Siguiente tarea**: Ola C — PR-006 (migración DB pgvector + pgTAP) → PR-007 (PgVectorStore).
+- **PRs completados**: PR-001…PR-018 (18 PRs) + FIX-phash (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`; milestone 1 mergeado a `main`).
+- **PRs abiertos**: — (18 PRs + 1 fix en la rama de integración; pendiente PR final a `main`).
+- **Siguiente**: speckit-analyze + converge → PR final (feature → main) → Fase 2 (Source SDK / crawler).
 
 ## Primer PR recomendado y por qué
 
@@ -49,15 +49,18 @@ riesgo y necesario antes de cualquier lógica de dominio.
 
 ## Puerta de decisión del spike
 
-El spike se valida si el benchmark cumple **SC-001: Top-5 ≥ 80%** (positivos) y **SC-002**
-(negativas), con latencia reportada (SC-003). Se evalúa en **PR-016** y se decide
-30 vs 60 frames/vídeo en **PR-017**. Si no se cumple → no escalar crawling; revisar modelo/
-frames/pipeline (spec §101: *VALIDATE SEARCH FIRST, SCALE CRAWLING SECOND*).
+**✅ MEDIDA Y SUPERADA (2026-08-15, dataset real del operador: 43 vídeos, SigLIP v1, pgvector/HNSW):**
+
+- **SC-001: Top-5 ≥ 80% → CUMPLE: 95,6%** (Top-1 = 93,9%) con umbral de match 0.8.
+- **SC-002: FPR ≤ 10% → CUMPLE: 0%** con umbral de match 0.8 (a 0.5-0.7 las negativas pasan; a 0.9 se pierde Top-5: 71,7%). **Umbral recomendado: 0.8.**
+- **SC-003: latencia < 3 s → OK** (p50/p95 reportados ≈ 0-2 ms de la consulta; el coste real está en el embedding ~0.25-0.4 s/imagen en CPU, throughput medido ~2.4-3.9 fps).
+- Conclusión: **VALIDATE SEARCH FIRST ✔ — se puede escalar el crawling** (decidir 30 vs 60 frames/vídeo en PR-017).
+- **Validación manual del operador (2026-08-15):** un frame real subido por el operador fue buscado y el sistema devolvió el vídeo correcto (`4920517166559660298.mp4`) con timestamp acertado (~1,69 s) y score 0.872.
 
 ## Blockers conocidos
 
-- Ninguno técnico. Requiere **dataset local** aportado por el operador para PR-008+ y
-  benchmark (fuera del control del agente).
+- ~~Dataset local~~ → **RESUELTO**: el operador aportó 43 vídeos en `dataset/` (gitignored,
+  nunca commitear).
 
 ## Decisiones pendientes
 
@@ -71,6 +74,9 @@ frames/pipeline (spec §101: *VALIDATE SEARCH FIRST, SCALE CRAWLING SECOND*).
 - Crawler, `SourceAdapter` de fuentes reales (erome, xvideos, xhamster, redgifs, pornhub),
   FastAPI, frontend Next.js, admin, compliance pública — features posteriores del MVP
   (ver `docs/PRODUCT_IDEA.md`).
+- ~~Persistir pHash en frames~~ → **RESUELTO (FIX-phash)**: `FrameRecord.phash` añadido;
+  InMemory+Pg persisten el pHash real con codec bigint↔uint64. Pendiente para PR-013:
+  exponer lectura del phash desde PgVectorStore (`get_frame` solo existe en InMemory).
 
 ## Plan de coste (objetivo)
 

@@ -102,6 +102,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: — (produce `D`, precede al esquema)
 
 ### PR-006 · Migración DB (pgvector + esquema + índices) + pgTAP
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P0 · **Complejidad**: M · **Rol**: data-specialist · **Riesgo**: medio
 - **Spec/Req**: FR-006/007/008/018, SC-005 · ADR-0004/0006 · `data-model.md`
 - **Objetivo**: Migración Supabase: `create extension vector`; tablas `videos`, `frames`,
@@ -115,6 +116,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: — (bloquea PgVectorStore)
 
 ### PR-007 · `PgVectorStore` (impl `VectorStore` sobre pgvector) + integration
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P0 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: medio
 - **Spec/Req**: FR-006, SC-003 · ADR-0004
 - **Objetivo**: Implementar `VectorStore` con pgvector/HNSW (coseno), upsert idempotente,
@@ -162,6 +164,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: —
 
 ### PR-010 · Pipeline de indexación (idempotente + cleanup)
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P1 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: medio
 - **Spec/Req**: FR-005/006/007/008/009, SC-005/006 · ADR-0006
 - **Objetivo**: `indexing/pipeline.py`: ingest→dedupe→embed(batch)→`VectorStore.upsert`,
@@ -191,6 +194,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 ## Fase 3 — US2: Búsqueda por imagen (P1) 🎯
 
 ### PR-012 · Pipeline de búsqueda por imagen
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P1 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: medio
 - **Spec/Req**: FR-010, FR-012 · contracts §1
 - **Objetivo**: `search/image_search.py`: normalizar→pHash→embed→`ann_search`→recuperar
@@ -214,6 +218,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: —
 
 ### PR-014 · CLI `search` + `exclude` + validación de entrada + borrado inmediato
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P1 · **Complejidad**: S · **Rol**: implementer · **Riesgo**: medio (SEC)
 - **Spec/Req**: FR-014, FR-017, FR-018, SEC/privacidad · ADR-0006/0008
 - **Objetivo**: Comandos `search` y `exclude`; validar MIME/firma/tamaño (≤10 MB), rutas
@@ -230,6 +235,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 ## Fase 4 — US4: Benchmark y decisión (P2)
 
 ### PR-015 · Generador del dataset de benchmark (~210 casos) + fixtures
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P2 · **Complejidad**: M · **Rol**: tester · **Riesgo**: medio
 - **Spec/Req**: FR-015, D3 · spec §70/§76
 - **Objetivo**: `benchmark/dataset.py`: a partir de vídeos indexados, generar variantes
@@ -243,6 +249,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: PR-012/013/014 (archivos distintos, tras PR-011)
 
 ### PR-016 · Runner de benchmark + CLI `benchmark`
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a feature)
 - **Prioridad**: P2 · **Complejidad**: M · **Rol**: tester · **Riesgo**: medio
 - **Spec/Req**: FR-016, SC-001/002/003/007 · contracts §1
 - **Objetivo**: `benchmark/runner.py`: ejecutar casos, calcular Top-1/5/10, FPR negativas,
@@ -257,6 +264,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: —
 
 ### PR-017 · Barrido frames/vídeo (10/30/60) + informe de decisión
+- **Estado**: DONE (informe medido con dataset real + recomendación 30 frames/vídeo; revisado y mergeado)
 - **Prioridad**: P2 · **Complejidad**: S · **Rol**: tester · **Riesgo**: bajo
 - **Spec/Req**: SC-001, hipótesis principal (spec §77) · plan §Risks
 - **Objetivo**: Ejecutar el benchmark con varias configuraciones de frames/vídeo y producir
@@ -273,6 +281,7 @@ hija `feature/001-visual-search-spike/PR-0NN-slug` y termina en un PR aislado).
 ## Fase 5 — Cierre
 
 ### PR-018 · Cierre: STATUS, quickstart validado y readiness de converge
+- **Estado**: DONE (quickstart actualizado a uv/comandos reales; spec 001 IMPLEMENTED)
 - **Prioridad**: P2 · **Complejidad**: S · **Rol**: docs · **Riesgo**: bajo
 - **Spec/Req**: cobertura completa spec 001
 - **Objetivo**: Actualizar `docs/STATUS.md`, validar `quickstart.md`, marcar spec 001

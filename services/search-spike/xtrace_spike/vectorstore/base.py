@@ -5,7 +5,9 @@ respetar. Los cambios a este contrato requieren actualizar spec/plan primero
 (ver `specs/001-visual-search-spike/contracts/README.md`).
 
 Invariantes (contracts §5): embeddings L2-normalizados y distancia coseno en el
-ANN (menor = más similar).
+ANN (menor = más similar). Cada `FrameRecord` transporta el pHash del frame
+(FR-004/FR-006, FIX-phash): la firma perceptual real del frame representativo
+se persiste en el índice junto a video_id, timestamp y embedding.
 """
 
 from collections.abc import Sequence
@@ -24,14 +26,20 @@ class FrameHit(TypedDict):
 class FrameRecord(TypedDict):
     """Registro mínimo que el VectorStore necesita para indexar un frame.
 
-    Los campos adicionales del modelo de datos (pHash, dimensiones, `source_kind`,
-    …) viven en la tabla `frames` (`data-model.md`) y quedan fuera de la
-    responsabilidad del VectorStore.
+    El pHash viaja en el contrato (FIX-phash · FR-004/FR-006): es la firma
+    perceptual de 64 bits del frame representativo (salida de
+    `hashing.phash.compute_phash`, PR-004), la misma que usa el dedupe
+    (FR-003). Ambas implementaciones lo persisten; `PgVectorStore` lo guarda
+    en la columna `frames.phash` (bigint) con una codificación con signo
+    (ver `phash_to_db` y `phash_from_db` en pgvector.py). Los campos
+    restantes del modelo de datos (dimensiones, `source_kind`, …) viven en
+    la tabla `frames` (`data-model.md`) y quedan fuera del contrato.
     """
 
     frame_id: str
     video_id: str
     timestamp_ms: int | None
+    phash: int
     embedding: Sequence[float]
 
 
