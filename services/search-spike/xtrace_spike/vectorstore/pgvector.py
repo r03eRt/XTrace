@@ -8,6 +8,11 @@ distancia coseno `<=>` (menor = más similar; invariante contracts §5).
 Paridad de comportamiento con `InMemoryVectorStore` (PR-003), documentada en la
 docstring de esta clase: misma semántica de contrato (upsert idempotente,
 `delete_video`, filtro `exclude_videos`, `stats`).
+
+El pHash real de cada frame (FR-004/FR-006, FIX-phash) se persiste en la
+columna `frames.phash` usando `phash_to_db` (bigint con signo; ver el
+codec al pie de este módulo). Quien lea el pHash almacenado debe decodificar
+con `phash_from_db` antes de compararlo con el pHash de una consulta.
 """
 
 from __future__ import annotations
@@ -22,11 +27,35 @@ from xtrace_spike.vectorstore.base import FrameHit, FrameRecord, VectorStoreStat
 #: PR-006 (`vector(768)`). Los embeddings del contrato son L2-normalizados.
 EMBEDDING_DIMENSION = 768
 
-#: `frames.phash` es NOT NULL pero el contrato FrameRecord (contracts §2) no lo
-#: transporta (base.py: el pHash "queda fuera de la responsabilidad del
-#: VectorStore"). Hasta que el orquestador decida cómo persistirlo (PR-010/013),
-#: se inserta este valor centinela; el matching near-exact usa el pHash real.
-_PHASH_PLACEHOLDER = 0
+
+def phash_to_db(phash: int) -> int:
+    """Codifica un pHash de 64 bits sin signo para la columna frames.phash.
+
+    La columna es bigint (con signo, migración PR-006) pero el pHash del
+    contrato (FR-004) es un entero sin signo de 64 bits [0, 2^64): el bit 63
+    suele estar a 1 (coeficiente DC del DCT de imagehash), por lo que el valor
+    crudo desborda bigint ("bigint out of range"). Se persiste la
+    reinterpretación con signo (complemento a dos, biyección determinista):
+    phash_to_db(0) = 0 y phash_to_db(2^64 - 1) = -1.
+
+    Raises:
+        ValueError: si phash no está en [0, 2^64) (no es un pHash 64-bit).
+    """
+    if not 0 <= phash < 1 << 64:
+        raise ValueError(f"pHash fuera de rango [0, 2^64): {phash}")
+    return phash if phash < 1 << 63 else phash - (1 << 64)
+
+
+def phash_from_db(value: int) -> int:
+    """Decodifica el frames.phash almacenado (bigint con signo) a pHash real.
+
+    Inversa de phash_to_db: devuelve el entero sin signo de 64 bits (salida
+    de compute_phash). Los consumidores del pHash persistido (p. ej. la
+    evidencia pHash del ranking de PR-013) DEBEN aplicar esta función antes
+    de comparar con el pHash de una consulta.
+    """
+    return value if value >= 0 else value + (1 << 64)
+
 
 #: Offset del `frame_seq` para frames sin timestamp: sus ordinales de lote viven
 #: en [1e9, 2^31) mientras que los frames con timestamp usan
@@ -54,11 +83,14 @@ class PgVectorStore:
     """VectorStore sobre pgvector/HNSW (coseno) en Supabase (PR-007).
 
     Semántica documentada (paridad de contrato con `InMemoryVectorStore`):
-    - `upsert_frames` es idempotente (FR-008/SC-005): la clave de conflicto es
-      UNIQUE(video_id, frame_seq) — `frame_seq = timestamp_ms` cuando existe o
+    - upsert_frames es idempotente (FR-008/SC-005): la clave de conflicto es
+      UNIQUE(video_id, frame_seq) — frame_seq = timestamp_ms cuando existe o
       un ordinal estable del lote (offset 1e9) si no — y el re-upsert reemplaza,
       no duplica. Los vídeos referenciados se crean si faltan (FK; FR-007 vía
-      `PgRepo.ensure_video`). Devuelve el nº de registros procesados.
+      PgRepo.ensure_video). Devuelve el nº de registros procesados. Persiste el
+      pHash real del frame (FIX-phash · FR-004/FR-006) codificado con signo
+      (phash_to_db): la columna frames.phash queda con el pHash real del frame
+      (no 0), salvo que el registro lo transporte como 0 explícitamente.
     - `delete_video` elimina los frames del vídeo y marca el vídeo como excluido
       (`videos.excluded`, FR-014): un re-upsert posterior no lo devuelve a los
       resultados con `exclude_videos=True`.
@@ -92,7 +124,7 @@ class PgVectorStore:
                     video_uuid,
                     timestamp_ms,
                     frame_seq,
-                    _PHASH_PLACEHOLDER,
+                    phash_to_db(record["phash"]),
                     _embedding_literal(record["embedding"]),
                 )
             )

@@ -22,7 +22,12 @@ import pytest
 from xtrace_spike.repo import resolve_dsn
 from xtrace_spike.vectorstore.base import FrameRecord, VectorStore
 from xtrace_spike.vectorstore.in_memory import InMemoryVectorStore
-from xtrace_spike.vectorstore.pgvector import EMBEDDING_DIMENSION, PgVectorStore
+from xtrace_spike.vectorstore.pgvector import (
+    EMBEDDING_DIMENSION,
+    PgVectorStore,
+    phash_from_db,
+    phash_to_db,
+)
 
 D = EMBEDDING_DIMENSION
 
@@ -79,11 +84,18 @@ def _record(
     video_id: str,
     timestamp_ms: int | None,
     embedding: list[float],
+    phash: int | None = None,
 ) -> FrameRecord:
+    if phash is None:
+        # pHash determinista derivado del frame_id (FIX-phash): el hex del
+        # UUID activa el bit 63, de modo que TODOS los upserts de estos
+        # tests ejercitan la codificación con signo del bigint.
+        phash = int(frame_id.replace("-", ""), 16) & ((1 << 64) - 1)
     return FrameRecord(
         frame_id=frame_id,
         video_id=video_id,
         timestamp_ms=timestamp_ms,
+        phash=phash,
         embedding=embedding,
     )
 
@@ -127,6 +139,39 @@ def test_ann_search_limits_top_k() -> None:
     assert len(_run(store.ann_search(_unit(0), k=3))) == 3
     assert _run(store.ann_search(_unit(0), k=0)) == []
     assert _run(store.ann_search(_unit(0), k=-1)) == []
+
+
+# ---------------------------------------------------------------------------
+# FIX-phash · FR-004/FR-006 · persistencia del pHash real del frame
+# ---------------------------------------------------------------------------
+
+
+def test_upsert_persists_real_phash() -> None:
+    """frames.phash queda con el pHash REAL del frame (no centinela 0).
+
+    Cubre el rango completo [0, 2^64): valores pequeños y pHash con bit 63
+    (los reales de imagehash) que desbordarían bigint sin la codificación
+    con signo (phash_to_db). El round-trip phash_from_db(columna) debe
+    devolver exactamente el pHash del contrato.
+    """
+    store = PgVectorStore()
+    v1 = _uuid(1)
+    phashes = [0, 42, (1 << 63) - 1, 1 << 63, (1 << 64) - 1]
+    records = [
+        _record(_uuid(10 + i), v1, i * 1000, _unit(0), phash=phash)
+        for i, phash in enumerate(phashes)
+    ]
+    assert _run(store.upsert_frames(records)) == len(records)
+
+    with psycopg.connect(resolve_dsn(), autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("select frame_seq, phash from public.frames order by frame_seq")
+            rows = cur.fetchall()
+    assert [phash_from_db(row[1]) for row in rows] == phashes
+    # ningún frame con pHash real distinto de 0 queda almacenado como 0
+    assert [row[1] for row in rows if row[1] != 0] == [
+        phash_to_db(phash) for phash in phashes if phash != 0
+    ]
 
 
 # ---------------------------------------------------------------------------
