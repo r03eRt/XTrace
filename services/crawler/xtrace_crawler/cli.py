@@ -17,7 +17,10 @@ Comandos Typer (`xtrace-crawler`):
   Ctrl+C/SIGTERM (logs a stderr).
 - `stats [--json]` — estadísticas básicas del crawler (FR-014): jobs por
   estado/fuente, vídeos por estado y errores recientes con causa
-  (`CrawlerRepo.stats`).
+  (`CrawlerRepo.stats`). Desde PR-035 incluye la sección `rate_limits` por
+  fuente (requests/rate_limit_waits/total_wait_ms acumulados del `RateLimiter`,
+  SC-005 · NFR-004) aportada por el provider del contexto (en el proceso que
+  ejecutó el pipeline); `run-worker` deja además el resumen en logs.
 - `check-availability --source <name> [--limit N]` — encola jobs
   `CHECK_AVAILABILITY` para los vídeos web de la fuente (FR-013) y devuelve
   `{source, limit, enqueued, job_ids}`.
@@ -63,6 +66,7 @@ from xtrace_crawler.adapters.base import SourceAdapter
 from xtrace_crawler.adapters.mock import MockAdapter
 from xtrace_crawler.adapters.registry import AdapterNotEnabledError, AdapterRegistry
 from xtrace_crawler.config import Settings
+from xtrace_crawler.crawling.ratelimit import RateLimiter
 from xtrace_crawler.jobs.repo import JobsRepo
 from xtrace_crawler.jobs.types import Job, JobType
 from xtrace_crawler.jobs.worker import JobWorker
@@ -71,8 +75,10 @@ from xtrace_crawler.repo import (
     DEFAULT_RECENT_ERRORS_LIMIT,
     CrawlerRepo,
     CrawlerStats,
+    RateLimitStatsRecord,
     SourceRecord,
     parse_uuid,
+    rate_limit_stats_record,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,7 +102,10 @@ class CliRepoProtocol(CrawlerRepoProtocol, Protocol):
     async def list_sources(self) -> list[SourceRecord]: ...
 
     async def stats(
-        self, *, recent_errors_limit: int = DEFAULT_RECENT_ERRORS_LIMIT
+        self,
+        *,
+        recent_errors_limit: int = DEFAULT_RECENT_ERRORS_LIMIT,
+        rate_limits: dict[str, RateLimitStatsRecord] | None = None,
     ) -> CrawlerStats: ...
 
 
@@ -141,6 +150,12 @@ class CliContext:
 
     `worker`/`store`/`embeddings` permiten inyectar el worker (tests) o el
     índice/proveedor reales (p. ej. SigLIP para ejecución local, PR-030).
+
+    `limiter_factory`/`rate_limits_provider` (PR-035 · SC-005 · NFR-004):
+    el factory registra en un registro compartido los `RateLimiter` que crea el
+    pipeline y el provider expone su contabilidad acumulada como sección
+    `rate_limits` de `stats` (y como resumen en logs del `run-worker`); en
+    tests se inyectan fakes acelerados.
     """
 
     settings: Settings
@@ -151,6 +166,8 @@ class CliContext:
     worker: JobWorker | None = None
     store: VectorStore | None = None
     embeddings: EmbeddingProviderProtocol | None = None
+    limiter_factory: Callable[[SourceAdapter], RateLimiter] | None = None
+    rate_limits_provider: Callable[[], dict[str, RateLimitStatsRecord]] | None = None
 
 
 app = typer.Typer(
@@ -251,9 +268,10 @@ def stats_cmd(
         bool, typer.Option("--json", help="Salida JSON estable (contracts §5)")
     ] = False,
 ) -> None:
-    """Estadísticas del crawler: jobs por estado/fuente, vídeos y errores recientes (FR-014)."""
+    """Estadísticas del crawler: jobs por estado/fuente, vídeos, errores recientes y
+    contabilidad de rate limits por fuente (FR-014 · SC-005 · NFR-004)."""
     deps = _deps(ctx)
-    stats = asyncio.run(deps.repo.stats())
+    stats = asyncio.run(deps.repo.stats(rate_limits=_rate_limits(deps)))
     if json_output:
         typer.echo(json.dumps(_stats_json(stats), sort_keys=True, ensure_ascii=False))
     else:
@@ -354,6 +372,7 @@ async def _run_worker(deps: CliContext, *, concurrency: int | None, once: bool) 
     )
     if once:
         processed = await worker.run_once()
+        _log_rate_limits(deps)
         return {"processed": processed}
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -401,6 +420,7 @@ async def _build_worker(deps: CliContext, *, concurrency: int | None) -> JobWork
         store=deps.store,
         embeddings=deps.embeddings,
         settings=deps.settings,
+        limiter_factory=deps.limiter_factory,
     )
     worker = JobWorker(
         deps.jobs,
@@ -462,7 +482,9 @@ def _stats_json(stats: CrawlerStats) -> dict[str, Any]:
     """Vista JSON estable de `CrawlerStats` (FR-014 · contracts §5).
 
     La clave de fuente `None` de `jobs_by_source` se normaliza a `"null"` para
-    mantener un JSON estable (json.dumps ya la serializaría así).
+    mantener un JSON estable (json.dumps ya la serializaría así). Desde PR-035
+    se añade `rate_limits` (contabilidad del `RateLimiter` por fuente, SC-005 ·
+    NFR-004) como sección NUEVA: los campos existentes permanecen intactos.
     """
     return {
         "jobs_by_status": dict(sorted(stats.jobs_by_status.items())),
@@ -482,6 +504,10 @@ def _stats_json(stats: CrawlerStats) -> dict[str, Any]:
             }
             for error in stats.recent_errors
         ],
+        "rate_limits": {
+            name: record.model_dump(mode="json")
+            for name, record in sorted(stats.rate_limits.items())
+        },
     }
 
 
@@ -509,6 +535,15 @@ def _print_stats_human(stats: CrawlerStats) -> None:
         )
     )
     typer.echo("vídeos por estado: " + _counts_human(stats.videos_by_status))
+    if stats.rate_limits:
+        typer.echo(
+            "rate limits por fuente: "
+            + " ".join(
+                f"{name}=requests={record.requests} waits={record.rate_limit_waits} "
+                f"wait_ms={record.total_wait_ms}"
+                for name, record in sorted(stats.rate_limits.items())
+            )
+        )
     if stats.recent_errors:
         typer.echo("errores recientes:")
         for error in stats.recent_errors:
@@ -574,12 +609,68 @@ def _default_context() -> CliContext:
     """Contexto por defecto: repos reales + registry con mock/xvideos + env (D5)."""
     settings = Settings()
     repo = CrawlerRepo()
+    shared_limiters: dict[str, RateLimiter] = {}
+
+    def limiter_factory(adapter: SourceAdapter) -> RateLimiter:
+        """Limiter por fuente compartido en el proceso (PR-035 · SC-005).
+
+        El pipeline cachea su limiter por fuente (PR-030); este factory además
+        lo registra en `shared_limiters` para que `stats` (mismo proceso) y el
+        resumen del `run-worker` expongan la contabilidad acumulada.
+        """
+        name = adapter.manifest.source
+        limiter = shared_limiters.get(name)
+        if limiter is None:
+            spec = settings.rate_limit_for(name, adapter.manifest.rate_limit)
+            limiter = RateLimiter(spec, source=name)
+            shared_limiters[name] = limiter
+        return limiter
+
+    def rate_limits_provider() -> dict[str, RateLimitStatsRecord]:
+        return {
+            name: rate_limit_stats_record(limiter.stats)
+            for name, limiter in sorted(shared_limiters.items())
+        }
+
     return CliContext(
         settings=settings,
         registry=_default_registry(),
         repo=repo,
         jobs=JobsRepo(),
         list_source_videos=_list_source_videos_for(repo),
+        limiter_factory=limiter_factory,
+        rate_limits_provider=rate_limits_provider,
+    )
+
+
+def _rate_limits(deps: CliContext) -> dict[str, RateLimitStatsRecord]:
+    """Contabilidad del rate limiter por fuente del contexto (PR-035 · SC-005).
+
+    `rate_limits_provider` inyectable (tests) o el registro compartido del
+    contexto por defecto; sin provider la sección queda vacía (JSON estable).
+    """
+    if deps.rate_limits_provider is None:
+        return {}
+    return deps.rate_limits_provider()
+
+
+def _log_rate_limits(deps: CliContext) -> None:
+    """Resumen de respeto de límites por fuente al final de la pasada (SC-005 · NFR-004).
+
+    La contabilidad del limiter vive en memoria del proceso que ejecutó el
+    pipeline: `stats` en otro proceso no la ve, así que el `run-worker` deja la
+    evidencia en logs (plan §Observability: esperas medibles/loggeadas).
+    """
+    rate_limits = _rate_limits(deps)
+    if not rate_limits:
+        return
+    logger.info(
+        "rate limits por fuente: %s",
+        ", ".join(
+            f"{name}=requests={record.requests} waits={record.rate_limit_waits} "
+            f"wait_ms={record.total_wait_ms}"
+            for name, record in sorted(rate_limits.items())
+        ),
     )
 
 

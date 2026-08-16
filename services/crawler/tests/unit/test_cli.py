@@ -24,6 +24,7 @@ Trazabilidad (constitución §3): cada test indica el requisito que valida.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
@@ -45,6 +46,7 @@ from xtrace_crawler.repo import (
     DEFAULT_RECENT_ERRORS_LIMIT,
     CrawlerStats,
     JobErrorRecord,
+    RateLimitStatsRecord,
     SourceRecord,
     VideoRecord,
     VideoStatus,
@@ -184,13 +186,19 @@ class FakeRepo:
         return False
 
     async def stats(
-        self, *, recent_errors_limit: int = DEFAULT_RECENT_ERRORS_LIMIT
+        self,
+        *,
+        recent_errors_limit: int = DEFAULT_RECENT_ERRORS_LIMIT,
+        rate_limits: dict[str, RateLimitStatsRecord] | None = None,
     ) -> CrawlerStats:
+        """`stats` con la sección `rate_limits` (PR-035): el repo la incrusta tal cual."""
         if self.stats_result is None:
-            return CrawlerStats(
+            base = CrawlerStats(
                 jobs_by_status={}, jobs_by_source={}, videos_by_status={}, recent_errors=[]
             )
-        return self.stats_result
+        else:
+            base = self.stats_result
+        return base.model_copy(update={"rate_limits": rate_limits or {}})
 
 
 class FakeJobs:
@@ -665,14 +673,88 @@ def test_stats_json_is_stable_between_invocations() -> None:
 
 
 def test_stats_empty_counts() -> None:
-    """`stats` sin actividad → conteos vacíos y `[]` de errores (JSON válido)."""
+    """`stats` sin actividad → conteos vacíos, `[]` de errores y `rate_limits` vacío."""
     data = _stdout_json(_invoke(["stats", "--json"], _base_context(repo=FakeRepo())))
     assert data == {
         "jobs_by_status": {},
         "jobs_by_source": {},
         "videos_by_status": {},
         "recent_errors": [],
+        "rate_limits": {},
     }
+
+
+def test_stats_json_includes_rate_limits_section() -> None:
+    """PR-035 · SC-005/NFR-004: `stats --json` incluye `rate_limits` por fuente.
+
+    Las métricas acumuladas del `RateLimiter` (requests/rate_limit_waits/
+    total_wait_ms) llegan al JSON vía el provider del contexto; los campos
+    existentes de FR-014 permanecen intactos (compatibilidad de JSON, contracts §5).
+    """
+    repo = FakeRepo(stats=_stats_fixture())
+    context = _base_context(repo=repo)
+    context.rate_limits_provider = lambda: {
+        "mock": RateLimitStatsRecord(requests=11, rate_limit_waits=10, total_wait_ms=500)
+    }
+    data = _stdout_json(_invoke(["stats", "--json"], context))
+    assert data["rate_limits"] == {
+        "mock": {"requests": 11, "rate_limit_waits": 10, "total_wait_ms": 500}
+    }
+    # Campos existentes intactos (FR-014 · contracts §5).
+    assert data["jobs_by_status"] == {"done": 5, "pending": 2}
+    assert data["jobs_by_source"] == {"mock": 6, "null": 1}
+    assert data["videos_by_status"] == {"discovered": 3, "indexed": 3}
+    assert data["recent_errors"][0]["error"] == "MockAdapterTimeoutError: timeout inyectado"
+
+
+def test_stats_human_shows_rate_limits() -> None:
+    """`stats` (sin --json) muestra la contabilidad de rate limits por fuente (PR-035)."""
+    repo = FakeRepo(stats=_stats_fixture())
+    context = _base_context(repo=repo)
+    context.rate_limits_provider = lambda: {
+        "mock": RateLimitStatsRecord(requests=11, rate_limit_waits=10, total_wait_ms=500)
+    }
+    result = _invoke(["stats"], context)
+    assert result.exit_code == 0
+    assert "rate limits por fuente: mock=requests=11 waits=10 wait_ms=500" in result.stdout
+
+
+def test_run_worker_once_logs_stage_durations(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR-035 · plan §Observability: logs del pipeline con duración por etapa (caplog).
+
+    Con el cableado real (pipeline PR-030 + registry + fakes, sin BD/red —
+    NFR-003), la pasada registra `etapa=discover|metadata|assets|embed` con
+    `duration_ms` y el worker `intento N/M` por job (PR-035).
+    """
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MIN_INTERVAL_MS", "0")
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MAX_RPS", "1000")
+    repo = FakeRepo(sources=[_mock_source_record(enabled=True)])
+    jobs = FakeJobs(
+        jobs=[
+            _make_job(
+                JobType.DISCOVER,
+                payload={"source": "mock", "cursor": None, "limit": 2, "mode": "backfill"},
+            )
+        ]
+    )
+    registry = _registry_with_mock(catalog_size=2)
+    store = FakeVectorStore()
+    with caplog.at_level(logging.INFO):
+        result = _invoke(
+            ["run-worker", "--once"],
+            _base_context(
+                repo=repo, jobs=jobs, registry=registry, settings=Settings(), store=store
+            ),
+        )
+    assert _stdout_json(result) == {"processed": 5}  # 1 DISCOVER + 2 FETCH_METADATA + 2 INDEX_VIDEO
+    assert "etapa=discover" in caplog.text
+    assert "etapa=metadata" in caplog.text
+    assert "etapa=assets" in caplog.text
+    assert "etapa=embed" in caplog.text
+    assert "duration_ms=" in caplog.text
+    assert "intento 1/3" in caplog.text  # worker: intento actual/max por job
 
 
 # ---------------------------------------------------------------------------

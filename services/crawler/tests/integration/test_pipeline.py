@@ -72,7 +72,7 @@ from xtrace_crawler.jobs.repo import JobsRepo
 from xtrace_crawler.jobs.types import JobStatus, JobType
 from xtrace_crawler.jobs.worker import JobWorker
 from xtrace_crawler.pipeline import CrawlerPipeline
-from xtrace_crawler.repo import CrawlerRepo, resolve_dsn
+from xtrace_crawler.repo import CrawlerRepo, RateLimitStatsRecord, resolve_dsn
 
 #: Duración de los previews sintéticos (FFmpeg lavfi, tests sin red).
 _PREVIEW_DURATION_S = 2.0
@@ -542,6 +542,44 @@ def test_backfill_respects_rate_limiter() -> None:
     assert limiter.stats.waits == 10  # la primera request es inmediata
     assert limiter.stats.total_wait_seconds == pytest.approx(10 * 0.05)
     assert sleeper.sleeps == [0.05] * 10
+    assert _leftover_asset_dirs() == []
+
+
+def test_stats_rate_limits_section_after_backfill() -> None:
+    """PR-035 · SC-005/NFR-004: `stats` con sección `rate_limits` coherente tras procesar jobs.
+
+    Con el limiter falso acelerado (reloj/sleeper fakes, determinista), el
+    BACKFILL de 3 vídeos hace exactamente 11 requests con 10 esperas de 50 ms:
+    el pipeline agrega la contabilidad por fuente
+    (`CrawlerPipeline.rate_limit_stats`) y `repo.stats(rate_limits=...)` la
+    expone (requests/rate_limit_waits/total_wait_ms) junto a las secciones
+    existentes de FR-014 — 0 violaciones, esperas medibles (SC-005 · NFR-004).
+    """
+    clock = _FakeClock()
+    sleeper = _FakeSleeper(clock)
+    limiter = RateLimiter(
+        RateLimitSpec(min_interval_ms=50, max_rps=1000.0),
+        clock=clock,
+        sleeper=sleeper,
+        jitter_factor=0.0,
+        source="mock",
+    )
+    harness = MockHarness(seed=42, catalog_size=3)
+    repo = CrawlerRepo()
+    pipeline, worker, jobs = _build(
+        harness.adapter,
+        repo=repo,
+        client=_client(),
+        limiter_factory=lambda _adapter: limiter,
+        worker_id="it-pipeline-stats-rl",
+    )
+    _run_backfill(pipeline, worker, jobs, limit=2)
+
+    stats = _run(repo.stats(rate_limits=pipeline.rate_limit_stats()))
+    assert stats.rate_limits == {
+        "mock": RateLimitStatsRecord(requests=11, rate_limit_waits=10, total_wait_ms=500)
+    }
+    assert stats.jobs_by_status == {"done": 8}  # secciones existentes intactas (FR-014)
     assert _leftover_asset_dirs() == []
 
 

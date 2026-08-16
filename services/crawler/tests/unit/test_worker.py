@@ -24,6 +24,7 @@ Trazabilidad (constitución §3): cada test indica el requisito que valida.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -378,6 +379,49 @@ def test_unexpected_exception_is_contained_and_retried() -> None:
         assert updated.error == "RuntimeError: html structure changed"
 
     _run(_scenario())
+
+
+# --- Logs estructurados: intento/backoff/duración (PR-035 · plan §Observability) -------
+
+
+def test_worker_logs_attempt_and_backoff_delay(caplog: pytest.LogCaptureFixture) -> None:
+    """PR-035 · plan §Observability: logs por job con intento actual/max y delay aplicado.
+
+    Un fallo transitorio registra `intento N/M` (actual/máximo) al reclamar y el
+    **backoff aplicado** (`delay_ms`) calculado del `not_before` que el repo
+    programó con `jobs/backoff.py` (FR-008 · SC-004): el worker no duplica la
+    política de reintentos, la lee del job devuelto por `fail`.
+    """
+
+    async def _scenario() -> None:
+        job = _make_job(JobType.DISCOVER)
+        repo = FakeJobsRepo(jobs=[job])
+        worker = JobWorker(repo, concurrency=1, worker_id="w-logs")
+        worker.register_handler(JobType.DISCOVER, _RecordingHandler(_raise_transient))
+        assert await worker.run_once() == 1
+
+    with caplog.at_level(logging.INFO):
+        _run(_scenario())
+    assert "intento 1/3" in caplog.text
+    assert "backoff" in caplog.text
+    assert "delay_ms=" in caplog.text
+
+
+def test_worker_logs_job_duration_on_success(caplog: pytest.LogCaptureFixture) -> None:
+    """PR-035 · plan §Observability: el completado registra la duración del job (duracion_ms)."""
+
+    async def _scenario() -> None:
+        job = _make_job(JobType.FETCH_METADATA)
+        repo = FakeJobsRepo(jobs=[job])
+        worker = JobWorker(repo, concurrency=1, worker_id="w-logs-ok")
+        worker.register_handler(JobType.FETCH_METADATA, _RecordingHandler(_noop))
+        assert await worker.run_once() == 1
+
+    with caplog.at_level(logging.INFO):
+        _run(_scenario())
+    assert "intento 1/3" in caplog.text
+    assert "completado" in caplog.text
+    assert "duracion_ms=" in caplog.text
 
 
 # --- Lease reset (ADR-0010 · crash de worker) ----------------------------------------
