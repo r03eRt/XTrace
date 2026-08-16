@@ -27,7 +27,10 @@ class AdapterManifest(BaseModel):        # frozen + strict
 class SourceAdapter(Protocol):
     manifest: AdapterManifest
     async def discover(self, *, cursor: str | None, limit: int) -> DiscoverPage: ...
-    async def get_video(self, external_id: str) -> VideoSource | None: ...
+    # PR-045 (enmienda): `page_url` OPCIONAL (kwarg, default None) — href
+    # COMPLETO del listado (p. ej. /video.<id>/<num>/<num>/<slug>) para fuentes
+    # cuyo URL canónico exige el slug; None → la fuente reconstruye como antes.
+    async def get_video(self, external_id: str, *, page_url: str | None = None) -> VideoSource | None: ...
     async def get_visual_assets(self, video: VideoSource) -> list[VisualAsset]: ...
     async def check_availability(self, video: VideoSource) -> VideoAvailability: ...
     # OPCIONAL (PR-034, flujo offline FR-003/SC-001): si existe y devuelve bytes,
@@ -37,7 +40,10 @@ class SourceAdapter(Protocol):
     async def fetch_asset_bytes(self, url: str) -> bytes | None: ...
 ```
 
-- `DiscoverPage`: `external_ids: list[str]`, `next_cursor: str | None`.
+- `DiscoverPage`: `external_ids: list[str]`, `next_cursor: str | None`,
+  `page_urls: dict[str, str]` (**PR-045**, OPCIONAL con default `{}` →
+  retrocompatible: external_id → **href completo del listado**, p. ej.
+  `/video.<id>/<num>/<num>/<slug-titulo>`; lo consume `get_video(page_url=...)`).
 - `VideoAvailability`: `available | unavailable | removed` (con razón opcional).
 - Regla de oro: el **core nunca ve HTML/JSON de la web**; solo `VideoSource`/`VisualAsset`.
 - `registry.py` no permite instanciar/habilitar un adapter real sin `robots_reviewed` y
@@ -60,6 +66,18 @@ class SourceAdapter(Protocol):
 - **Decompression bomb (PR-036)**: toda imagen descargada se abre con un límite estricto
   de píxeles (`XTRACE_CRAWLER_MAX_IMAGE_PIXELS`, default 50 MP; verificado por header
   antes de decodificar) → `ImageTooManyPixelsError` tipado y degradación por asset.
+
+> **Enmienda PR-045 (3a validación real, 2026-08-16)**: `DiscoverPage.page_urls`
+> (opcional, default `{}`) + `get_video(page_url: str | None = None)` (kwarg
+> opcional). Motivación: el discover real de xvideos parsea los IDs de la home,
+> pero la página de vídeo reconstruida como `https://www.xvideos.com/video.<id>/`
+> **sin slug devuelve 404 en todos**; el href real del listado es
+> `/video.<id>/<num>/<num>/<slug-titulo>` y es la ÚNICA URL que la fuente acepta.
+> Durante DISCOVER el pipeline reenvía `page.page_urls[external_id]` a
+> `get_video`; `None` (p. ej. FETCH_METADATA, fuentes sin page_urls) → la fuente
+> reconstruye su URL como antes. Retrocompatible: los llamadores/adapters
+> existentes no cambian su comportamiento (el `MockAdapter` acepta el kwarg y lo
+> ignora; `page_urls` vacío por defecto).
 
 ## 2. Entidad normalizada `VideoSource` — FR-002
 

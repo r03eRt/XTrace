@@ -342,8 +342,18 @@ class MockAdapter:
             next_cursor=str(end) if end < len(self._ids) else None,
         )
 
-    async def get_video(self, external_id: str) -> VideoSource | None:
-        """Metadatos del vídeo del catálogo; `None` si no existe (contracts §1)."""
+    async def get_video(
+        self, external_id: str, *, page_url: str | None = None
+    ) -> VideoSource | None:
+        """Metadatos del vídeo del catálogo; `None` si no existe (contracts §1).
+
+        `page_url` (PR-045, kwarg opcional del contrato): el mock lo **acepta
+        por compatibilidad de firma y lo ignora** — el catálogo sintético ya
+        construye sus URLs canónicas (`MOCK_BASE_URL/videos/<id>`), no hay
+        slug de listado que resolver. El pipeline (PR-045) lo pasa durante
+        DISCOVER con `page.page_urls.get(external_id)` → `None` en el mock
+        (no rellena `page_urls`).
+        """
         self._raise_video_fault(external_id, "get_video", self.faults.get_video)
         return self._catalog.get(external_id)
 

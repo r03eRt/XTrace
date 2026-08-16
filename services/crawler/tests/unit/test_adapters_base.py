@@ -298,6 +298,23 @@ def test_discover_page_fields_and_optional_cursor() -> None:
     assert DiscoverPage(external_ids=[]).next_cursor is None
 
 
+def test_discover_page_page_urls_opcional_default_vacio() -> None:
+    """PR-045: `page_urls` es OPCIONAL (dict vacío por defecto) — retrocompatible.
+
+    Enmienda del contrato (hallazgo de la 3a validación real): el campo mapea
+    external_id → href COMPLETO del listado (p. ej. `/video.<id>/<num>/<num>/
+    <slug>`) para fuentes cuyo URL canónico exige el slug. Default `{}`: las
+    fuentes/l lamadores previos no cambian su comportamiento.
+    """
+    page = DiscoverPage(external_ids=["vid-1", "vid-2"])
+    assert page.page_urls == {}
+    filled = DiscoverPage(
+        external_ids=["vid-1"],
+        page_urls={"vid-1": "/video.x/123/456/slug-ejemplo"},
+    )
+    assert filled.page_urls == {"vid-1": "/video.x/123/456/slug-ejemplo"}
+
+
 def test_video_availability_enum_values() -> None:
     """VideoAvailability: available | unavailable | removed (FR-001, contracts §1)."""
     assert VideoAvailability.AVAILABLE == "available"
@@ -365,7 +382,10 @@ class _FakeAdapter:
     async def discover(self, *, cursor: str | None, limit: int) -> DiscoverPage:
         return DiscoverPage(external_ids=[], next_cursor=None)
 
-    async def get_video(self, external_id: str) -> VideoSource | None:
+    # PR-045: `page_url` opcional (kwarg de contrato, enmienda documentada en §1).
+    async def get_video(
+        self, external_id: str, *, page_url: str | None = None
+    ) -> VideoSource | None:
         return None
 
     async def get_visual_assets(self, video: VideoSource) -> list[VisualAsset]:
@@ -387,7 +407,9 @@ def test_source_adapter_requires_manifest_attribute() -> None:
         async def discover(self, *, cursor: str | None, limit: int) -> DiscoverPage:
             return DiscoverPage(external_ids=[])
 
-        async def get_video(self, external_id: str) -> VideoSource | None:
+        async def get_video(
+            self, external_id: str, *, page_url: str | None = None
+        ) -> VideoSource | None:
             return None
 
         async def get_visual_assets(self, video: VideoSource) -> list[VisualAsset]:

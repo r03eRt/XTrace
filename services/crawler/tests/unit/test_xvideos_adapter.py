@@ -93,6 +93,21 @@ _LOOP_CURSOR_HTML = (
     "</body></html>"
 )
 
+#: Página de vídeo del `video.synth00013` (PR-045): se sirve en la ruta
+#: `/video.synth00013/...` del transporte mock — la URL COMPLETA con slug que
+#: `get_video(page_url=...)` debe pedir (sintética, SEC-004).
+_SYNTH13_VIDEO_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta property="og:title" content="Titulo de ejemplo 13" />
+  <meta property="og:url"
+        content="https://www.xvideos.invalid/video.synth00013/titulo-de-ejemplo-13" />
+</head>
+<body>
+  <h2 class="page-title">Titulo de ejemplo 13</h2>
+</body>
+</html>"""
+
 
 def _fixture(name: str) -> str:
     """Lee un fixture sintético de `tests/fixtures/xvideos/` (SEC-004)."""
@@ -110,6 +125,7 @@ def _fixture_handler() -> Callable[[httpx.Request], httpx.Response]:
     - `/video.synth00001/...` → `video_page_full.html` (galería xv_1..xv_6)
     - `/video.synth00002/...` → `video_page_minimal.html` (opcionales None)
     - `/video.synth00007/...` → `_FALLBACK_VIDEO_HTML` (og:image sin galería)
+    - `/video.synth00013/...` → `_SYNTH13_VIDEO_HTML` (PR-045: URL completa con slug)
     - `/video.synth50000/...` → 200 con HTML sin estructura de vídeo (estructura cambiada)
     - `/video.synth99999/...` → 404 (vídeo retirado)
     - `/` → `listing_page_1.html` (ids 1..3, `dir.next` → `/best/2026-07/1`)
@@ -133,6 +149,8 @@ def _fixture_handler() -> Callable[[httpx.Request], httpx.Response]:
             body = _fixture("video_page_minimal.html").encode("utf-8")
         elif path.startswith("/video.synth00007"):
             body = _FALLBACK_VIDEO_HTML.encode("utf-8")
+        elif path.startswith("/video.synth00013"):
+            body = _SYNTH13_VIDEO_HTML.encode("utf-8")
         elif path.startswith("/video.synth50000"):
             body = b"<html><body>captcha o estructura totalmente distinta</body></html>"
         elif path.startswith("/video.synth99999"):
@@ -456,6 +474,62 @@ def test_parse_listing_page_home_sin_clase_thumb_link_ids_y_sin_paginacion() -> 
     assert page.next_cursor is None
 
 
+def test_parse_listing_page_page_urls_con_href_completo() -> None:
+    """PR-045: `page_urls` guarda el **href completo** de cada vídeo del listado.
+
+    La 3a validación real (2026-08-16) confirmó que la URL canónica de un vídeo
+    es `/video.<id>/<num>/<num>/<slug>` (sin el slug → 404): el href del
+    listado es la ÚNICA fuente fiable del slug, así que `page_urls` lo conserva
+    verbatim por external_id (mismo dedup que los IDs: primer href por vídeo).
+    """
+    page = parse_listing_page(_fixture("listing_page_1.html"))
+    assert page.page_urls == {
+        "video.synth00001": "/video.synth00001/titulo-de-ejemplo-1",
+        "video.synth00002": "/video.synth00002/titulo-de-ejemplo-2",
+        "video.synth00003": "/video.synth00003/titulo-de-ejemplo-3",
+    }
+
+
+def test_parse_listing_page_href_real_con_segmentos_numericos() -> None:
+    """PR-045: el href REAL `/video.<id>/<num>/<num>/<slug>` se conserva completo.
+
+    Estructura observada en la 3a validación real: el listado enlaza
+    `/video.ID/123/456/slug-titulo` — el ID sale del primer segmento y
+    `page_urls` guarda el path íntegro (sin truncar a `/video.<id>/`).
+    """
+    html = (
+        "<html><body><div class='thumb'>"
+        "<a href='/video.synth00013/123456/789/titulo-de-ejemplo-13'>v</a>"
+        "</div></body></html>"
+    )
+    page = parse_listing_page(html)
+    assert page.external_ids == ["video.synth00013"]
+    assert page.page_urls == {
+        "video.synth00013": "/video.synth00013/123456/789/titulo-de-ejemplo-13"
+    }
+
+
+def test_discover_home_page_urls_con_hrefs_completos() -> None:
+    """PR-045: discover() de la home devuelve `page_urls` con los hrefs completos.
+
+    La home real (2a validación) enlaza `/video.<id>/<slug>` sin clase; el
+    adapter rellena `page_urls` igual que en /best — el pipeline puede pasar la
+    URL completa a `get_video` sin volver a parsear nada.
+    """
+    page: DiscoverPage
+
+    async def scenario() -> None:
+        nonlocal page
+        page = await _adapter().discover(cursor="/home", limit=100)
+
+    _run(scenario)
+    assert page.page_urls == {
+        "video.synth00010": "/video.synth00010/titulo-de-ejemplo-10",
+        "video.synth00011": "/video.synth00011/titulo-de-ejemplo-11",
+        "video.synth00012": "/video.synth00012/titulo-de-ejemplo-12",
+    }
+
+
 # ---------------------------------------------------------------------------
 # FR-004 · discover() con transporte mock (sin red) + protección anti-bucle
 # ---------------------------------------------------------------------------
@@ -666,6 +740,77 @@ def test_get_video_estructura_cambiada_levanta_error() -> None:
     async def scenario() -> None:
         with pytest.raises(XvideosParseError):
             await _adapter().get_video("video.synth50000")
+
+    _run(scenario)
+
+
+def test_get_video_con_page_url_usa_la_url_completa_del_listado() -> None:
+    """PR-045 (3a validación): con `page_url`, get_video pide EXACTAMENTE la URL completa.
+
+    Hallazgo de la 3a validación real: reconstruir `https://www.xvideos.com/
+    video.<id>/` SIN el slug devuelve 404 en todos los vídeos de la home; el
+    href real del listado es `/video.<id>/<num>/<num>/<slug>`. Con `page_url`,
+    el adapter resuelve el href contra el host canónico y hace GET de la URL
+    íntegra — la única que la fuente acepta.
+    """
+    requested: list[str] = []
+
+    async def scenario() -> None:
+        nonlocal requested
+        handler = _fixture_handler()
+        adapter = XvideosAdapter(
+            transport=httpx.MockTransport(
+                lambda request: requested.append(str(request.url)) or handler(request)
+            )
+        )
+        video = await adapter.get_video(
+            "video.synth00013",
+            page_url="/video.synth00013/123456/789/titulo-de-ejemplo-13",
+        )
+        assert video is not None
+        assert video.external_id == "video.synth00013"
+
+    _run(scenario)
+    assert requested == ["https://www.xvideos.com/video.synth00013/123456/789/titulo-de-ejemplo-13"]
+
+
+def test_get_video_sin_page_url_fallback_a_la_plantilla() -> None:
+    """PR-045: sin `page_url` (None), get_video reconstruye `/video.<id>/` como antes.
+
+    Retrocompatibilidad: los llamadores que no disponen del href del listado
+    (p. ej. FETCH_METADATA) mantienen el comportamiento previo al PR-045.
+    """
+    requested: list[str] = []
+
+    async def scenario() -> None:
+        nonlocal requested
+        handler = _fixture_handler()
+        adapter = XvideosAdapter(
+            transport=httpx.MockTransport(
+                lambda request: requested.append(str(request.url)) or handler(request)
+            )
+        )
+        video = await adapter.get_video("video.synth00013", page_url=None)
+        assert video is not None
+
+    _run(scenario)
+    assert requested == ["https://www.xvideos.com/video.synth00013/"]
+
+
+def test_get_video_page_url_ajena_al_host_no_se_usa() -> None:
+    """PR-045 · SEC-001: un `page_url` fuera del host canónico NO se usa (fallback).
+
+    Solo se aceptan paths relativos (`/video.…`) o URLs http(s) de
+    `xvideos.com`/`www.xvideos.com`: cualquier otro valor (host ajeno, esquema
+    no http) cae a la plantilla — el adapter nunca pide URLs fuera de su
+    dominio (el `SafeHTTPClient` con allowlist sería la segunda barrera).
+    """
+
+    async def scenario() -> None:
+        video = await _adapter().get_video(
+            "video.synth00013", page_url="https://evil.invalid/video.synth00013/x"
+        )
+        assert video is not None
 
     _run(scenario)
 

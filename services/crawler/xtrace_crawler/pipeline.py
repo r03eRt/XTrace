@@ -494,7 +494,12 @@ class CrawlerPipeline:
                     )
                     continue
             await self._acquire(adapter)
-            video = await adapter.get_video(external_id)
+            # PR-045 (3a validación real): la URL canónica de un vídeo exige el
+            # slug del listado (reconstruir `/video.<id>/` sin él → 404). El
+            # href completo viaja en `page.page_urls[external_id]` y se reenvía
+            # a get_video; `None` (fuentes sin page_urls, p. ej. el mock) → la
+            # fuente reconstruye su URL como antes (retrocompatible).
+            video = await adapter.get_video(external_id, page_url=page.page_urls.get(external_id))
             if video is None:
                 logger.warning(
                     "DISCOVER: %s listado pero sin metadatos en la fuente; se omite", external_id

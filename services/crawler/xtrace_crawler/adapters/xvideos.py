@@ -33,6 +33,13 @@ fixtures anonimizados en `tests/fixtures/xvideos/`):
   `discover()` devuelve los IDs y `next_cursor=None` (fin). `/best/1`
   **redirige** a `/best/2026-07`: el cursor se toma de la **URL FINAL de la
   respuesta** (`response.url`).
+  **PR-045 (3a validación real, 2026-08-16)**: el href real del listado es
+  `/video.<id>/<num>/<num>/<slug-titulo>` y la página de vídeo reconstruida
+  como `https://www.xvideos.com/video.<id>/` (SIN slug) devuelve **404 en
+  todos los vídeos** — la URL canónica exige el slug. `discover()` rellena
+  `DiscoverPage.page_urls[external_id]` con el href **completo** del listado
+  y `get_video(..., page_url=...)` lo usa (resuelto contra el host); sin
+  `page_url` reconstruye `/video.<id>/` como antes (fallback).
 - **Página de vídeo**: metadata en `meta[property="og:*"]` — `og:title`,
   `og:url` (page_url), `og:duration` (segundos) y `og:image` (thumbnail);
   fallback `h2.page-title` (sin el `span.duration` interno); fecha y tags en
@@ -159,6 +166,23 @@ def _cursor_from_href(href: str) -> str:
     return urlsplit(href).path or "/"
 
 
+def _resolve_listing_href(href: str) -> str | None:
+    """Resuelve el href del listado a una URL absoluta del host canónico (PR-045).
+
+    Acepta solo: (1) paths relativos (`/video.…` → `https://www.xvideos.com/…`,
+    la forma real observada) y (2) URLs http(s) de `xvideos.com`/`www.xvideos.com`.
+    Cualquier otro valor (host ajeno, esquema no http) → `None`: el llamador usa
+    el fallback `/video.<id>/` (el `SafeHTTPClient` con allowlist sería la
+    segunda barrera, SEC-001).
+    """
+    if href.startswith("/"):
+        return f"{XV_BASE_URL}{href}"
+    parsed = urlsplit(href)
+    if parsed.scheme in ("http", "https") and parsed.netloc in XV_VIDEO_HOSTS:
+        return href
+    return None
+
+
 def _meta_content(tree: HTMLParser, selector: str) -> str | None:
     """Contenido de un `meta[property]` (og:*) o None si no está."""
     node = tree.css_first(selector)
@@ -187,7 +211,7 @@ def _jsonld(html: str) -> dict[str, Any] | None:
 
 
 def parse_listing_page(html: str, *, current_path: str | None = None) -> DiscoverPage:
-    """Parsea una página de listado/discover: IDs externos (dedup) + cursor.
+    """Parsea una página de listado/discover: IDs externos (dedup) + cursor + hrefs.
 
     Los ítems se detectan con `div.thumb a[href^="/video."]` (PR-044): cubre
     la **HOME** real — enlaces de vídeo **sin clase** dentro de `div.thumb`,
@@ -196,6 +220,13 @@ def parse_listing_page(html: str, *, current_path: str | None = None) -> Discove
     `a.thumb-link` (también dentro de `div.thumb`). Los hrefs repetidos
     (p. ej. overlay + imagen) se deduplican por ID externo; el enlace del
     título (`div.thumb-under`, fuera de `div.thumb`) no se cuenta dos veces.
+
+    **PR-045 (3a validación real, 2026-08-16)**: `DiscoverPage.page_urls`
+    guarda por external_id el **href COMPLETO** del listado (p. ej.
+    `/video.<id>/<num>/<num>/<slug-titulo>` — el primer href visto por vídeo).
+    La URL canónica de un vídeo exige el slug (reconstruir `/video.<id>/` sin
+    él → 404): `get_video(..., page_url=...)` lo consume (resuelto contra el
+    host) y el pipeline (PR-045) lo reenvía durante DISCOVER.
 
     `current_path` es el path de la **URL FINAL de la respuesta** (tras
     redirects, `response.url`): si el enlace `a.dir.next` apunta al mismo
@@ -207,15 +238,17 @@ def parse_listing_page(html: str, *, current_path: str | None = None) -> Discove
     señalan el cambio de selector.
     """
     tree = HTMLParser(html)
-    external_ids: list[str] = []
+    # Dict id → href completo (PR-045): la primera aparición gana (mismo dedup
+    # que los IDs de PR-044, preservando el orden del listado).
+    page_urls: dict[str, str] = {}
     for node in tree.css(_LISTING_ITEM_SELECTOR):
         href = node.attributes.get("href")
         if not href:
             continue
         external_id = _external_id_from_url(href)
         if external_id is not None:
-            external_ids.append(external_id)
-    external_ids = list(dict.fromkeys(external_ids))  # dedup preservando orden
+            page_urls.setdefault(external_id, href)
+    external_ids = list(page_urls)
 
     next_cursor: str | None = None
     next_node = tree.css_first(_LISTING_NEXT_SELECTOR)
@@ -226,7 +259,7 @@ def parse_listing_page(html: str, *, current_path: str | None = None) -> Discove
             # Anti-bucle: un `dir.next` que apunta a la página actual es fin.
             if current_path is None or candidate != current_path:
                 next_cursor = candidate
-    return DiscoverPage(external_ids=external_ids, next_cursor=next_cursor)
+    return DiscoverPage(external_ids=external_ids, next_cursor=next_cursor, page_urls=page_urls)
 
 
 def parse_video_page(html: str, *, page_url: str) -> VideoSource:
@@ -446,6 +479,11 @@ class XvideosAdapter:
         con `div.thumb a[href^="/video."]` (enlaces **sin clase**; en `/best/…`
         el mismo selector cubre `a.thumb-link`) y NO tiene `a.dir.next` — una
         sola página: devuelve los IDs con `next_cursor=None` (fin).
+
+        **PR-045 (3a validación real)**: la página devuelta incluye
+        `page_urls` (external_id → href COMPLETO del listado con slug): el
+        pipeline lo reenvía a `get_video(..., page_url=...)` porque la URL
+        canónica reconstruida sin slug devuelve 404 (ver `parse_listing_page`).
         """
         if cursor is None:
             # Nueva cadena de paginación: se reinicia el conjunto de vistos.
@@ -468,19 +506,38 @@ class XvideosAdapter:
         self._seen_external_ids.update(page.external_ids)
         if not new_ids:
             # Anti-bucle: 0 IDs nuevos → fin (no se encola la siguiente página).
-            return DiscoverPage(external_ids=page.external_ids, next_cursor=None)
+            return DiscoverPage(
+                external_ids=page.external_ids,
+                next_cursor=None,
+                page_urls=page.page_urls,  # PR-045: los hrefs del listado se conservan
+            )
         return page
 
     # -- FR-004 · get_video ---------------------------------------------------
 
-    async def get_video(self, external_id: str) -> VideoSource | None:
+    async def get_video(
+        self, external_id: str, *, page_url: str | None = None
+    ) -> VideoSource | None:
         """Obtiene la metadata normalizada de un vídeo (FR-004).
+
+        **PR-045 (3a validación real, 2026-08-16)**: `page_url` (opcional) es
+        el **href completo del listado** (`DiscoverPage.page_urls[external_id]`,
+        p. ej. `/video.<id>/<num>/<num>/<slug-titulo>`): se resuelve contra el
+        host canónico y se usa tal cual — la URL que la fuente acepta (la
+        reconstrucción `/video.<id>/` SIN el slug devuelve 404). `None` → se
+        reconstruye `/video.<id>/` como antes (retrocompatible; FETCH_METADATA
+        no dispone del href). Un `page_url` ajeno al host canónico no se usa
+        (fallback; SEC-001).
 
         `None` solo para 404 (vídeo retirado, edge case de la spec); cualquier
         otro error HTTP o de estructura se propaga para que la capa de jobs lo
         reintente o lo marque `failed` con la causa.
         """
         url = XV_VIDEO_URL_TEMPLATE.format(external_id=external_id)
+        if page_url is not None:
+            resolved = _resolve_listing_href(page_url)
+            if resolved is not None:
+                url = resolved
         response = await self._client.get(url)
         if response.status_code == 404:
             return None

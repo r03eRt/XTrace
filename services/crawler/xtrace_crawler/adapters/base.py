@@ -22,6 +22,17 @@ protocolos estructurales exigen **todos** los miembros declarados (mypy) y el
 `runtime_checkable` exige su presencia en `isinstance`, lo que rompería la
 compatibilidad de los adapters que no lo implementan; el pipeline lo descubre
 con `getattr(adapter, "fetch_asset_bytes", None)` (ver docstring de la clase).
+
+**Enmienda PR-045 (hallazgo de la 3a validación real, 2026-08-16)**: `get_video`
+gana el kwarg **opcional** `page_url: str | None = None` — el href completo del
+listado (`DiscoverPage.page_urls[external_id]`, p. ej.
+`/video.<encoded>/<num>/<num>/<slug-titulo>`) que la fuente usa como URL
+canónica cuando esta exige el slug del listado (sin él → 404 en xvideos).
+`None` → la fuente reconstruye su URL como antes (retrocompatible; el
+`MockAdapter` lo acepta y lo ignora). A diferencia de `fetch_asset_bytes`,
+`page_url` **sí** se declara en el cuerpo del protocolo: es un kwarg con
+default, así que las implementaciones actualizadas (xvideos, mock) lo aceptan
+y el pipeline (PR-045) lo reenvía durante DISCOVER con tipado estricto.
 """
 
 from __future__ import annotations
@@ -129,7 +140,15 @@ class SourceAdapter(Protocol):
 
     async def discover(self, *, cursor: str | None, limit: int) -> DiscoverPage: ...
 
-    async def get_video(self, external_id: str) -> VideoSource | None: ...
+    # PR-045 (enmienda del contrato, 3a validación real 2026-08-16): `page_url`
+    # es OPCIONAL (kwarg, default None): el **href completo del listado**
+    # (`DiscoverPage.page_urls[external_id]`, p. ej.
+    # `/video.<encoded>/<num>/<num>/<slug-titulo>`) que la fuente usa como URL
+    # canónica cuando esta exige el slug (sin él → 404). None → la fuente
+    # reconstruye su URL como antes (retrocompatible).
+    async def get_video(
+        self, external_id: str, *, page_url: str | None = None
+    ) -> VideoSource | None: ...
 
     async def get_visual_assets(self, video: VideoSource) -> list[VisualAsset]: ...
 

@@ -18,6 +18,10 @@ Cubren los handlers concretos de `xtrace_crawler/pipeline.py` con el MockAdapter
   payload del DISCOVER lleva `max_videos` y el pipeline corta la cadena de
   paginación al alcanzarla, acumulando vídeos conocidos y nuevos
   (`videos_counted`), sin perder trazabilidad.
+- **PR-045 (3a validación real)**: durante DISCOVER el pipeline reenvía a
+  `get_video` el `page_url` del listado (`DiscoverPage.page_urls`, href
+  completo con slug) — la URL canónica que la fuente exige (404 sin slug);
+  FETCH_METADATA sigue llamando sin él y el flujo no cambia.
 - **FR-013**: CHECK_AVAILABILITY `unavailable`/`removed` → estado del vídeo +
   exclusión del índice (frames eliminados y ocultos en `ann_search`).
 - **Nota revisión Ola B** (tasks.md PR-030): `sync_source` conserva
@@ -69,7 +73,12 @@ from xtrace_crawler.adapters.mock import (
     MockFaults,
     synthetic_asset_bytes,
 )
-from xtrace_crawler.adapters.models import VideoAvailability, VideoSource, VisualAsset
+from xtrace_crawler.adapters.models import (
+    DiscoverPage,
+    VideoAvailability,
+    VideoSource,
+    VisualAsset,
+)
 from xtrace_crawler.crawling.http import SafeHTTPClient
 from xtrace_crawler.crawling.ratelimit import RateLimiter
 from xtrace_crawler.jobs.repo import JobsRepo
@@ -355,6 +364,62 @@ def test_backfill_full_flow_indexes_frames_and_embeddings(
     assert phash_rows, "el pHash real del sprite storyboard debe estar en frames.phash"
 
     assert _leftover_asset_dirs() == []  # SC-004: sin temporales tras el flujo
+
+
+# ---------------------------------------------------------------------------
+# PR-045 · DISCOVER reenvía `page_url` (href del listado) a get_video
+# ---------------------------------------------------------------------------
+
+
+class _PageUrlsRecordingAdapter(MockAdapter):
+    """MockAdapter que (1) rellena `page_urls` en discover (PR-045) y (2) registra
+    cada llamada a `get_video` con su `page_url` (test-only, sin red)."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.get_video_calls: list[tuple[str, str | None]] = []
+
+    async def discover(self, *, cursor: str | None, limit: int) -> DiscoverPage:
+        page = await super().discover(cursor=cursor, limit=limit)
+        return page.model_copy(
+            update={"page_urls": {vid: f"/videos/{vid}/1/2/slug" for vid in page.external_ids}}
+        )
+
+    async def get_video(
+        self, external_id: str, *, page_url: str | None = None
+    ) -> VideoSource | None:
+        self.get_video_calls.append((external_id, page_url))
+        return await super().get_video(external_id, page_url=page_url)
+
+
+def test_discover_pasa_page_urls_a_get_video(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PR-045: durante DISCOVER el pipeline pasa `page_url` (href del listado) a get_video.
+
+    Hallazgo de la 3a validación real (2026-08-16): la URL canónica del vídeo
+    exige el slug del listado (reconstruir `/video.<id>/` sin slug → 404). El
+    pipeline reenvía `page.page_urls[external_id]` en las llamadas de DISCOVER;
+    FETCH_METADATA (no tiene el href) sigue llamando sin `page_url` (`None`) y
+    el flujo no cambia: mismo nº de jobs y vídeos que el BACKFILL estándar.
+    """
+    _fast_rate(monkeypatch)
+    adapter = _PageUrlsRecordingAdapter(seed=42, catalog_size=3)
+    pipeline, worker, jobs = _build(adapter, client=_client(), worker_id="it-pipeline-pr045")
+    assert _run_backfill(pipeline, worker, jobs, limit=2) == 8  # 2 DISCOVER + 3 + 3
+
+    calls = adapter.get_video_calls
+    assert len(calls) == 6  # 3 del DISCOVER + 3 de FETCH_METADATA
+    with_page_url = [call for call in calls if call[1] is not None]
+    without_page_url = [call for call in calls if call[1] is None]
+    assert len(with_page_url) == 3  # SOLO las del DISCOVER llevan el href
+    assert len(without_page_url) == 3  # las de FETCH_METADATA siguen sin él
+    assert {external_id for external_id, _ in with_page_url} == {
+        f"mock-vid-{index:04d}" for index in range(3)
+    }
+    for external_id, page_url in with_page_url:
+        assert page_url == f"/videos/{external_id}/1/2/slug"  # = page.page_urls[external_id]
+
+    assert len(_videos()) == 3  # el flujo no cambia (SC-003: sin duplicados)
+    assert _leftover_asset_dirs() == []
 
 
 # ---------------------------------------------------------------------------
