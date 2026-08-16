@@ -4,7 +4,7 @@
 > orquestador tras cada PR. Fuente de verdad de requisitos: `docs/PRODUCT_IDEA.md` y
 > `specs/`. Contrato: `AGENTS.md` + `.specify/memory/constitution.md`.
 
-**Última actualización**: 2026-08-14 · por DeepSeek V4 Pro (orquestador).
+**Última actualización**: 2026-08-16 · por DeepSeek V4 Pro (orquestador).
 
 ## Setup de agentes (esta ejecución)
 
@@ -22,30 +22,72 @@
 - **`deepseek-v4-flash`** (implementador y revisor DeepSeek): modelo por defecto de ejecución, para ahorrar tokens. Coste ≈ $0.14 / $0.28 por 1M tokens.
 - **Enforcement**: el orquestador fija el modelo del implementador vía `workflow.agent({ provider: "deepseek-official", model: "deepseek-v4-flash" })`, porque la tool `subagent` no expone selector de modelo (hereda el default `deepseek-v4-pro`). El revisor, si es DeepSeek, usa también flash; idealmente otro proveedor (constitución §5).
 
+#### Qué puede hacer PRO (lista cerrada)
+
+1. `tasks.md` (único editor), asignación y dependencias, merges y resolución de conflictos.
+2. Puertas de decisión y validaciones de datos reales (p. ej. PR-016/PR-017 del spike).
+3. Aprobar/rechazar la salida de un agente flash en las puertas (no rehacer su trabajo).
+
+#### Qué debe ir a FLASH (todo lo demás)
+
+- **Planificación**: borradores de `spec.md` (spec-authoring), `plan.md`/ADRs/contratos
+  (technical-planning) y `tasks.md` inicial los produce un agente flash con un contrato
+  detallado; el orquestador solo revisa y consolida. *(Corrección 2026-08-16: la fase 2
+  se planificó en pro; no repetir.)*
+- **Implementación y revisión**: todos los PRs, incluidos fixes pequeños de config,
+  lint/format ignores, seed SQL y docs de handoff (los handoffs los escribe el implementador
+  de cada PR). Si el orquestador detecta un fix trivial, crea una tarea flash (p. ej.
+  PR-035), no lo aplica él mismo.
+- **Verificación de gates**: re-ejecutar pytest/ruff/mypy/pgTAP/JS en worktrees es tarea de
+  los agentes flash (implementador y revisor); el orquestador solo relee los informes.
+
+#### Nota operativa
+
+- El token de `gh` del operador está caducado (2026-08-16): los PRs a `main` los abre el
+  humano (web o `gh auth login`). El push de ramas vía SSH funciona.
+
 ## Fase actual
 
-**Fase 1 — Visual Search Spike** (`specs/001-visual-search-spike`).
-Estado spec: **IMPLEMENTED** (2026-08-15; spike validado con dataset real). Documentación de diseño **completa**:
-`plan.md`, `data-model.md`, `contracts/`, `quickstart.md`, `tasks.md`, ADR-0003..0008,
-`docs/architecture/visual-search-spike.md`.
+**Fase 2 — Source SDK + Primer Crawler** (`specs/002-source-sdk-crawler`).
+Estado spec: **IMPLEMENTED** (2026-08-16; aprobación humana 2026-08-15; validación real
+con xvideos completada). Documentación de diseño **completa**: `plan.md`, `data-model.md`,
+`contracts/`, `quickstart.md`, `tasks.md`, ADR-0009..0011.
 
-**Spike COMPLETADO.** PR-001…PR-018 (18 PRs) + FIX-phash implementados, revisados (APPROVED) y mergeados a `feature/001-visual-search-spike`. **Milestone 1 mergeado a `main`** (PR #1, CI verde). **US1/US2/US4 funcionales** (CLI: index/stats/search/exclude/benchmark). **Puerta SC-001/SC-002 SUPERADA con el dataset real del operador (43 vídeos).** Pendiente: merge del milestone final (PR-016..018) a `main` + speckit-analyze/converge.
+**Validación real (2026-08-16)**: operador liberó SEC-002 ("estamos probando al menos") →
+manifest revisado (PR-042) → backfill acotado real contra xvideos.com (**5/5 vídeos
+`indexed`**, 10 frames con timestamp, embeddings en el índice; INCREMENTAL sin duplicados;
+rate limits respetados; 0 descargas de vídeo completo). 5 hallazgos reales corregidos en
+PR-043…PR-047 (selectores home, slugs, page_urls, anti-bucle). Limitación documentada: la
+validación usó el proveedor de embeddings **fake** (default local); SigLIP real se activa
+por config para el índice de producción (validado ya en el spike).
+
+**Fase 1 (anterior) — Visual Search Spike**: **COMPLETADA.** PR-001…PR-018 (18 PRs) +
+FIX-phash implementados, revisados (APPROVED) y **mergeados a `main`**. **US1/US2/US4
+funcionales** (CLI: index/stats/search/exclude/benchmark). **Puerta SC-001/SC-002 SUPERADA
+con el dataset real del operador (43 vídeos).**
 
 ## Roadmap de la fase
 
-18 PRs (PR-001 … PR-018), ninguno XL. Ver `specs/001-visual-search-spike/tasks.md` para
+15 PRs (PR-019 … PR-033), ninguno XL. Ver `specs/002-source-sdk-crawler/tasks.md` para
 objetivos, dependencias, `allowed_paths`, tests y criterios. Grafo de dependencias y plan
 de paralelización incluidos allí.
 
-- **PRs completados**: PR-001…PR-018 (18 PRs) + FIX-phash (implementados + revisados APPROVED + mergeados a `feature/001-visual-search-spike`; milestone 1 mergeado a `main`).
-- **PRs abiertos**: — (18 PRs + 1 fix en la rama de integración; pendiente PR final a `main`).
-- **Siguiente**: speckit-analyze + converge → PR final (feature → main) → Fase 2 (Source SDK / crawler).
+- **PRs completados**: PR-019…PR-047 — **29/29 DONE** (revisados APPROVED y mergeados a la
+  rama de fase; incluye los 6 PRs de la validación real PR-042…047). **Converge:
+  CONVERGED** (FR 15/15 · SEC 4/4 · DATA 3/3 · NFR 4/4 · SC 8/8, SC-002 validado real).
+- **PRs abiertos**: — (pendiente de abrir el PR de la rama de fase a `main`, con CI verde
+  y aprobación humana)
+- **Siguiente**: PR de `feature/002-source-sdk-crawler` a `main` → CI verde → aprobación
+  humana → merge.
+- **Puerta legal**: el adapter real de xvideos permanece deshabilitado hasta la revisión
+  legal/ToS/robots del humano (SEC-002); el desarrollo no depende de ello (mock/fixtures).
 
 ## Primer PR recomendado y por qué
 
-**PR-001**. Habilita el toolchain Python (ruff/mypy/pytest) y la CI sin romper la pipeline
-JS del skeleton. Desbloquea la Ola A (PR-002/003/004/008 en paralelo). Es pequeño, de bajo
-riesgo y necesario antes de cualquier lógica de dominio.
+**PR-019**. Bootstrap del servicio `services/crawler/` (paquete `xtrace_crawler`, toolchain
+uv/ruff/mypy/pytest, dependencia editable al spike — ADR-0011) + job de CI dedicado, sin
+romper la pipeline JS ni el job del spike. Desbloquea la Ola A (PR-020/022/023/024/025 en
+paralelo). Es pequeño, de bajo riesgo y necesario antes de cualquier lógica de dominio.
 
 ## Puerta de decisión del spike
 
@@ -56,6 +98,12 @@ riesgo y necesario antes de cualquier lógica de dominio.
 - **SC-003: latencia < 3 s → OK** (p50/p95 reportados ≈ 0-2 ms de la consulta; el coste real está en el embedding ~0.25-0.4 s/imagen en CPU, throughput medido ~2.4-3.9 fps).
 - Conclusión: **VALIDATE SEARCH FIRST ✔ — se puede escalar el crawling** (decidir 30 vs 60 frames/vídeo en PR-017).
 - **Validación manual del operador (2026-08-15):** un frame real subido por el operador fue buscado y el sistema devolvió el vídeo correcto (`4920517166559660298.mp4`) con timestamp acertado (~1,69 s) y score 0.872.
+- **Validación manual del operador (2026-08-15, 2ª ronda):** 3 capturas reales del operador
+  (`capturas-test/`, gitignored — no commitear) → **3/3 Top-1 correctos** (confirmado por el
+  operador): `MAYO 2026 (386).mp4` score 0.938 @ ~51 s · `MAYO 2026 (389).mp4` score 0.912
+  @ ~39,5 s · `010+AMWF+Petite+Teen+Deepthroats...480p.mp4` score 0.945 @ ~30:32. Capturas
+  no idénticas (pHash 0.72-0.84), resueltas por el embedding visual. Latencia de consulta
+  en CPU local 7-11 s (embeddings en CPU; no afecta a la puerta de corrección).
 
 ## Blockers conocidos
 
@@ -69,6 +117,10 @@ riesgo y necesario antes de cualquier lógica de dominio.
 
 ## Deuda técnica / diferido
 
+- **Plan de despliegue público** — al llegar a la fase de exposición pública/MVP, preparar
+  propuesta de despliegue en **VPS propio** (~5–10 €/mes: Postgres+pgvector, FastAPI,
+  crawler, Next.js; la BD en el VPS, no en portátil), preferencia del operador frente a
+  Supabase Pro/Vercel gestionados (decisión 2026-08-15).
 - **Búsqueda por clip + consistencia temporal** (FR-011, SC-004) — diferida (Decisión D1),
   próxima feature.
 - Crawler, `SourceAdapter` de fuentes reales (erome, xvideos, xhamster, redgifs, pornhub),

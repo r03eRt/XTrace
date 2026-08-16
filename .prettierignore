@@ -21,3 +21,8 @@ supabase/.temp/
 # Spec Kit / semantic docs (no Prettier)
 specs/
 docs/
+
+# Crawler: artefactos uv y fixtures sinteticos (sin Prettier)
+**/.uv-cache/
+services/crawler/tests/fixtures/**
+worktrees/

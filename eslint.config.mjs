@@ -10,6 +10,9 @@ const config = [
       "coverage/**",
       "tests/e2e/.reports/**",
       "next-env.d.ts",
+      // Entornos virtuales de los servicios Python (spike/crawler): nunca lint.
+      "**/.venv/**",
+      "**/.uv-cache/**",
     ],
   },
   ...next,

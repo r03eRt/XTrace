@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Titulo de ejemplo 1 - XVideos (fixture sintetico)</title>
+  <meta property="og:type" content="video" />
+  <meta property="og:title" content="Titulo de ejemplo 1" />
+  <meta property="og:url" content="https://www.xvideos.invalid/video.synth00001/titulo-de-ejemplo-1" />
+  <meta property="og:duration" content="881" />
+  <meta property="og:image" content="https://thumb-cdn77.xvideos.invalid/11111111-2222-4333-8444-555555555555/3/xv_1_t.jpg" />
+</head>
+<body>
+<div id="main">
+  <h2 class="page-title">Titulo de ejemplo 1 <span class="duration">14 min</span></h2>
+  <div id="html5video" style="line-height: normal; min-height: 470px;">
+    <div id="html5video_base"></div>
+  </div>
+  <script type="text/javascript">
+    // Datos sinteticos del reproductor (estructura real: llamadas html5player.*).
+    html5player.setThumbUrl('https://thumb-cdn77.xvideos.invalid/11111111-2222-4333-8444-555555555555/3/xv_1_t.jpg');
+    // El mp4 completo existe en la pagina real (setVideoUrlLow) pero esta PROHIBIDO
+    // exponerlo o descargarlo (SC-006): el adapter debe dejarlo fuera (preview_url=None).
+    html5player.setVideoUrlLow('https://mp4-cdn77.xvideos.invalid/11111111-2222-4333-8444-555555555555/3/mp4_sd.mp4?secure=fixture-sintetico');
+    html5player.setVideoUrlHigh('https://mp4-cdn77.xvideos.invalid/11111111-2222-4333-8444-555555555555/3/mp4_hq.mp4?secure=fixture-sintetico');
+    // Galeria de thumbnails del reproductor: xv_1_t.jpg .. xv_6_t.jpg (URLs
+    // JSON-escapadas, como en la captura real de 2026-08-16).
+    var thumbs = [
+      "https:\/\/thumb-cdn77.xvideos.invalid\/11111111-2222-4333-8444-555555555555\/3\/xv_1_t.jpg",
+      "https:\/\/thumb-cdn77.xvideos.invalid\/11111111-2222-4333-8444-555555555555\/3\/xv_2_t.jpg",
+      "https:\/\/thumb-cdn77.xvideos.invalid\/11111111-2222-4333-8444-555555555555\/3\/xv_3_t.jpg",
+      "https:\/\/thumb-cdn77.xvideos.invalid\/11111111-2222-4333-8444-555555555555\/3\/xv_4_t.jpg",
+      "https:\/\/thumb-cdn77.xvideos.invalid\/11111111-2222-4333-8444-555555555555\/3\/xv_5_t.jpg",
+      "https:\/\/thumb-cdn77.xvideos.invalid\/11111111-2222-4333-8444-555555555555\/3\/xv_6_t.jpg"
+    ];
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "VideoObject",
+    "name": "Titulo de ejemplo 1",
+    "description": "Titulo de ejemplo 1",
+    "thumbnailUrl": ["https://thumb-cdn77.xvideos.invalid/11111111-2222-4333-8444-555555555555/3/xv_1_t.jpg"],
+    "uploadDate": "2026-06-15T12:30:00+00:00",
+    "duration": "PT00H14M41S",
+    "keywords": ["tag de ejemplo uno", "tag de ejemplo dos"]
+  }
+  </script>
+</div>
+</body>
+</html>

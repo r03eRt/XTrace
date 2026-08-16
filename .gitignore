@@ -53,3 +53,9 @@ Thumbs.db
 
 # Dataset local del operador (media propia; NUNCA commitear)
 dataset/
+
+# Capturas de prueba del operador (media propia; NUNCA commitear)
+capturas-test/
+
+# Worktrees de agentes (tareas en paralelo)
+worktrees/
