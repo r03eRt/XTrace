@@ -757,9 +757,10 @@ class CrawlerPipeline:
         revisada no se descarga nada por HTTP). El cliente activa la
         **validación de IP resuelta** (anti-DNS-rebinding, PR-036).
 
-        El mock (FR-003) no declara `asset_hosts` a propósito: sirve sus
-        assets in-process (`fetch_asset_bytes`, PR-034) y el preview (sin
-        representación) degrada con `NoAssetHostsError` — 0 superficie de red.
+        El mock (FR-003) declara `asset_hosts = []` (lista vacía, fail-closed
+        igualmente): sirve sus assets in-process (`fetch_asset_bytes`,
+        PR-034) y el preview (sin representación) degrada con
+        `NoAssetHostsError` — 0 superficie de red.
         """
         hosts: Any = getattr(adapter, "asset_hosts", None)
         if not hosts:
