@@ -31,16 +31,27 @@ AccessMethod = Literal["api", "sitemap", "json", "html", "browser"]
 
 
 class RateLimitSpec(BaseModel):
-    """Defaults de rate limit declarados por adapter (FR-009 · D5 · contracts §4).
+    """Defaults de rate limit declarados por adapter (FR-009 · D5 · contracts §1/§4).
 
-    Overrides por entorno sin tocar código (se consumen en PR-022):
-    `XTRACE_CRAWLER_RATE_<SOURCE>_MIN_INTERVAL_MS` y `XTRACE_CRAWLER_RATE_<SOURCE>_MAX_RPS`.
+    **Definición canónica ÚNICA** (alineación exigida por la revisión de la Ola A a
+    PR-030 · contracts §1): `crawling/ratelimit.py` (PR-022) la **importa** y no
+    redefine; el pipeline consume `manifest.rate_limit`. Overrides por entorno sin
+    tocar código (se consumen en PR-022): `XTRACE_CRAWLER_RATE_<SOURCE>_MIN_INTERVAL_MS`
+    y `XTRACE_CRAWLER_RATE_<SOURCE>_MAX_RPS`.
+
+    `min_interval_ms` es el espaciado mínimo entre requests; `max_rps` el ritmo
+    sostenido (token bucket con ráfaga inicial de 1 segundo de tokens), **estrictamente
+    > 0** (`gt=0`, contracts §1: evita divisiones por cero en el limiter).
     """
 
     model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
-    min_interval_ms: int = Field(ge=0)
-    max_rps: float = Field(ge=0)
+    min_interval_ms: int = Field(
+        default=1000, ge=0, description="Intervalo mínimo entre requests (ms)"
+    )
+    max_rps: float = Field(
+        default=1.0, gt=0, description="Ritmo sostenido máximo (requests/segundo)"
+    )
 
 
 class AdapterManifest(BaseModel):

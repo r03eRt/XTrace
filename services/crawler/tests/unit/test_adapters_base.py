@@ -272,6 +272,19 @@ def test_rate_limit_spec_rejects_negative_values() -> None:
         RateLimitSpec(min_interval_ms=1_000, max_rps=-0.5)
 
 
+def test_rate_limit_spec_has_defaults() -> None:
+    """El RateLimitSpec canónico (adapters/base.py) trae defaults en código (FR-009/D5).
+
+    Alineación PR-030 (contracts §1): definición ÚNICA en `adapters/base.py` con
+    defaults, y `max_rps` estrictamente > 0 (el limiter divide por él).
+    """
+    spec = RateLimitSpec()
+    assert spec.min_interval_ms == 1000
+    assert spec.max_rps == 1.0
+    with pytest.raises(ValidationError):
+        RateLimitSpec(max_rps=0.0)
+
+
 # ---------------------------------------------------------------------------
 # FR-001 · DiscoverPage y VideoAvailability (contracts §1)
 # ---------------------------------------------------------------------------
