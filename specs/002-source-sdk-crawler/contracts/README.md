@@ -46,14 +46,16 @@ class SourceAdapter(Protocol):
   (`adapters/base.py`); `crawling/ratelimit.py` la **importa** y no redefine (alineación
   exigida a PR-030).
 - **Allowlist de hosts de assets por fuente (PR-036 · SEC-001)**: todo adapter real DEBE
-  declarar el atributo de instancia `asset_hosts` (`frozenset[str]` | `set[str]`): hosts
+  declarar el atributo de instancia `asset_hosts` (`list[str]`; `SafeHTTPClient`
+  acepta también `set`/`frozenset` — declaración canónica en los adapters): hosts
   **revisados** de sus assets (dominio canónico + CDNs de imágenes/vídeo documentados).
   El pipeline **NO deriva la allowlist de las URLs parseadas**: un asset cuya URL apunte
   a un host fuera de `asset_hosts` se rechaza con `HostNotAllowedError` (degradación por
   asset, sin red); un adapter real sin `asset_hosts` declarado **NO descarga assets por
-  HTTP** (`NoAssetHostsError`, fail-closed). El `MockAdapter` (FR-003) no declara
-  `asset_hosts` a propósito: sirve sus assets in-process (`fetch_asset_bytes`, PR-034) y
-  el preview (sin representación) degrada — 0 superficie de red. El cliente de assets
+  HTTP** (`NoAssetHostsError`, fail-closed). El `MockAdapter` (FR-003) declara
+  `asset_hosts = []` (lista vacía, fail-closed igualmente): sirve sus assets in-process
+  (`fetch_asset_bytes`, PR-034) y el preview (sin representación) degrada — 0 superficie
+  de red. El cliente de assets
   del pipeline además valida la **IP resuelta** de cada host (anti-DNS-rebinding, §7).
 - **Decompression bomb (PR-036)**: toda imagen descargada se abre con un límite estricto
   de píxeles (`XTRACE_CRAWLER_MAX_IMAGE_PIXELS`, default 50 MP; verificado por header
