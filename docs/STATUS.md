@@ -9,6 +9,14 @@
 > ✅ **Fase 2 MERGEADA a `main`** (PR #3, 2026-08-16, aprobación humana; CI 6/6 verde:
 > python-crawler-quality, quality, e2e, security, spec-compliance, GitGuardian).
 
+> 🧪 **Pruebas reales del operador (2026-08-16)**: habilitadores PR-049 (`backfill
+> --section`), PR-050 (`XTRACE_CRAWLER_EMBEDDINGS=fake|siglip`) y PR-051 (extra `siglip`
+> + allowlist `thumbs-gcore`) mergeados a `main`. Prueba del tag `/tags/buttfucking`
+> (max-videos=20): **20/20 vídeos `indexed`, 46 frames con embeddings SigLIP reales**;
+> búsqueda con un thumbnail real → Top-1 `video.uuadpbta957` (0.857) y Top-2
+> `video.kmcedoka08e` con visual=1.0/phash=1.0 (coincidencia exacta). Bucle completo
+> captura→crawl→índice→búsqueda validado con datos reales.
+
 ## Setup de agentes (esta ejecución)
 
 - **Orquestador**: DeepSeek V4 Pro (`deepseek-v4-pro`) → asigna tareas, resuelve dependencias, actualiza este
