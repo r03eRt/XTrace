@@ -57,9 +57,15 @@ construye el proveedor de embeddings según la env `XTRACE_CRAWLER_EMBEDDINGS`
 `FakeEmbeddingProvider` determinista de PR-030, sin torch; `siglip` →
 `SiglipLocalProvider` REAL de `xtrace_spike.embeddings.siglip_local` para las
 validaciones reales del operador — import dinámico, mismo patrón que el
-adapter xvideos; el constructor no carga torch, PR-005). El switch solo se
-evalúa en el contexto por defecto real: los tests inyectan `deps.embeddings`
-y nunca pasan por aquí (sin torch en CI).
+adapter xvideos; el constructor no carga torch, PR-005). **PR-051 (1a
+ejecución real con SigLIP, 2026-08-16)**: con `siglip`, el contexto por
+defecto **exige el extra `siglip` en el arranque** (fail-fast
+`_require_siglip_extra`: el proveedor del spike importa torch/open_clip de
+forma lazy y, sin la comprobación, el `run-worker` fallaría job a job con
+`ModuleNotFoundError` opaco); si falta, el CLI falla con un error claro y
+accionable (`uv sync --extra siglip` en `services/crawler`), **sin fallback
+silencioso a fake**. El switch solo se evalúa en el contexto por defecto real:
+los tests inyectan `deps.embeddings` y nunca pasan por aquí (sin torch en CI).
 
 `config.py` (PR-032) aporta los defaults del worker y de los límites:
 `worker_concurrency`, `job_lease_timeout_seconds`, `backfill_default_limit`,
@@ -78,6 +84,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
+from importlib.util import find_spec
 from typing import Annotated, Any, NoReturn, Protocol, cast
 
 import typer
@@ -206,7 +213,13 @@ app = typer.Typer(
 def main(ctx: typer.Context) -> None:
     """Servicio crawler de XTrace: ingesta de fuentes web al índice visual (FR-003)."""
     if ctx.obj is None:
-        ctx.obj = _default_context()
+        try:
+            ctx.obj = _default_context()
+        except CliUserError as error:
+            # PR-051: el contexto por defecto puede fallar al construir el
+            # proveedor siglip (extra no instalado) → mensaje claro + exit 1
+            # (contracts §5), sin traceback.
+            raise _fail(error) from None
     _setup_logging(ctx.obj.settings)
 
 
@@ -732,15 +745,65 @@ def _embedding_provider_for(settings: Settings) -> EmbeddingProviderProtocol | N
     el primer `embed_images`), así que la selección en sí no exige el extra
     `siglip` instalado; solo su uso real lo requiere.
 
+    **PR-051 (hallazgo de la 1a ejecución real con SigLIP, 2026-08-16)**: el
+    `SiglipLocalProvider` del spike importa torch/open_clip de forma **LAZY**
+    (PR-005: `_ensure_loaded` en el primer `embed_images`), así que sin
+    comprobación el `run-worker` arrancaría y TODOS los jobs INDEX_VIDEO
+    fallarían con `ModuleNotFoundError: No module named 'open_clip'` — opaco
+    y tardío. Este helper exige el extra **en el arranque del CLI**
+    (`_require_siglip_extra`, fail-fast) y, además, si el import/instancia
+    del módulo del spike falla con `ModuleNotFoundError`, lanza el **mismo
+    error claro y accionable** con el comando de instalación — **sin fallback
+    silencioso a fake** (un backfill con embeddings fake cuando se pidió
+    SigLIP corrompería la validación). El error es `CliUserError` → stderr +
+    exit 1 (contracts §5).
+
     El switch solo se evalúa en el contexto por defecto real (este helper solo
     lo llama `_default_context`): los tests inyectan `CliContext.embeddings`
     y nunca cargan torch.
     """
     if settings.embeddings == "siglip":
-        module: Any = importlib.import_module("xtrace_spike.embeddings.siglip_local")
-        provider = module.SiglipLocalProvider()
+        _require_siglip_extra()
+        try:
+            module: Any = importlib.import_module("xtrace_spike.embeddings.siglip_local")
+            provider = module.SiglipLocalProvider()
+        except ModuleNotFoundError as error:
+            raise CliUserError(
+                "XTRACE_CRAWLER_EMBEDDINGS=siglip: no se pudo cargar "
+                f"'xtrace_spike.embeddings.siglip_local' ({error}). Si falta el "
+                "extra 'siglip' del crawler (open-clip-torch/torch), instálalo "
+                "con 'uv sync --extra siglip' en services/crawler (o el "
+                "equivalente de tu gestor de paquetes) y reintenta — sin "
+                "fallback a fake"
+            ) from error
         return cast(EmbeddingProviderProtocol, provider)
     return None
+
+
+def _require_siglip_extra() -> None:
+    """Fail-fast del extra `siglip` en el arranque del CLI (PR-051 · FR-011 · contracts §6).
+
+    `SiglipLocalProvider` (spike, PR-005) importa `open_clip`/`torch` de forma
+    **LAZY** (en el primer `embed_images`): sin esta comprobación, un
+    `run-worker` con `XTRACE_CRAWLER_EMBEDDINGS=siglip` y el extra no
+    instalado fallaría job a job con `ModuleNotFoundError` opaco (hallazgo de
+    la 1a ejecución real con SigLIP, 2026-08-16). Se comprueba aquí, al
+    construir el contexto, que el extra está instalado — con `find_spec` (no
+    importa el módulo: sin coste de carga de torch ni de open_clip).
+
+    Raises:
+        CliUserError: si falta `open_clip` o `torch` (extra `siglip` no
+            instalado), con el comando de instalación (contracts §6).
+    """
+    missing = [name for name in ("open_clip", "torch") if find_spec(name) is None]
+    if missing:
+        raise CliUserError(
+            "XTRACE_CRAWLER_EMBEDDINGS=siglip requiere el extra 'siglip' del "
+            "crawler (open-clip-torch/torch), que no está instalado "
+            f"(faltan: {', '.join(missing)}): instálalo con 'uv sync --extra "
+            "siglip' en services/crawler (o el equivalente de tu gestor de "
+            "paquetes) y reintenta — sin fallback a fake"
+        )
 
 
 def _default_context() -> CliContext:

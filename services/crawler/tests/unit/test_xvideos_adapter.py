@@ -238,20 +238,26 @@ def test_adapter_satisface_protocolo_source_adapter() -> None:
 
 
 def test_asset_hosts_observados_y_sin_hosts_inventados() -> None:
-    """PR-043 · SEC-001 · contracts §1: `asset_hosts` = hosts OBSERVADOS, solo hosts.
+    """PR-043/051 · SEC-001 · contracts §1: `asset_hosts` = hosts OBSERVADOS, solo hosts.
 
     La allowlist se actualizó a los hosts de la validación real de 2026-08-16
     (PR-033): `thumb-cdn77.xvideos-cdn.com` (CDN de thumbnails/galería) y
     `assets-cdn77.xvideos-cdn.com` (CDN de assets del reproductor), además de
-    los dominios de página. Los hosts inventados de la estructura asumida de
-    PR-031 quedaron **fuera** (`thumbs2.xvideos.com`, `cdn77.io`, patrones
-    `th-01`/`vd-01`). Sigue marcada **PROVISIONAL** (validar en backfills
-    reales). Solo hosts: sin esquemas, rutas, query ni fragmentos.
+    los dominios de página. **PR-051 (1a ejecución real con SigLIP, tag
+    /tags/buttfucking)**: los thumbs de algunos vídeos viven en
+    `thumbs-gcore.xvideos-cdn.com` (misma familia xvideos-cdn.com) y, al no
+    estar en la lista, **todos los assets degradaban (frames=0)** → se añade a
+    la allowlist (regresión del hallazgo). Los hosts inventados de la
+    estructura asumida de PR-031 quedaron **fuera** (`thumbs2.xvideos.com`,
+    `cdn77.io`, patrones `th-01`/`vd-01`). Sigue marcada **PROVISIONAL**
+    (validar en backfills reales). Solo hosts: sin esquemas, rutas, query ni
+    fragmentos (shape de la lista intacta con el host nuevo).
     """
     hosts = XvideosAdapter.asset_hosts
     assert hosts  # PROVISIONAL — no vacía
     assert "thumb-cdn77.xvideos-cdn.com" in hosts  # observado (PR-033)
     assert "assets-cdn77.xvideos-cdn.com" in hosts  # observado (PR-033)
+    assert "thumbs-gcore.xvideos-cdn.com" in hosts  # observado (PR-051, SigLIP real)
     assert "www.xvideos.com" in hosts
     for invented in (
         "thumbs2.xvideos.com",

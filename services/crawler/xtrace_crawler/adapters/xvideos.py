@@ -102,15 +102,19 @@ XV_VIDEO_HOSTS = frozenset({"xvideos.com", "www.xvideos.com"})
 #: (`assets-cdn77.xvideos-cdn.com`, visto en los `<script>` de la página) y
 #: los dominios de página. Se **quitaron** los hosts inventados de la
 #: estructura asumida (`thumbs2.xvideos.com`, `cdn77.io`, patrones
-#: `th-01`/`vd-01`). `thumbs-gcore.xvideos-cdn.com` aparece solo en los thumbs
-#: de vídeos **relacionados** (no se usan como assets del vídeo actual) y no
-#: está en la lista: si un backfill real lo necesita, se amplía aquí y los
-#: assets fuera de la lista degradan sin red (fail-closed).
+#: `th-01`/`vd-01`).
+#: **PR-051 (hallazgo de la 1a ejecución real con SigLIP, 2026-08-16, tag
+#: `/tags/buttfucking`)**: los thumbs de ALGUNOS vídeos viven en
+#: `thumbs-gcore.xvideos-cdn.com` (misma familia `xvideos-cdn.com`) y, al no
+#: estar en la lista, **todos los assets degradaban** (frames=0) → se añade a
+#: la allowlist. Los assets fuera de la lista siguen degradando sin red
+#: (fail-closed).
 XV_ASSET_HOSTS: list[str] = [
     "xvideos.com",
     "www.xvideos.com",
     "thumb-cdn77.xvideos-cdn.com",  # CDN de thumbnails/galería (observado, PR-033)
     "assets-cdn77.xvideos-cdn.com",  # CDN de assets del reproductor (observado, PR-033)
+    "thumbs-gcore.xvideos-cdn.com",  # CDN de thumbs (PR-051, 1a ejecución real con SigLIP)
 ]
 
 XV_BASE_URL = "https://www.xvideos.com"

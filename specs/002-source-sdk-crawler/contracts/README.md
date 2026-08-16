@@ -199,6 +199,15 @@ xtrace-crawler check-availability --source <name> [--limit N]
     (`_default_context`); `CliContext.embeddings` sigue siendo **inyectable en tests**
     (sin torch en CI, NFR-003). Un valor distinto de `fake`/`siglip` falla al construir
     `Settings` (fail-fast).
+  - **Extra `siglip` requerido (PR-051 · hallazgo de la 1a ejecución real con
+    SigLIP, 2026-08-16)**: `XTRACE_CRAWLER_EMBEDDINGS=siglip` necesita el extra
+    opcional `siglip` del crawler (`open-clip-torch<3`, `torch<2.3`, mismo
+    patrón que el spike — `pyproject.toml` `[project.optional-dependencies]`):
+    instala con **`uv sync --extra siglip`** en `services/crawler` (o el
+    equivalente de tu gestor de paquetes). Sin él, el import de
+    `xtrace_spike.embeddings.siglip_local` falla (`ModuleNotFoundError`, p. ej.
+    `No module named 'open_clip'`) y el CLI termina con un **error claro y
+    accionable en stderr (exit 1)** — **sin fallback silencioso a fake**.
 
 ## 7. Invariantes
 
