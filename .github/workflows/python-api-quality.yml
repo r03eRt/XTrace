@@ -1,0 +1,77 @@
+# CI del servicio API de búsqueda (PR-054 · FR-006 · ADR-0012 · plan §CI strategy).
+# Aditivo: job independiente que NO altera la pipeline JS (quality.yml) ni los
+# jobs del spike/crawler (python-quality.yml, python-crawler-quality.yml). Se
+# dispara también ante cambios en services/search-spike/** porque xtrace_spike
+# es dependencia editable (ADR-0011/0012).
+#
+# DECISION (misma politica que python-crawler-quality.yml PR-037): pgTAP y los
+# tests de integracion contra Postgres/pgvector NO corren en CI — requieren el
+# stack Supabase completo — y se ejecutan localmente como gates del plan
+# §CI strategy:
+#   supabase start        # stack local (Postgres + pgvector)
+#   supabase test db      # pgTAP de supabase/tests/ (fases 1-2, sin cambios)
+#   uv run pytest         # unit + smoke (los tests de integracion con BD hacen
+#                         # skip limpio sin BD, patron crawler)
+# mypy solo sobre xtrace_api: xtrace_spike (dep editable, ADR-0011/0012) no
+# publica py.typed, asi que mypy sobre tests falla con [import-untyped] en CI
+# (misma decision que el crawler).
+#
+# Hardening PR-037 (security-review P2-CI): actions pineadas por SHA completo
+# (supply-chain, sin tags moviles) y permisos minimos del job.
+name: python-api-quality
+
+on:
+  pull_request:
+    paths:
+      - "services/api/**"
+      - "services/search-spike/**"
+      - ".github/workflows/python-api-quality.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/api/**"
+      - "services/search-spike/**"
+      - ".github/workflows/python-api-quality.yml"
+
+concurrency:
+  group: python-api-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-api-quality:
+    runs-on: ubuntu-latest
+    # Permisos minimos (security-review P2-CI): el job solo lee el contenido
+    # del repo; sin tokens de escritura ni id-token.
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: services/api
+    steps:
+      # actions/checkout v4 (misma version que python-quality.yml) — pin por SHA
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        # astral-sh/setup-uv v5 (misma version que python-quality.yml) — pin por SHA
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Setup Python 3.11
+        # actions/setup-python v5 (misma version que python-quality.yml) — pin por SHA
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies (reproducible)
+        run: uv sync --locked
+
+      - name: Lint (ruff check)
+        run: uv run ruff check
+
+      - name: Format check (ruff format --check)
+        run: uv run ruff format --check
+
+      - name: Typecheck (mypy)
+        run: uv run mypy xtrace_api
+
+      - name: Tests (pytest)
+        run: uv run pytest
