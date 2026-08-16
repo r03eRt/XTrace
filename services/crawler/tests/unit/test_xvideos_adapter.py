@@ -29,6 +29,15 @@ Trazabilidad (constitución §3): cada test marca el requisito que valida:
   0-indexada en la URL). El cursor es el href del LI siguiente al `a.active`
   (el enlace "Next" `no-page next-page` no cuenta); activo al final →
   `next_cursor=None`. `a.dir.next`, cuando existe, manda (prioridad).
+- PR-053 (8a validación real · hallazgo de la validación de capturas del
+  operador, 2026-08-16): los `timestamp_ms` de la galería usaban como
+  denominador el **número de assets conservados** (`total + 1`) y, con
+  posiciones dispersas (galería real hasta `xv_30_t.jpg` con pocos thumbs en
+  el markup), excedían la duración hasta 5x (p. ej. ts=2.400.000ms en un
+  vídeo de 480.000ms). La galería está distribuida uniformemente sobre el
+  vídeo: `timestamp_ms = round(N/K*duration_ms)` con `K = MÁXIMA posición
+  observada`, **clamp** a `[0, duration_ms]` (N==K → duración exacta) y
+  `None` defensivo (sin duración o K<=0).
 - FR-002 (soporte): `VideoSource` normalizado poblado desde el parseo
   (og:*, JSON-LD).
 - FR-005/SC-006: `get_visual_assets` devuelve la galería de thumbnails
@@ -144,6 +153,8 @@ def _fixture_handler() -> Callable[[httpx.Request], httpx.Response]:
     - `/video.synth00002/...` → `video_page_minimal.html` (opcionales None)
     - `/video.synth00007/...` → `_FALLBACK_VIDEO_HTML` (og:image sin galería)
     - `/video.synth00013/...` → `_SYNTH13_VIDEO_HTML` (PR-045: URL completa con slug)
+    - `/video.synth00021/...` → `video_page_sparse_gallery.html`
+      (PR-053: galería dispersa xv_3/12/15/28/30_t.jpg, K=30)
     - `/video.synth50000/...` → 200 con HTML sin estructura de vídeo (estructura cambiada)
     - `/video.synth99999/...` → 404 (vídeo retirado)
     - `/` → `listing_page_1.html` (ids 1..3, `dir.next` → `/best/2026-07/1`)
@@ -174,6 +185,8 @@ def _fixture_handler() -> Callable[[httpx.Request], httpx.Response]:
             body = _FALLBACK_VIDEO_HTML.encode("utf-8")
         elif path.startswith("/video.synth00013"):
             body = _SYNTH13_VIDEO_HTML.encode("utf-8")
+        elif path.startswith("/video.synth00021"):
+            body = _fixture("video_page_sparse_gallery.html").encode("utf-8")
         elif path.startswith("/video.synth50000"):
             body = b"<html><body>captcha o estructura totalmente distinta</body></html>"
         elif path.startswith("/video.synth99999"):
@@ -1080,7 +1093,9 @@ def test_get_visual_assets_galeria_thumbnails_con_timestamps() -> None:
 
     Los thumbs de la galería (JSON-escapados en el script del reproductor) se
     parsean del mismo path CDN que `og:image`; `kind="thumbnail"`,
-    `position=N` y `timestamp_ms = round(N/(total+1)*duration_ms)`. Nunca un
+    `position=N` y `timestamp_ms = round(N/K*duration_ms)` con
+    `K = MÁXIMA posición` (PR-053: galería contigua 1..6 → N/6, no N/7 como
+    antes del fix; N==K → la duración exacta, clamp). Nunca un
     mp4 completo (SC-006) ni storyboard (sin sprite real, PR-043).
     """
     assets: list[VisualAsset] = []
@@ -1097,15 +1112,72 @@ def test_get_visual_assets_galeria_thumbnails_con_timestamps() -> None:
     assert [a.kind for a in assets] == ["thumbnail"] * 6
     assert [a.position for a in assets] == [1, 2, 3, 4, 5, 6]
     assert [a.timestamp_ms for a in assets] == [
-        125_857,  # round(1/7 * 881_000)
-        251_714,  # round(2/7 * 881_000)
-        377_571,  # round(3/7 * 881_000)
-        503_429,  # round(4/7 * 881_000)
-        629_286,  # round(5/7 * 881_000)
-        755_143,  # round(6/7 * 881_000)
+        146_833,  # round(1/6 * 881_000)
+        293_667,  # round(2/6 * 881_000)
+        440_500,  # round(3/6 * 881_000)
+        587_333,  # round(4/6 * 881_000)
+        734_167,  # round(5/6 * 881_000)
+        881_000,  # round(6/6 * 881_000) == duración (clamp N==K)
     ]
     assert assets[0].url == f"{FIXTURE_THUMB_BASE}/xv_1_t.jpg"
     assert assets[-1].url == f"{FIXTURE_THUMB_BASE}/xv_6_t.jpg"
+
+
+def test_get_visual_assets_galeria_posiciones_dispersas_timestamps_correctos() -> None:
+    """PR-053 (8a validación real · validación de capturas del operador): regresión del bug.
+
+    La galería real llega hasta `xv_30_t.jpg` (K=30) pero el markup solo
+    expone posiciones DISPERSAS (3, 12, 15, 28, 30): el timestamp es
+    `round(N/K*duration_ms)` — uniforme sobre el vídeo — y NO
+    `round(N/(total+1)*duration_ms)` (el bug: el denominador era el nº de
+    assets conservados, 5, y N=30 daba 6x la duración — p. ej.
+    ts=2.400.000ms en un vídeo de 480.000ms). N=15 → 0.5*duración; N==K (30)
+    → la duración exacta (clamp a `[0, duration_ms]`).
+    """
+    assets: list[VisualAsset] = []
+
+    async def scenario() -> None:
+        nonlocal assets
+        adapter = _adapter()
+        video = await adapter.get_video("video.synth00021")
+        assert video is not None
+        assert video.duration_ms == 30_000  # og:duration "30" segundos → ms
+        assets = await adapter.get_visual_assets(video)
+
+    _run(scenario)
+    assert len(assets) == 5
+    assert [a.position for a in assets] == [3, 12, 15, 28, 30]
+    assert [a.timestamp_ms for a in assets] == [
+        3_000,  # round(3/30 * 30_000) = 0.1 * duración
+        12_000,  # round(12/30 * 30_000) = 0.4 * duración
+        15_000,  # round(15/30 * 30_000) = 0.5 * duración
+        28_000,  # round(28/30 * 30_000) ≈ 0.933 * duración
+        30_000,  # round(30/30 * 30_000) == duración (N==K, clamp)
+    ]
+    assert all(
+        0 <= ts <= 30_000 for asset in assets for ts in (asset.timestamp_ms,) if ts is not None
+    )  # clamp: ningún timestamp excede la duración
+
+
+def test_get_visual_assets_galeria_sin_duracion_timestamps_none() -> None:
+    """PR-053: sin `duration_ms` (og:duration ausente) → `timestamp_ms=None`.
+
+    Defensivo: la fuente no expone una referencia temporal fiable por thumb;
+    los assets se conservan con `position` pero sin timestamp (el pipeline
+    no puede ordenarlos temporalmente).
+    """
+    assets: list[VisualAsset] = []
+
+    async def scenario() -> None:
+        nonlocal assets
+        adapter = _adapter()
+        video = _full_video().model_copy(update={"duration_ms": None})
+        assets = await adapter.get_visual_assets(video)
+
+    _run(scenario)
+    assert len(assets) == 6
+    assert [a.position for a in assets] == [1, 2, 3, 4, 5, 6]
+    assert [a.timestamp_ms for a in assets] == [None] * 6
 
 
 def test_get_visual_assets_degrada_a_miniatura_unica() -> None:

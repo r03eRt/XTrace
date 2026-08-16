@@ -78,7 +78,14 @@ cambia, los tests fallan con mensajes claros (regresión de estructura).
   path CDN** que `og:image` (los thumbs de vídeos relacionados —otros
   UUIDs— quedan fuera), a menudo JSON-escapadas (`\/`) en los scripts del
   reproductor. `position=N`, `timestamp_ms` aproximado
-  `round(N / (total+1) * duration_ms)`.
+  `round(N / K * duration_ms)` con `K = MÁXIMA posición observada` de la
+  galería y **clamp** a `[0, duration_ms]` (**PR-053**, hallazgo de la
+  validación de capturas del operador, 2026-08-16): la galería está
+  distribuida uniformemente sobre el vídeo, así que el denominador es el
+  máximo de la galería (p. ej. `xv_30_t.jpg` → K=30), **no** el número de
+  assets conservados tras el filtro por CDN (ese denominador producía
+  timestamps que excedían la duración hasta 5x con posiciones dispersas);
+  sin duración o K<=0 → `timestamp_ms=None`.
 - **SC-006**: el mp4 completo existe en la página
   (`html5player.setVideoUrlLow`) pero está **PROHIBIDO** exponerlo o
   descargarlo → `preview_url` siempre `None`. No se detectó sprite real →
@@ -99,4 +106,5 @@ cambia, los tests fallan con mensajes claros (regresión de estructura).
 | `listing_tag_page_3.html` | Página 3 del tag (`/tags/xxx/2`): 1 thumb (synth00019), `a.active`=3, LIs 1,2,4 → cursor `/tags/xxx/3` |
 | `listing_tag_page_4.html` | ÚLTIMA página del tag (`/tags/xxx/3`): 1 thumb (synth00020), `a.active`=4 (último LI numerado; el "Next" apunta a `/tags/xxx/4`, inexistente, y se descarta) → `next_cursor=None` |
 | `video_page_full.html` | Estructura real completa: og:title/url/duration/image, h2 con `span.duration`, galería `xv_1..xv_6_t.jpg` (JSON-escapada), `setVideoUrlLow` (mp4 prohibido), JSON-LD con `uploadDate`/`keywords` |
+| `video_page_sparse_gallery.html` | **Galería con posiciones DISPERSAS (PR-053)**: og:duration 30s, og:image `xv_3_t.jpg`, galería del reproductor solo con `xv_3/12/15/28/30_t.jpg` (K=30 — el máximo de la galería real) → `timestamp_ms = N/30 * 30.000` con clamp (N=30 → 30.000) |
 | `video_page_minimal.html` | Solo og:title + og:url: campos opcionales `None` (edge case de la spec) |
