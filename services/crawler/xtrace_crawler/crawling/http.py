@@ -9,12 +9,24 @@ Todas las peticiones pasan por un request-hook del `httpx.AsyncClient` que
 revalida la URL en cada salto del redirect loop, de modo que ni la petición
 inicial ni ningún redirect pueden escapar de la política (SEC-001). El cliente
 es testeable con `httpx.MockTransport` (sin red real, NFR-003).
+
+**DNS rebinding (PR-036 · plan §Risks)**: con `validate_resolved_ip=True` el
+cliente resuelve el hostname de cada petición (resolver inyectable; el default
+usa `socket.getaddrinfo`) y rechaza con `PrivateIPError` cualquier IP privada/
+link-local/loopback/metadata (RFC1918, 169.254.0.0/16 — incluida
+169.254.169.254 —, 127.0.0.0/8, ::1, fc00::/7, fe80::/10), antes de emitir la
+petición y en cada hop del redirect loop. La ruta de assets del pipeline
+(PR-036) la activa; los transportes mock no resuelven DNS real (NFR-003).
+`is_private_ip` es la función pura de clasificación, validada por tests.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import shutil
+import socket
 import tempfile
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import TracebackType
 from urllib.parse import urlsplit
@@ -25,9 +37,55 @@ DEFAULT_USER_AGENT = "XTraceCrawler/0.1.0 (+https://github.com/r03eRt/XTrace; cr
 DEFAULT_TIMEOUT_SECONDS = 30.0
 MAX_REDIRECTS = 10
 
+#: Rangos de IP que un host de asset NUNCA debe resolver (anti-DNS-rebinding,
+#: PR-036 · plan §Risks): RFC1918, loopback, link-local (incluye la IP de
+#: metadata de cloud 169.254.169.254 dentro de 169.254.0.0/16), IPv6 loopback,
+#: ULA (fc00::/7) y link-local IPv6 (fe80::/10).
+_PRIVATE_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local + metadata 169.254.169.254
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+)
+
+#: Firma del resolver inyectable: hostname → direcciones IP (strings).
+Resolver = Callable[[str], Sequence[str]]
+
+
+def is_private_ip(ip: str) -> bool:
+    """¿`ip` es privada/no ruteable públicamente? (anti-DNS-rebinding, PR-036).
+
+    Incluye RFC1918, loopback, link-local (169.254.0.0/16 — la IP de metadata
+    de cloud 169.254.169.254 cae dentro), ::1, fc00::/7, fe80::/10 y las
+    IPv4-mapped IPv6 de rangos privados (`::ffff:10.0.0.1`). Una IP no
+    parseable se trata como insegura (fail-closed).
+    """
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return True
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return any(address in network for network in _PRIVATE_NETWORKS)
+
 
 class HostNotAllowedError(ValueError):
     """La URL apunta a un host que no está en la allowlist del adapter."""
+
+
+class NoAssetHostsError(ValueError):
+    """El adapter no declara la allowlist de hosts de sus assets (PR-036).
+
+    El pipeline rehúsa descargar assets por HTTP para una fuente sin
+    `asset_hosts` declarado: sin allowlist revisada no hay descarga
+    (SEC-001 · fail-closed). El mock no la necesita (servicio in-process,
+    PR-034); los adapters reales la declaran como parte del contrato.
+    """
 
 
 class SchemeNotAllowedError(ValueError):
@@ -36,6 +94,30 @@ class SchemeNotAllowedError(ValueError):
 
 class DownloadTooLargeError(ValueError):
     """La descarga superó el límite `max_bytes`."""
+
+
+class PrivateIPError(ValueError):
+    """La IP resuelta del host es privada/link-local/loopback/metadata o no
+    verificable: rechazo anti-DNS-rebinding (PR-036 · plan §Risks)."""
+
+
+def _default_resolver(host: str) -> list[str]:
+    """Resuelve `host` a sus direcciones IP (dedup, orden estable).
+
+    Un fallo de resolución se propaga como `PrivateIPError` (fail-closed: si no
+    se puede VERIFICAR que la IP es pública, no se descarga). El llamador puede
+    inyectar otro resolver (tests: stub sin DNS real, NFR-003).
+    """
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise PrivateIPError(f"no se pudo resolver {host!r} para validar su IP: {exc}") from exc
+    ips: set[str] = set()
+    for info in infos:
+        sockaddr = info[4]
+        if isinstance(sockaddr, tuple) and sockaddr and isinstance(sockaddr[0], str):
+            ips.add(sockaddr[0])
+    return sorted(ips)
 
 
 class SafeHTTPClient:
@@ -56,6 +138,8 @@ class SafeHTTPClient:
         allow_http: bool = False,
         max_redirects: int = MAX_REDIRECTS,
         transport: httpx.AsyncBaseTransport | None = None,
+        validate_resolved_ip: bool = False,
+        resolver: Resolver | None = None,
     ) -> None:
         """Crea el cliente con la política de seguridad fijada.
 
@@ -67,9 +151,20 @@ class SafeHTTPClient:
             allow_http: flag **dev explícito**; `False` (default) fuerza https.
             max_redirects: máximo de redirects seguidos (todos validados).
             transport: transporte inyectable (`httpx.MockTransport` en tests).
+            validate_resolved_ip: **PR-036**; `True` resuelve el hostname de
+                cada petición (incluidos los redirects) y rechaza IPs
+                privadas/link-local/loopback/metadata (`PrivateIPError`) antes
+                de emitir la petición (anti-DNS-rebinding). Default `False`
+                para no introducir DNS real donde no se pide (transporte mock,
+                NFR-003); la ruta de assets del pipeline lo activa.
+            resolver: inyectable `host → [ip, ...]`; default
+                `_default_resolver` (`socket.getaddrinfo`). En tests se inyecta
+                un stub (sin DNS real).
         """
         self._allowed_hosts = frozenset(h.lower().removesuffix(".") for h in allowed_hosts)
         self._allow_http = allow_http
+        self._validate_resolved_ip = validate_resolved_ip
+        self._resolver = resolver if resolver is not None else _default_resolver
 
         self._client = httpx.AsyncClient(
             transport=transport,
@@ -100,6 +195,22 @@ class SafeHTTPClient:
             raise ValueError(f"URL sin host válido: {url}")
         if host not in self._allowed_hosts:
             raise HostNotAllowedError(f"host '{host}' no está en la allowlist del adapter: {url}")
+        if self._validate_resolved_ip:
+            self._validate_resolved_ips(host)
+
+    def _validate_resolved_ips(self, host: str) -> None:
+        """Anti-DNS-rebinding (PR-036): ninguna IP resuelta puede ser interna.
+
+        Si CUALQUIER IP resuelta es privada/link-local/loopback/metadata (o no
+        verificable) se rechaza la petición: la conexión podría ir a cualquiera
+        de ellas. Fail-closed.
+        """
+        for ip in self._resolver(host):
+            if is_private_ip(ip):
+                raise PrivateIPError(
+                    f"IP resuelta {ip!r} del host {host!r} es privada/link-local/loopback/"
+                    f"metadata: rechazada (anti-DNS-rebinding, PR-036)"
+                )
 
     async def _validate_request(self, request: httpx.Request) -> None:
         """Request-hook: revalida cada petición, incluidos los redirects."""

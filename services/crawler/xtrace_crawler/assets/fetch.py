@@ -10,6 +10,14 @@ lanza (FR-015: sin artefactos temporales incluso cuando el job falla).
 El límite `max_bytes` (default 10 MiB por asset) aborta descargas
 desmesuradas; se aplica a través de `SafeHTTPClient.get_bytes` (PR-024), que
 además exige status 2xx y valida host/esquema en cada petición (SEC-001).
+
+**Decompression bomb (PR-036)**: además del `max_bytes`, `open_image_limited`
+aplica un **límite estricto de píxeles** (`max_pixels`, default 50 MP vía
+`XTRACE_CRAWLER_MAX_IMAGE_PIXELS`) al abrir imágenes: `Image.open` es perezoso
+y `size` se lee del **header** del formato; si `width*height` supera el
+presupuesto se aborta con `ImageTooManyPixelsError` **antes de decodificar el
+raster**. El pipeline lo aplica en las rutas HTTP e in-process (PR-034) y
+`storyboard.py` lo revalida sobre el sprite.
 """
 
 from __future__ import annotations
@@ -19,17 +27,61 @@ import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import BinaryIO
+
+from PIL import Image
 
 from xtrace_crawler.adapters.models import AssetKind, VisualAsset
 from xtrace_crawler.crawling.http import SafeHTTPClient
 
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB por asset (FR-005: descargas acotadas)
+#: Presupuesto de píxeles por imagen (PR-036 · decompression bomb): ~50 MP.
+DEFAULT_MAX_IMAGE_PIXELS = 50_000_000
 
 _SUFFIX_BY_KIND: dict[AssetKind, str] = {
     "storyboard": ".jpg",
     "thumbnail": ".jpg",
     "preview": ".mp4",
 }
+
+
+class ImageTooManyPixelsError(ValueError):
+    """La imagen supera el límite estricto de píxeles (decompression bomb, PR-036).
+
+    Se lanza al abrir la imagen ANTES de decodificarla completamente (el
+    tamaño se lee del header del formato); el asset degrada en el pipeline
+    (error tipado, nunca un OOM del proceso).
+    """
+
+
+def open_image_limited(source: str | Path | BinaryIO, *, max_pixels: int) -> Image.Image:
+    """Abre una imagen validando el presupuesto de píxeles ANTES de decodificar.
+
+    `Image.open` es perezoso: para los formatos estándar (JPEG/PNG/GIF/WebP/
+    BMP/TIFF) `size` se lee del header sin decodificar el raster; si
+    `width*height > max_pixels` se cierra y se lanza `ImageTooManyPixelsError`
+    (decompression bomb, PR-036). Formatos ilegibles fallan en `Image.open`
+    (OSError) — sin raster en memoria.
+
+    Args:
+        source: bytes en memoria (`io.BytesIO`), ruta o archivo abierto.
+        max_pixels: presupuesto máximo de píxeles (>= 1).
+
+    Raises:
+        ValueError: `max_pixels` inválido (< 1).
+        ImageTooManyPixelsError: la imagen excede el presupuesto.
+        OSError: la imagen no es decodificable.
+    """
+    if max_pixels < 1:
+        raise ValueError(f"max_pixels debe ser >= 1; recibido {max_pixels}")
+    image = Image.open(source)
+    if image.width * image.height > max_pixels:
+        image.close()
+        raise ImageTooManyPixelsError(
+            f"imagen {image.width}x{image.height} ({image.width * image.height} px) "
+            f"supera el límite de píxeles max_pixels={max_pixels} (decompression bomb)"
+        )
+    return image
 
 
 class AssetFetcher:

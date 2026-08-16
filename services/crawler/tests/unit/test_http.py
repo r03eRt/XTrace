@@ -5,6 +5,14 @@ forzado salvo flag dev explícito, bloqueo de redirects fuera del allowlist,
 timeout configurable, User-Agent declarado y descarga de bytes a buffer/archivo
 temporal. Todo con `httpx.MockTransport` (sin red real, NFR-003).
 
+**PR-036 · DNS rebinding (plan §Risks, mitigación)**: con
+`validate_resolved_ip=True` el cliente resuelve el hostname (resolver
+inyectable; el transporte mock no resuelve DNS real) y rechaza IPs
+privadas/link-local/loopback/metadata (RFC1918, 169.254.0.0/16 —
+incluida 169.254.169.254 —, 127.0.0.0/8, ::1, fc00::/7, fe80::/10) con
+`PrivateIPError` antes de emitir la petición. `is_private_ip` es la función
+pura validada directamente (unidad pura).
+
 Requisitos: SEC-001 (no saltarse protecciones ni acceder a recursos no
 permitidos; solo recursos públicos legalmente accesibles) y el §Security
 strategy del plan (anti-SSRF). La limpieza de temporales valida FR-015
@@ -27,8 +35,10 @@ from xtrace_crawler.crawling.http import (
     DEFAULT_USER_AGENT,
     DownloadTooLargeError,
     HostNotAllowedError,
+    PrivateIPError,
     SafeHTTPClient,
     SchemeNotAllowedError,
+    is_private_ip,
 )
 
 
@@ -420,3 +430,196 @@ def test_download_to_temp_error_http_no_deja_temporales() -> None:
 
     _run(scenario)
     assert _leftover_temp_dirs() == before
+
+
+# --- DNS rebinding: validación de la IP resuelta (PR-036 · plan §Risks) --------
+
+
+@pytest.mark.parametrize(
+    "ip",
+    [
+        # RFC1918 (privadas).
+        "10.0.0.1",
+        "172.16.0.1",
+        "172.31.255.254",
+        "192.168.1.1",
+        # Loopback y unspecified.
+        "127.0.0.1",
+        "0.0.0.0",
+        # Link-local IPv4 (incluye la IP de metadata de cloud 169.254.169.254).
+        "169.254.0.1",
+        "169.254.169.254",
+        # IPv6: loopback, ULA (fc00::/7) y link-local (fe80::/10).
+        "::1",
+        "fc00::1",
+        "fd12:3456::1",
+        "fe80::1",
+        # IPv4-mapped IPv6 de una IP privada (::ffff:10.0.0.1).
+        "::ffff:10.0.0.1",
+        # No parseable → fail-closed (tratada como insegura).
+        "no-es-una-ip",
+    ],
+)
+def test_is_private_ip_true_para_rangos_internos(ip: str) -> None:
+    """PR-036: rangos internos/metadata/loopback/link-local se consideran privados.
+
+    `169.254.169.254` (metadata de cloud) cae dentro de 169.254.0.0/16; una IP
+    no parseable se rechaza por seguridad (fail-closed).
+    """
+    assert is_private_ip(ip) is True
+
+
+@pytest.mark.parametrize(
+    "ip",
+    [
+        "8.8.8.8",
+        "1.1.1.1",
+        "93.184.216.34",
+        "2001:4860:4860::8888",
+        "2606:4700:4700::1111",
+    ],
+)
+def test_is_private_ip_false_para_ip_publicas(ip: str) -> None:
+    """PR-036: IPs públicas (v4/v6) no se consideran privadas."""
+    assert is_private_ip(ip) is False
+
+
+def test_resolved_private_ip_rejected_without_network() -> None:
+    """PR-036: la IP resuelta privada se rechaza ANTES de emitir la petición.
+
+    Resolver stub (sin DNS real, NFR-003): la validación aborta con
+    `PrivateIPError` y ningún request llega al transporte.
+    """
+    seen: list[httpx.Request] = []
+
+    async def scenario() -> None:
+        async with SafeHTTPClient(
+            allowed_hosts={"example.com"},
+            validate_resolved_ip=True,
+            resolver=lambda host: ["10.0.0.5"],
+            transport=httpx.MockTransport(_handler(record=seen)),
+        ) as client:
+            with pytest.raises(PrivateIPError):
+                await client.get_bytes("https://example.com/x")
+
+    _run(scenario)
+    assert seen == []
+
+
+@pytest.mark.parametrize("ip", ["169.254.169.254", "127.0.0.1", "fe80::1", "fc00::1"])
+def test_resolved_metadata_loopback_linklocal_rejected(ip: str) -> None:
+    """PR-036: metadata de cloud (169.254.169.254), loopback y link-local rechazados."""
+    seen: list[httpx.Request] = []
+
+    async def scenario() -> None:
+        async with SafeHTTPClient(
+            allowed_hosts={"example.com"},
+            validate_resolved_ip=True,
+            resolver=lambda host: [ip],
+            transport=httpx.MockTransport(_handler(record=seen)),
+        ) as client:
+            with pytest.raises(PrivateIPError):
+                await client.get_bytes("https://example.com/x")
+
+    _run(scenario)
+    assert seen == []
+
+
+def test_resolved_any_private_ip_rejects_even_with_public_ones() -> None:
+    """PR-036: si CUALQUIER IP resuelta es privada se rechaza (la conexión podría
+    ir a cualquiera de ellas — defensa DNS rebinding)."""
+    seen: list[httpx.Request] = []
+
+    async def scenario() -> None:
+        async with SafeHTTPClient(
+            allowed_hosts={"example.com"},
+            validate_resolved_ip=True,
+            resolver=lambda host: ["93.184.216.34", "10.0.0.5"],
+            transport=httpx.MockTransport(_handler(record=seen)),
+        ) as client:
+            with pytest.raises(PrivateIPError):
+                await client.get_bytes("https://example.com/x")
+
+    _run(scenario)
+    assert seen == []
+
+
+def test_resolved_public_ip_allowed() -> None:
+    """PR-036: una IP resuelta pública pasa la validación y la petición se emite."""
+    seen: list[httpx.Request] = []
+
+    async def scenario() -> None:
+        async with SafeHTTPClient(
+            allowed_hosts={"example.com"},
+            validate_resolved_ip=True,
+            resolver=lambda host: ["93.184.216.34"],
+            transport=httpx.MockTransport(_handler(record=seen)),
+        ) as client:
+            await client.get_bytes("https://example.com/a")
+
+    _run(scenario)
+    assert len(seen) == 1
+
+
+def test_ip_validation_off_by_default_no_resolution() -> None:
+    """PR-036: sin `validate_resolved_ip` no se resuelve NADA (transporte mock).
+
+    El default es `False` para no introducir DNS real donde no se pide (los
+    adapters/tests con transporte mock no resuelven; NFR-003).
+    """
+
+    def bomb_resolver(host: str) -> list[str]:
+        raise AssertionError(f"no debe resolverse nada con la validación apagada: {host}")
+
+    async def scenario() -> None:
+        async with SafeHTTPClient(
+            allowed_hosts={"example.com"},
+            resolver=bomb_resolver,
+            transport=httpx.MockTransport(_handler(content=b"ok")),
+        ) as client:
+            await client.get_bytes("https://example.com/a")
+
+    _run(scenario)
+    # Si llegamos aquí sin AssertionError, el resolver no se invocó.
+
+
+def test_redirect_hop_with_private_ip_rejected() -> None:
+    """PR-036: cada redirect se revalida — un hop que resuelva a IP privada aborta.
+
+    El request-hook revalida la URL en cada salto del redirect loop (SEC-001):
+    la validación de IP resuelta también aplica a los hops (anti-rebinding en
+    redirects).
+    """
+    seen: list[httpx.Request] = []
+
+    async def scenario() -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(
+                302,
+                headers={"location": "https://example.com/private"},
+                content=b"",
+                request=request,
+            )
+
+        def resolver(host: str) -> list[str]:
+            # Cada petición se valida 2 veces (pre-validación de `get_bytes` +
+            # request-hook); el 3er intento es el hop del redirect, que resuelve
+            # a una IP privada → aborta sin llegar al transporte.
+            resolver.calls += 1  # type: ignore[attr-defined]
+            return ["10.0.0.9"] if resolver.calls >= 3 else ["93.184.216.34"]  # type: ignore[attr-defined]
+
+        resolver.calls = 0  # type: ignore[attr-defined]
+
+        async with SafeHTTPClient(
+            allowed_hosts={"example.com"},
+            validate_resolved_ip=True,
+            resolver=resolver,
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            with pytest.raises(PrivateIPError):
+                await client.get_bytes("https://example.com/a")
+
+    _run(scenario)
+    # Solo el request inicial se emitió; el hop hacia la IP privada no llega al transporte.
+    assert [r.url.path for r in seen] == ["/a"]

@@ -11,6 +11,10 @@ Cubren el contrato PR-029 (contracts §7):
   CORTOS con intervalo configurable y **rehúsa** cualquier input que parezca
   vídeo completo (duración > límite configurable, default 120 s), con error
   tipado. Nunca se descarga/procesa un vídeo completo (SC-006).
+- `assets/fetch.py` + `assets/storyboard.py` (PR-036 · decompression bomb):
+  límite estricto de píxeles al abrir imágenes descargadas (`open_image_limited`
+  verifica el tamaño del header ANTES de decodificar; `split_storyboard` rechaza
+  sprites sobre el presupuesto) con error tipado `ImageTooManyPixelsError`.
 
 Todo sin red real (NFR-003): sprite sintético generado con Pillow y descargas
 con `httpx.MockTransport`. Los tests de preview requieren FFmpeg; si no está
@@ -20,6 +24,7 @@ disponible se marcan `skip` con motivo documentado (contrato PR-029).
 from __future__ import annotations
 
 import asyncio
+import io
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -31,7 +36,13 @@ from PIL import Image
 from tests.fixtures.assets.preview_factory import ffmpeg_available, make_preview_mp4
 from tests.fixtures.assets.sprite_factory import BORDER_COLOR, make_sprite, tile_color
 from xtrace_crawler.adapters.models import AssetKind, VisualAsset
-from xtrace_crawler.assets.fetch import DEFAULT_MAX_BYTES, AssetFetcher
+from xtrace_crawler.assets.fetch import (
+    DEFAULT_MAX_BYTES,
+    DEFAULT_MAX_IMAGE_PIXELS,
+    AssetFetcher,
+    ImageTooManyPixelsError,
+    open_image_limited,
+)
 from xtrace_crawler.assets.preview import (
     DEFAULT_MAX_PREVIEW_SECONDS,
     PreviewExtractionError,
@@ -309,6 +320,87 @@ def test_fetch_limpia_temporales_si_el_llamador_falla() -> None:
     _run(scenario)
     assert parent is not None
     assert not parent.exists()
+
+
+# --- Decompression bomb: límite estricto de píxeles (PR-036) ------------------
+
+
+def test_default_max_image_pixels_es_50_megapixeles() -> None:
+    """PR-036: el límite por defecto de píxeles por imagen es ~50 MP (config)."""
+    assert DEFAULT_MAX_IMAGE_PIXELS == 50_000_000
+
+
+def test_open_image_limited_rechaza_imagen_sobre_el_limite_por_header() -> None:
+    """PR-036: una imagen cuyo header declara más píxeles que `max_pixels` se
+    rechaza con error tipado ANTES de decodificar el raster.
+
+    `Image.open` es perezoso: `size` se lee del header JPEG; el test genera los
+    bytes de una imagen de 200×200 (40 000 px) y exige un presupuesto de
+    10 000 px → `ImageTooManyPixelsError` sin `load()`.
+    """
+    buffer = io.BytesIO()
+    Image.new("RGB", (200, 200), (0, 0, 0)).save(buffer, format="JPEG")
+    data = buffer.getvalue()
+
+    with pytest.raises(ImageTooManyPixelsError):
+        open_image_limited(io.BytesIO(data), max_pixels=10_000)
+
+
+def test_open_image_limited_acepta_dentro_del_limite() -> None:
+    """PR-036: dentro del presupuesto la imagen se abre y se puede decodificar."""
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 48), (10, 20, 30)).save(buffer, format="JPEG")
+    data = buffer.getvalue()
+
+    with open_image_limited(io.BytesIO(data), max_pixels=10_000) as image:
+        assert image.size == (64, 48)
+        image.load()  # decodificación completa permitida dentro del límite
+        assert image.getpixel((0, 0)) == (10, 20, 30)
+
+
+def test_open_image_limited_trabaja_con_ruta_de_archivo(tmp_path: Path) -> None:
+    """PR-036: la verificación también aplica abriendo desde un Path (ruta HTTP)."""
+    path = tmp_path / "big.jpg"
+    Image.new("RGB", (300, 200), (0, 0, 0)).save(path, format="JPEG")
+
+    with pytest.raises(ImageTooManyPixelsError):
+        open_image_limited(path, max_pixels=50_000)
+
+
+def test_open_image_limited_limite_invalido_rechazado(tmp_path: Path) -> None:
+    """PR-036: presupuestos inválidos (0 o negativos) fallan pronto."""
+    path = tmp_path / "x.jpg"
+    Image.new("RGB", (8, 8), (0, 0, 0)).save(path, format="JPEG")
+
+    with pytest.raises(ValueError):
+        open_image_limited(path, max_pixels=0)
+    with pytest.raises(ValueError):
+        open_image_limited(path, max_pixels=-5)
+
+
+def test_split_storyboard_rechaza_sprite_sobre_el_presupuesto_de_pixeles() -> None:
+    """PR-036: un sprite que supera el presupuesto de píxeles se rechaza antes
+    de recortar tiles (defensa en profundidad además del open limitado)."""
+    sprite = Image.new("RGB", (200, 150), (0, 0, 0))  # 30 000 px
+
+    with pytest.raises(ImageTooManyPixelsError):
+        split_storyboard(sprite, cols=3, rows=4, max_pixels=10_000)
+
+
+def test_split_storyboard_acepta_sprite_dentro_del_presupuesto() -> None:
+    """PR-036: un sprite dentro del presupuesto se recorta con normalidad."""
+    sprite = Image.new("RGB", (192, 144), (0, 0, 0))  # divisible por 3×4
+    tiles = split_storyboard(sprite, cols=3, rows=4, max_pixels=100_000)
+
+    assert len(tiles) == 12
+
+
+def test_split_storyboard_presupuesto_invalido_rechazado() -> None:
+    """PR-036: `max_pixels` inválido (0) es un error tipado de storyboard."""
+    sprite = Image.new("RGB", (10, 10), (0, 0, 0))
+
+    with pytest.raises(StoryboardError):
+        split_storyboard(sprite, cols=2, rows=2, max_pixels=0)
 
 
 # --- Preview: frames de previews CORTOS, nunca vídeo completo (FR-005/SC-006) -

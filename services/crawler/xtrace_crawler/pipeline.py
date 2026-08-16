@@ -1,5 +1,14 @@
 """Pipeline crawler → índice (PR-030 · FR-007/FR-010/FR-011/FR-013/FR-015 · SC-002/003/004/005
-· ADR-0011 · contracts §6).
+· ADR-0011 · contracts §6 · PR-036 SEC-001/FR-007).
+
+**PR-036 (hardening + cota global)**: (1) la allowlist de hosts de assets se
+lee del adapter (`adapter.asset_hosts`, nunca de las URLs parseadas) — sin
+allowlist declarada no hay descarga HTTP (`NoAssetHostsError`); (2) el cliente
+de assets valida la IP resuelta (anti-DNS-rebinding, `PrivateIPError`); (3)
+toda imagen se abre con límite de píxeles (`ImageTooManyPixelsError`, config
+`XTRACE_CRAWLER_MAX_IMAGE_PIXELS`); (4) `max_videos`/`videos_counted` en el
+payload DISCOVER cortan la cadena de paginación al alcanzar la cota global del
+backfill (analyze hallazgo 2 · SC-002).
 
 Handlers concretos para el `JobWorker` (PR-027) que cierran el flujo
 discover → get_video → get_visual_assets → frames → pHash + embedding → índice,
@@ -59,7 +68,9 @@ discover → get_video → get_visual_assets → frames → pHash + embedding �
   los clasifica (transitorio → backoff; terminal → `unavailable`).
 
 Payloads de jobs (contrato interno; PR-032 los encola desde el CLI):
-- DISCOVER: `{"source": str, "cursor": str|null, "limit": int, "mode": "backfill"|"incremental"}`
+- DISCOVER: `{"source": str, "cursor": str|null, "limit": int,
+  "mode": "backfill"|"incremental", "max_videos": int|null (PR-036),
+  "videos_counted": int (PR-036; acumulado de páginas previas)}`
 - FETCH_METADATA / INDEX_VIDEO / CHECK_AVAILABILITY: `{"source": str, "external_id": str}`
 
 El módulo depende solo de contratos (protocols locales + `SourceAdapter` y
@@ -82,7 +93,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, TypedDict
-from urllib.parse import urlsplit
 
 import httpx
 import numpy as np
@@ -98,7 +108,11 @@ from xtrace_spike.vectorstore.pgvector import (  # type: ignore[import-untyped]
 
 from xtrace_crawler.adapters.base import AdapterManifest, SourceAdapter
 from xtrace_crawler.adapters.models import VideoAvailability, VideoSource, VisualAsset
-from xtrace_crawler.assets.fetch import AssetFetcher
+from xtrace_crawler.assets.fetch import (
+    AssetFetcher,
+    ImageTooManyPixelsError,
+    open_image_limited,
+)
 from xtrace_crawler.assets.preview import (
     PreviewExtractionError,
     PreviewFrameExtractor,
@@ -109,6 +123,8 @@ from xtrace_crawler.config import Settings
 from xtrace_crawler.crawling.http import (
     DownloadTooLargeError,
     HostNotAllowedError,
+    NoAssetHostsError,
+    PrivateIPError,
     SafeHTTPClient,
     SchemeNotAllowedError,
 )
@@ -134,13 +150,20 @@ DEFAULT_PREVIEW_INTERVAL_S: float = 1.0
 #: ordinal en [1e9, 2^31) para no colisionar con los `frame_seq = timestamp_ms`.
 _NULL_TS_SEQ_OFFSET: int = 1_000_000_000
 #: Fallos de PROCESADO de un asset que degradan por asset (nunca tumban el vídeo):
-#: descarga (HTTP/límite/política de hosts), preview (FFmpeg/duración) y crop.
-#: Los fallos del ADAPTER no están aquí: se propagan al worker (PR-027).
+#: descarga (HTTP/límite/política de hosts/IPs, PR-036), apertura de imagen
+#: (límite de píxeles, PR-036), preview (FFmpeg/duración) y crop. Incluye los
+#: errores tipados PR-036: `NoAssetHostsError` (adapter sin allowlist de hosts),
+#: `PrivateIPError` (IP resuelta interna) e `ImageTooManyPixelsError`
+#: (decompression bomb). Los fallos del ADAPTER no están aquí: se propagan al
+#: worker (PR-027).
 _DEGRADABLE_ASSET_ERRORS: tuple[type[Exception], ...] = (
     httpx.HTTPStatusError,
     DownloadTooLargeError,
     HostNotAllowedError,
+    NoAssetHostsError,
+    PrivateIPError,
     SchemeNotAllowedError,
+    ImageTooManyPixelsError,
     PreviewExtractionError,
     PreviewTooLongError,
     StoryboardError,
@@ -287,6 +310,7 @@ class CrawlerPipeline:
         storyboard_grid: Callable[[VisualAsset], tuple[int, int] | None] | None = None,
         batch_size: int = DEFAULT_BATCH_SIZE,
         preview_interval_s: float = DEFAULT_PREVIEW_INTERVAL_S,
+        max_image_pixels: int | None = None,
     ) -> None:
         """Crea el pipeline sobre los repos/índice inyectados.
 
@@ -299,10 +323,13 @@ class CrawlerPipeline:
                 `xtrace_spike.embeddings.fake`, dimensión del esquema PR-006; el
                 real — SigLIP — se inyecta para ejecución local).
             client: cliente HTTP seguro para descargas de assets; sin él se
-                construye uno por vídeo con la allowlist derivada de las URLs de
-                los assets (default seguro: solo https, SEC-001 — los adapters
-                con http en dev inyectan su cliente con `allow_http=True`).
-            settings: configuración para los overrides de rate limit (D5);
+                construye uno por fuente con la **allowlist declarada por el
+                adapter** (`adapter.asset_hosts`, PR-036 — nunca derivada de
+                las URLs parseadas) y validación de IP resuelta activa
+                (anti-DNS-rebinding). Sin `asset_hosts` declarado → error
+                tipado `NoAssetHostsError` (fail-closed, SEC-001).
+            settings: configuración para los overrides de rate limit (D5) y
+                los límites PR-036 (`max_image_pixels`, `backfill_max_videos`);
                 default `Settings()` (env).
             limiter_factory: construye el `RateLimiter` de una fuente (default:
                 `RateLimiter(Settings.rate_limit_for(source, manifest.rate_limit),
@@ -313,6 +340,9 @@ class CrawlerPipeline:
                 (degradación, nunca falla el vídeo).
             batch_size: lote del embedding (paridad spike).
             preview_interval_s: intervalo de frames de previews (PR-029).
+            max_image_pixels: presupuesto de píxeles al abrir imágenes
+                (decompression bomb, PR-036); `None` → `settings.max_image_pixels`
+                (env `XTRACE_CRAWLER_MAX_IMAGE_PIXELS`, default 50 MP).
 
         Raises:
             ValueError: parámetros fuera de rango (uso incorrecto).
@@ -321,6 +351,8 @@ class CrawlerPipeline:
             raise ValueError(f"batch_size debe ser >= 1; recibido {batch_size}")
         if preview_interval_s <= 0:
             raise ValueError(f"preview_interval_s debe ser > 0; recibido {preview_interval_s}")
+        if max_image_pixels is not None and max_image_pixels < 1:
+            raise ValueError(f"max_image_pixels debe ser >= 1; recibido {max_image_pixels}")
         self._repo = repo
         self._jobs = jobs
         self._adapter_for = adapter_for
@@ -338,6 +370,9 @@ class CrawlerPipeline:
         self._preview_interval_s = preview_interval_s
         self._preview_extractor = PreviewFrameExtractor()
         self._limiters: dict[str, RateLimiter] = {}
+        self._max_image_pixels = (
+            max_image_pixels if max_image_pixels is not None else self._settings.max_image_pixels
+        )
 
     # -- Registro en el worker (PR-027) ---------------------------------------
 
@@ -379,6 +414,15 @@ class CrawlerPipeline:
         BACKFILL procesa todos los IDs de la página; INCREMENTAL (SC-003) solo los
         **nuevos** (los ya existentes en BD se omiten). El siguiente `DISCOVER`
         (cursor) se encola con `dedupe_key` para no duplicar cadenas activas.
+
+        **Cota global `max_videos` (PR-036 · analyze hallazgo 2 · SC-002)**: el
+        payload opcional `max_videos` (>= 1) corta la cadena de paginación al
+        alcanzar la cota, **acumulando vídeos ya conocidos y nuevos**
+        (`videos_counted`, contador global del backfill que fluye por payload).
+        Al alcanzarla: no se procesan más IDs de la página y NO se encola el
+        siguiente DISCOVER (log claro). Obligatoria para el backfill real de
+        xvideos (contracts §5); el CLI la inyecta siempre (`--max-videos` o el
+        default de config).
         """
         source = self._source_name(job)
         mode = job.payload.get("mode", "backfill")
@@ -401,6 +445,27 @@ class CrawlerPipeline:
         if limit < 1:
             raise ValueError(f"payload['limit'] debe ser >= 1; recibido {limit}")
 
+        max_videos: int | None = None
+        max_videos_raw = job.payload.get("max_videos")
+        if max_videos_raw is not None:
+            try:
+                max_videos = int(max_videos_raw)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"payload['max_videos'] debe ser un entero; recibido {max_videos_raw!r}"
+                ) from None
+            if max_videos < 1:
+                raise ValueError(f"payload['max_videos'] debe ser >= 1; recibido {max_videos}")
+        counted_raw = job.payload.get("videos_counted", 0)
+        try:
+            counted_so_far = int(counted_raw)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"payload['videos_counted'] debe ser un entero; recibido {counted_raw!r}"
+            ) from None
+        if counted_so_far < 0:
+            raise ValueError(f"payload['videos_counted'] debe ser >= 0; recibido {counted_so_far}")
+
         adapter = self._adapter_for(job)
         source_record = await self.sync_source(adapter)
         await self._acquire(adapter)
@@ -414,7 +479,13 @@ class CrawlerPipeline:
             len(page.external_ids),
         )
 
+        counted = counted_so_far
+        capped = False
         for external_id in page.external_ids:
+            if max_videos is not None and counted >= max_videos:
+                capped = True
+                break
+            counted += 1
             if mode == "incremental":
                 existing = await self._repo.get_web_video(source, external_id)
                 if existing is not None:
@@ -439,16 +510,35 @@ class CrawlerPipeline:
             )
             logger.info("DISCOVER (%s): vídeo %s descubierto (%s)", mode, external_id, record.id)
 
-        if page.next_cursor is not None:
+        # Cota alcanzada (a mitad de página o justo al final): la cadena de
+        # paginación se detiene aquí — sin siguiente DISCOVER (PR-036).
+        if not capped and max_videos is not None and counted >= max_videos:
+            capped = True
+        if capped:
+            logger.info(
+                "cota global de backfill alcanzada source=%s max_videos=%d "
+                "(contados=%d incl. conocidos) job=%s: se detiene el discover y "
+                "no se encola la siguiente página",
+                source,
+                max_videos,
+                counted,
+                job.id,
+            )
+
+        if page.next_cursor is not None and not capped:
+            next_payload: dict[str, Any] = {
+                "source": source,
+                "cursor": page.next_cursor,
+                "limit": limit,
+                "mode": mode,
+                "videos_counted": counted,
+            }
+            if max_videos is not None:
+                next_payload["max_videos"] = max_videos
             await self._jobs.enqueue(
                 JobType.DISCOVER,
                 source_id=parse_uuid(source_record.id, "source_id"),
-                payload={
-                    "source": source,
-                    "cursor": page.next_cursor,
-                    "limit": limit,
-                    "mode": mode,
-                },
+                payload=next_payload,
                 dedupe_key=f"discover:{source}:{page.next_cursor}:{mode}",
             )
 
@@ -600,10 +690,18 @@ class CrawlerPipeline:
         (ruta actual de las fuentes reales; el cliente solo se construye si
         algún asset necesita la red).
 
+        **PR-036 · SSRF**: el cliente HTTP por defecto se construye con la
+        **allowlist de hosts declarada por el adapter** (`adapter.asset_hosts`,
+        nunca derivada de las URLs parseadas) y validación de IP resuelta
+        activa; un adapter real sin `asset_hosts` NO descarga assets
+        (`NoAssetHostsError`). **Decompression bomb**: toda imagen se abre con
+        `open_image_limited` (presupuesto `max_image_pixels` verificado por
+        header antes de decodificar).
+
         Cada asset se procesa en su propio `try/except` de `_DEGRADABLE_ASSET_ERRORS`
-        (bytes in-process inválidos, descarga/preview/crop): un asset fallido se
-        omite con warning y el resto del vídeo continúa (spec edge case: la
-        jerarquía de assets degrada sin fallar todo el vídeo).
+        (bytes in-process inválidos, descarga/preview/crop/límites PR-036): un
+        asset fallido se omite con warning y el resto del vídeo continúa (spec
+        edge case: la jerarquía de assets degrada sin fallar todo el vídeo).
         """
         fetcher: AssetFetcher | None = None
         frames: list[IndexedFrame] = []
@@ -614,7 +712,7 @@ class CrawlerPipeline:
                     frames.extend(await self._frames_from_bytes(in_process, asset, video))
                 else:
                     if fetcher is None:
-                        fetcher = self._fetcher_for(assets)
+                        fetcher = self._fetcher_for(adapter)
                     frames.extend(await self._frames_from_asset(fetcher, asset, video))
             except _DEGRADABLE_ASSET_ERRORS as exc:
                 logger.warning(
@@ -637,14 +735,40 @@ class CrawlerPipeline:
             return None
         return await provider(asset.url)
 
-    def _fetcher_for(self, assets: list[VisualAsset]) -> AssetFetcher:
-        """`AssetFetcher` con el cliente seguro de los assets (SEC-001).
+    def _fetcher_for(self, adapter: SourceAdapter) -> AssetFetcher:
+        """`AssetFetcher` con el cliente seguro de los assets (SEC-001 · PR-036).
 
-        Solo se construye si algún asset necesita la ruta HTTP (PR-034): el
-        mock in-process no crea ningún `SafeHTTPClient` (0 superficie de red).
+        Usa el `client` inyectado si existe (operador/tests); si no, construye
+        el cliente por fuente con la allowlist DECLARADA por el adapter
+        (`_client_for_assets`). Solo se construye si algún asset necesita la
+        ruta HTTP (PR-034): el mock in-process no crea ningún
+        `SafeHTTPClient` (0 superficie de red).
         """
-        client = self._client if self._client is not None else self._client_for_assets(assets)
+        client = self._client if self._client is not None else self._client_for_assets(adapter)
         return AssetFetcher(client)
+
+    def _client_for_assets(self, adapter: SourceAdapter) -> SafeHTTPClient:
+        """Cliente por defecto de assets con la **allowlist por fuente** (PR-036 · SEC-001).
+
+        La allowlist NO se deriva de las URLs parseadas de los assets: se lee
+        del contrato del adapter (`adapter.asset_hosts`, hosts revisados:
+        dominio canónico + CDNs documentados). Un adapter real sin
+        `asset_hosts` → `NoAssetHostsError` (fail-closed: sin allowlist
+        revisada no se descarga nada por HTTP). El cliente activa la
+        **validación de IP resuelta** (anti-DNS-rebinding, PR-036).
+
+        El mock (FR-003) no declara `asset_hosts` a propósito: sirve sus
+        assets in-process (`fetch_asset_bytes`, PR-034) y el preview (sin
+        representación) degrada con `NoAssetHostsError` — 0 superficie de red.
+        """
+        hosts: Any = getattr(adapter, "asset_hosts", None)
+        if not hosts:
+            raise NoAssetHostsError(
+                f"el adapter {adapter.manifest.source!r} no declara 'asset_hosts' "
+                "(allowlist de hosts de assets revisada): no se descargan assets "
+                "por HTTP (SEC-001 · PR-036)"
+            )
+        return SafeHTTPClient(allowed_hosts=set(hosts), validate_resolved_ip=True)
 
     async def _frames_from_bytes(
         self, data: bytes, asset: VisualAsset, video: VideoSource
@@ -655,11 +779,13 @@ class CrawlerPipeline:
           (FFmpeg sobre previews cortos, PR-029); el temporal se elimina en
           `finally` (FR-015).
         - `storyboard`/`thumbnail`: bytes → imagen en memoria (`BytesIO`), sin
-          archivos temporales (FR-015).
+          archivos temporales (FR-015). **PR-036**: se abre con
+          `open_image_limited` (presupuesto de píxeles verificado por header
+          antes de decodificar — decompression bomb).
         """
         if asset.kind == "preview":
             return await self._preview_frames_from_bytes(data, asset)
-        with Image.open(io.BytesIO(data)) as image:
+        with open_image_limited(io.BytesIO(data), max_pixels=self._max_image_pixels) as image:
             return self._image_frames(image, asset, video)
 
     async def _preview_frames_from_bytes(
@@ -670,7 +796,8 @@ class CrawlerPipeline:
         El mp4 se escribe en un directorio temporal dedicado que se elimina en
         `finally` pase lo que pase (FR-015); los JPEGs extraídos viven dentro
         de ese mismo directorio y las imágenes se copian a memoria antes de
-        borrar.
+        borrar. **PR-036**: los JPEGs extraídos también pasan por
+        `open_image_limited` (límite de píxeles).
         """
         frames: list[IndexedFrame] = []
         tmp_dir = Path(tempfile.mkdtemp(prefix="xtrace-crawler-asset-"))
@@ -681,7 +808,9 @@ class CrawlerPipeline:
                 path, interval_s=self._preview_interval_s, out_dir=tmp_dir
             )
             for preview_frame in extracted:
-                with Image.open(preview_frame.path) as image:
+                with open_image_limited(
+                    preview_frame.path, max_pixels=self._max_image_pixels
+                ) as image:
                     frames.append(
                         IndexedFrame(image=image.copy(), timestamp_ms=preview_frame.timestamp_ms)
                     )
@@ -702,11 +831,14 @@ class CrawlerPipeline:
           se indexa sin timestamp, sin fallar).
         - preview: FFmpeg extrae frames del preview CORTO con `preview_interval_s`
           (PR-029; nunca un vídeo completo, SC-006).
+
+        **PR-036**: la imagen descargada se abre con `open_image_limited`
+        (presupuesto de píxeles por header antes de decodificar).
         """
         if asset.kind == "preview":
             return await self._preview_frames(fetcher, asset)
         async with fetcher.fetch(asset) as path:
-            with Image.open(path) as image:
+            with open_image_limited(path, max_pixels=self._max_image_pixels) as image:
                 return self._image_frames(image, asset, video)
 
     def _image_frames(
@@ -729,7 +861,11 @@ class CrawlerPipeline:
                 return [
                     IndexedFrame(image=tile.image.copy(), timestamp_ms=tile.timestamp_ms)
                     for tile in split_storyboard(
-                        image, cols=cols, rows=rows, duration_ms=video.duration_ms
+                        image,
+                        cols=cols,
+                        rows=rows,
+                        duration_ms=video.duration_ms,
+                        max_pixels=self._max_image_pixels,
                     )
                 ]
         return [IndexedFrame(image=image.copy(), timestamp_ms=asset.timestamp_ms)]
@@ -742,6 +878,7 @@ class CrawlerPipeline:
         `out_dir=path.parent` = el directorio temporal del asset descargado: al
         salir del context manager de `AssetFetcher.fetch` se eliminan junto con
         el preview (FR-015). Las imágenes se copian a memoria antes de borrar.
+        **PR-036**: los JPEGs extraídos pasan por `open_image_limited`.
         """
         frames: list[IndexedFrame] = []
         async with fetcher.fetch(asset) as path:
@@ -749,7 +886,9 @@ class CrawlerPipeline:
                 path, interval_s=self._preview_interval_s, out_dir=path.parent
             )
             for preview_frame in extracted:
-                with Image.open(preview_frame.path) as image:
+                with open_image_limited(
+                    preview_frame.path, max_pixels=self._max_image_pixels
+                ) as image:
                     frames.append(
                         IndexedFrame(image=image.copy(), timestamp_ms=preview_frame.timestamp_ms)
                     )
@@ -848,22 +987,6 @@ class CrawlerPipeline:
         if not isinstance(value, str) or not value:
             raise ValueError(f"payload['external_id'] requerido (str no vacío); recibido {value!r}")
         return value
-
-    def _client_for_assets(self, assets: list[VisualAsset]) -> SafeHTTPClient:
-        """Cliente por defecto con allowlist derivada de las URLs de los assets (SEC-001).
-
-        Solo https por defecto (http requiere `allow_http=True` explícito, flag
-        dev): los adapters con http (p. ej. el mock en tests) inyectan su cliente
-        con MockTransport + `allow_http=True`.
-        """
-        hosts: set[str] = set()
-        for asset in assets:
-            host = urlsplit(asset.url).hostname
-            if host:
-                hosts.add(host)
-        if not hosts:
-            raise ValueError("sin hosts de assets para construir el cliente HTTP; inyecta `client`")
-        return SafeHTTPClient(allowed_hosts=hosts)
 
     async def _mark_unavailable(self, source: str, external_id: str) -> None:
         """Marca el vídeo `unavailable` + exclusión del índice si su fila existe (FR-012/013)."""
