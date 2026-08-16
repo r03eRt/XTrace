@@ -297,6 +297,32 @@ termina en un PR aislado).
 - **Done**: operación completa del crawler desde CLI (quickstart ejecutable).
 - **Paralelizable con**: PR-031
 
+### PR-034 · Fix: assets del mock servidos in-process (flujo offline real)
+- **Estado**: READY
+- **Prioridad**: P0 · **Complejidad**: S · **Rol**: implementer · **Riesgo**: medio
+- **Spec/Req**: FR-003, FR-011, SC-001, SC-002 · ADR-0009 · contracts §1
+- **Objetivo** (hallazgo de la validación real del quickstart, PR-033): con el cableado
+  real del CLI/worker, `INDEX_VIDEO` del mock degrada todos los assets
+  (`http://mock.local/...` pasa por el `SafeHTTPClient` real y falla) → 0 vídeos
+  indexados. El mock debe servir sus assets **in-process, sin red** (FR-003, SC-001).
+  Fix: método opcional `fetch_asset_bytes(url) -> bytes | None` en `SourceAdapter`
+  (default `None` → descarga HTTP); `MockAdapter` lo implementa devolviendo bytes
+  sintéticos deterministas (imágenes Pillow del catálogo); `pipeline.py` lo prefiere
+  frente a `AssetFetcher` cuando existe. Sin cambios de contrato funcional para fuentes
+  reales.
+- **Dependencias**: PR-030, PR-032
+- **allowed_paths**: `services/crawler/xtrace_crawler/adapters/base.py`,
+  `services/crawler/xtrace_crawler/adapters/mock.py`,
+  `services/crawler/xtrace_crawler/pipeline.py`,
+  `services/crawler/tests/unit/test_mock_adapter.py`,
+  `services/crawler/tests/integration/test_pipeline.py`,
+  `docs/handoffs/PR-034.md`
+- **Tests**: unit (mock devuelve bytes estables; base devuelve None); integration:
+  flujo completo con el cableado REAL (worker + repos reales) → vídeos `indexed` con
+  frames+embeddings consultables **sin red** (SC-002 con mock, regresión del hallazgo).
+- **Done**: `backfill mock + run-worker --once` real indexa vídeos (0 fallos INDEX_VIDEO).
+- **Paralelizable con**: — (cierre)
+
 ### PR-033 · Validación operativa con xvideos real + cierre de la fase
 - **Estado**: READY (bloqueado operativamente hasta la revisión legal del humano — SEC-002)
 - **Prioridad**: P2 · **Complejidad**: S · **Rol**: orchestrator + operador · **Riesgo**: medio
