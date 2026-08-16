@@ -70,8 +70,12 @@ fixtures anonimizados en `tests/fixtures/xvideos/`):
   fallback `h2.page-title` (sin el `span.duration` interno); fecha y tags en
   el bloque JSON-LD (`<script type="application/ld+json">`: `uploadDate` ISO
   tz-aware → `published_at`, `keywords` → tags, máx. 20). El reproductor
-  carga una **galería de thumbnails** `xv_1_t.jpg … xv_N_t.jpg` (URLs del CDN
-  `thumb-cdn77.xvideos-cdn.com`, `position=N`); existe mp4 completo
+  carga una **galería de thumbnails** `xv_1_t.jpg … xv_K_t.jpg` (URLs del CDN
+  `thumb-cdn77.xvideos-cdn.com`, `position=N`), distribuida uniformemente
+  sobre el vídeo: el thumb N ≈ `N/K * duración`, con `K = máxima posición
+  observada` (**PR-053**, 8a validación real — hallazgo de la validación de
+  capturas del operador: el denominador era el nº de assets conservados y
+  los timestamps excedían la duración hasta 5x); existe mp4 completo
   (`html5player.setVideoUrlLow`) pero está **PROHIBIDO** exponerlo o
   descargarlo (SC-006) → `preview_url` queda siempre `None`. No se detectó
   sprite/storyboard real (solo `mozaique_*.jpg`, sin grid conocido) →
@@ -465,10 +469,24 @@ def _thumb_gallery(
     **relacionados** (otros UUIDs) quedan fuera. Soporta URLs JSON-escapadas
     (backslash-barra) como aparecen en los scripts del reproductor.
 
-    `kind="thumbnail"`, `position=N` y `timestamp_ms` aproximado
-    `round(N / (total + 1) * duration_ms)` (la fuente no expone una referencia
-    temporal fiable por thumb). `thumbnail_url` sin el patrón `xv_<N>_t.jpg` o
-    sin galería → lista vacía (el llamador degrada a la miniatura única).
+    `kind="thumbnail"` y `position=N`.
+
+    **Semántica temporal (PR-053, 8a validación real, 2026-08-16 · hallazgo de
+    la validación de capturas del operador)**: la galería `xv_1_t.jpg …
+    xv_K_t.jpg` está distribuida **uniformemente sobre el vídeo** — el thumb N
+    corresponde aprox. a `N / K * duración`, con `K = MÁXIMA posición
+    observada en la galería** (NO el número de assets que conservamos). El
+    denominador anterior (`total + 1`, con `total = len(by_position)`) era
+    válido solo para galerías contiguas y sin filtrado; con posiciones
+    dispersas o un subconjunto conservado producía `timestamp_ms` que
+    excedían la duración hasta 5x (p. ej. ts=2.400.000ms en un vídeo de
+    480.000ms). `timestamp_ms = round(N / K * duration_ms)`, **clamp** a
+    `[0, duration_ms]` (si N==K → la duración exacta, defensivo); sin
+    duración o con `K <= 0` → `timestamp_ms=None` (defensivo, la fuente no
+    expone una referencia temporal fiable por thumb).
+
+    `thumbnail_url` sin el patrón `xv_<N>_t.jpg` o sin galería → lista vacía
+    (el llamador degrada a la miniatura única).
     """
     if thumbnail_url is None:
         return []
@@ -485,12 +503,15 @@ def _thumb_gallery(
     if not by_position:
         return []
 
-    total = len(by_position)
+    # PR-053: K = máxima posición de la galería (no el nº de assets conservados).
+    gallery_max = max(by_position)
     assets: list[VisualAsset] = []
     for position in sorted(by_position):
         timestamp_ms: int | None = None
-        if duration_ms is not None:
-            timestamp_ms = round(position / (total + 1) * duration_ms)
+        if duration_ms is not None and gallery_max > 0:
+            timestamp_ms = round(position / gallery_max * duration_ms)
+            # Clamp defensivo: nunca fuera de [0, duration_ms] (N==K → duración).
+            timestamp_ms = max(0, min(timestamp_ms, duration_ms))
         assets.append(
             VisualAsset(
                 kind="thumbnail",
@@ -693,6 +714,16 @@ class XvideosAdapter:
         filtro de la galería por el path CDN de og:image (PR-043) es
         independiente de la URL pedida: parsea el HTML de la página completa
         servida en la URL canónica.
+
+        **PR-053 (8a validación real, 2026-08-16 · hallazgo de la validación
+        de capturas del operador)**: los `timestamp_ms` de la galería usaban
+        como denominador el **número de assets conservados** (`total + 1`):
+        con posiciones dispersas (galería real hasta `xv_30_t.jpg` con pocos
+        thumbs en el markup) los timestamps excedían la duración hasta 5x
+        (p. ej. ts=2.400.000ms en un vídeo de 480.000ms). La semántica real
+        es uniforme: `timestamp_ms = round(N / K * duration_ms)` con
+        `K = MÁXIMA posición observada`, clamp a `[0, duration_ms]` y `None`
+        defensivo (sin duración o K<=0) — ver `_thumb_gallery`.
         """
         url = XV_VIDEO_URL_TEMPLATE.format(external_id=video.external_id)
         if video.page_url:

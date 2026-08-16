@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Titulo de ejemplo 21 - XVideos (fixture sintetico)</title>
+  <meta property="og:type" content="video" />
+  <meta property="og:title" content="Titulo de ejemplo 21" />
+  <meta property="og:url" content="https://www.xvideos.invalid/video.synth00021/titulo-de-ejemplo-21" />
+  <meta property="og:duration" content="30" />
+  <meta property="og:image" content="https://thumb-cdn77.xvideos.invalid/11111111-2222-4333-8444-555555555555/3/xv_3_t.jpg" />
+</head>
+<body>
+<div id="main">
+  <h2 class="page-title">Titulo de ejemplo 21 <span class="duration">0 min</span></h2>
+  <div id="html5video" style="line-height: normal; min-height: 470px;">
+    <div id="html5video_base"></div>
+  </div>
+  <script type="text/javascript">
+    // Galeria con posiciones DISPERSAS (PR-053, hallazgo de la validacion de
+    // capturas del operador, 2026-08-16): la galeria real llega hasta
+    // xv_30_t.jpg (K=30) pero el markup solo expone algunas posiciones
+    // (3, 12, 15, 28 y el maximo 30). El timestamp es N/K * duracion
+    // (uniforme sobre el video), nunca N/(n_conservados+1) * duracion.
+    html5player.setThumbUrl('https://thumb-cdn77.xvideos.invalid/11111111-2222-4333-8444-555555555555/3/xv_3_t.jpg');
+    var thumbs = [
+      "https:\/\/thumb-cdn77.xvideos.invalid\/11111111-2222-4333-8444-555555555555\/3\/xv_3_t.jpg",
+      "https:\/\/thumb-cdn77.xvideos.invalid\/11111111-2222-4333-8444-555555555555\/3\/xv_12_t.jpg",
+      "https:\/\/thumb-cdn77.xvideos.invalid\/11111111-2222-4333-8444-555555555555\/3\/xv_15_t.jpg",
+      "https:\/\/thumb-cdn77.xvideos.invalid\/11111111-2222-4333-8444-555555555555\/3\/xv_28_t.jpg",
+      "https:\/\/thumb-cdn77.xvideos.invalid\/11111111-2222-4333-8444-555555555555\/3\/xv_30_t.jpg"
+    ];
+  </script>
+</div>
+</body>
+</html>
