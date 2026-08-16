@@ -10,8 +10,10 @@ Trazabilidad (constitución §3): cada test marca el requisito que valida:
   completo); el manifest declara exactamente `["storyboard", "thumbnail"]`.
 - SEC-001: el adapter solo usa el cliente HTTP seguro (allowlist
   xvideos.com/www.xvideos.com); ningún test toca la red (`httpx.MockTransport`).
-- SEC-002: el manifest está **deshabilitado por diseño** (`robots_reviewed=False`,
-  `terms_reviewed=False`, `review_date=None`) → no habilitable sin revisión humana.
+- SEC-002: el manifest está **revisado por el operador** (`robots_reviewed=True`,
+  `terms_reviewed=True`, `review_date="2026-08-16"`, aprobación en modo prueba,
+  PR-042) — la habilitación **efectiva** sigue exigiendo el gate del registry
+  (PR-028): manifest conforme Y `sources.enabled=true` en BD (SEC-002).
 - SEC-004: los fixtures son sintéticos (dominio `xvideos.invalid`, títulos
   anonimizados; ningún `xvideos.com` real en los fixtures).
 - SC-007: el core no importa el adapter (añadir esta fuente no toca el core).
@@ -40,6 +42,7 @@ from xtrace_crawler.adapters.models import (
     VideoSource,
     VisualAsset,
 )
+from xtrace_crawler.adapters.registry import AdapterNotEnabledError, AdapterRegistry
 from xtrace_crawler.adapters.xvideos import (
     XvideosAdapter,
     XvideosParseError,
@@ -99,26 +102,39 @@ def _adapter() -> XvideosAdapter:
 
 
 # ---------------------------------------------------------------------------
-# SEC-002 · Manifest deshabilitado por diseño
+# SEC-002 · Manifest revisado por el operador (2026-08-16) + gate del registry
 # ---------------------------------------------------------------------------
 
 
-def test_manifest_deshabilitado_por_diseno_sin_revision_legal() -> None:
-    """SEC-002: sin revisión legal el manifest de xvideos no es habilitable.
+def test_manifest_revisado_por_el_operador_y_gate_del_registry() -> None:
+    """SEC-002: el manifest está revisado (aprobación del operador, 2026-08-16).
 
-    `robots_reviewed=False`, `terms_reviewed=False` y `review_date=None`: el
-    registry (PR-028) no podrá habilitar el adapter hasta la revisión humana
-    (PR-033). El rate limit es conservador (FR-009, defaults D5).
+    `robots_reviewed=True`, `terms_reviewed=True` y `review_date="2026-08-16"`
+    (aprobación explícita del operador, modo prueba, PR-042): el manifest YA
+    no es la condición que bloquea la habilitación. La habilitación **efectiva**
+    sigue dependiendo del gate del registry (PR-028): manifest conforme Y
+    `sources.enabled=true` en BD — sin `enabled`, el registry rechaza la fuente
+    con `AdapterNotEnabledError` (razón única: `sources.enabled=false`); con
+    `enabled=true`, la resuelve. El rate limit es conservador (FR-009, D5).
     """
     manifest = XvideosAdapter.manifest
     assert manifest.source == "xvideos"
     assert manifest.access_method == "html"  # FR-004: jerarquía documentada
     assert manifest.assets_accessed == ["storyboard", "thumbnail"]  # SC-006
-    assert manifest.robots_reviewed is False
-    assert manifest.terms_reviewed is False
-    assert manifest.review_date is None
+    assert manifest.robots_reviewed is True
+    assert manifest.terms_reviewed is True
+    assert manifest.review_date == "2026-08-16"
     assert manifest.rate_limit.min_interval_ms == 2_000
     assert manifest.rate_limit.max_rps == 0.5
+
+    # Gate SEC-002 (PR-028 · contracts §1): la aprobación humana final vive en
+    # `sources.enabled`; el manifest revisado por sí solo no habilita.
+    registry = AdapterRegistry()
+    registry.register(_adapter(), real=True)
+    with pytest.raises(AdapterNotEnabledError) as excinfo:
+        registry.get_enabled("xvideos", enabled_in_db=False)
+    assert any("sources.enabled=false" in reason for reason in excinfo.value.reasons)
+    assert registry.get_enabled("xvideos", enabled_in_db=True).manifest.source == "xvideos"
 
 
 def test_adapter_satisface_protocolo_source_adapter() -> None:
@@ -133,10 +149,10 @@ def test_asset_hosts_provisionales_no_vacios_y_solo_hosts() -> None:
     """PR-040 · SEC-001 · contracts §1: `asset_hosts` no vacío y solo hosts.
 
     La allowlist de assets es **PROVISIONAL** — validar contra la estructura
-    real en PR-033 tras la revisión legal humana (SEC-002). No vacía (sin
-    allowlist el pipeline no descargaría nada, fail-closed) y con **solo
-    hosts**: sin esquemas, rutas, query ni fragmentos — el `SafeHTTPClient`
-    (PR-036) hace match exacto de host y nunca recibe URLs completas.
+    real en PR-033 (captura real del operador). No vacía (sin allowlist el
+    pipeline no descargaría nada, fail-closed) y con **solo hosts**: sin
+    esquemas, rutas, query ni fragmentos — el `SafeHTTPClient` (PR-036) hace
+    match exacto de host y nunca recibe URLs completas.
     """
     hosts = XvideosAdapter.asset_hosts
     assert hosts  # PROVISIONAL — no vacía
@@ -395,8 +411,9 @@ def test_get_visual_assets_storyboard_y_thumbnail_en_jerarquia() -> None:
     """FR-005: assets en orden de jerarquía (storyboard → thumbnail); nunca video (SC-006).
 
     El preview está parseado en el VideoSource pero NO se ofrece como asset:
-    el manifest declara `assets_accessed=["storyboard","thumbnail"]` (SEC-002);
-    cuando la revisión legal lo apruebe, basta actualizar el manifest.
+    el manifest declara `assets_accessed=["storyboard","thumbnail"]` (SC-006;
+    la revisión del operador de 2026-08-16 mantuvo el alcance — ampliarlo en
+    el manifest bastaría).
     """
     assets: list[VisualAsset] = []
 
