@@ -167,7 +167,7 @@ termina en un PR aislado).
 - **Paralelizable con**: PR-021, PR-028, PR-029 (archivos disjuntos)
 
 ### PR-027 · Worker de jobs (aislamiento por fuente)
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola C)
 - **Prioridad**: P0 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: medio
 - **Spec/Req**: FR-006, FR-008, FR-010, SC-008 · ADR-0010
 - **Objetivo**: `jobs/worker.py`: bucle async con concurrencia configurable; `claim →
