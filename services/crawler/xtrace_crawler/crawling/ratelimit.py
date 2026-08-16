@@ -9,6 +9,11 @@ Limitador async por fuente que combina dos límites:
 El **jitter es aditivo**: solo suma a la espera base, por lo que nunca puede
 violar el intervalo mínimo (lo exige el contrato de tests de PR-022).
 
+`RateLimitSpec` NO se redefine aquí: su definición canónica única vive en
+`adapters/base.py` (contracts §1 · alineación exigida por la revisión de la Ola A
+a PR-030) y este módulo la importa/re-exporta — `config.py` (PR-022) sigue
+resolviendo `RateLimitSpec` desde este módulo.
+
 El limiter es **puro**: reloj, sleeper y RNG inyectables → tests deterministas
 sin dormir de verdad. Las esperas son medibles/contables vía `RateLimiter.stats`
 (SC-005, NFR-004).
@@ -22,22 +27,10 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from pydantic import BaseModel, Field
-
-
-class RateLimitSpec(BaseModel):
-    """Spec de rate limit de una fuente: defaults en código (D5).
-
-    `min_interval_ms` es el espaciado mínimo entre requests; `max_rps` el ritmo
-    sostenido (token bucket con ráfaga inicial de 1 segundo de tokens).
-    """
-
-    min_interval_ms: int = Field(
-        default=1000, ge=0, description="Intervalo mínimo entre requests (ms)"
-    )
-    max_rps: float = Field(
-        default=1.0, gt=0, description="Ritmo sostenido máximo (requests/segundo)"
-    )
+# Re-export explícito (`as` = convención mypy de re-export): `config.py` (PR-022)
+# sigue resolviendo `RateLimitSpec` desde este módulo; la definición canónica
+# única vive en `adapters/base.py` (contracts §1 · alineación Ola A exigida a PR-030).
+from xtrace_crawler.adapters.base import RateLimitSpec as RateLimitSpec
 
 
 @dataclass
