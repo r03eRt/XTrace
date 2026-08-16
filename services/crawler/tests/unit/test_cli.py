@@ -28,6 +28,7 @@ Trazabilidad (constitución §3): cada test indica el requisito que valida.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import io
 import json
 import logging
@@ -36,6 +37,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import numpy as np
 import pytest
 from PIL import Image
 from pydantic import ValidationError
@@ -46,7 +48,7 @@ from xtrace_crawler.adapters.mock import MockAdapter
 from xtrace_crawler.adapters.models import DiscoverPage, VisualAsset
 from xtrace_crawler.adapters.registry import AdapterRegistry
 from xtrace_crawler.adapters.xvideos import XvideosAdapter
-from xtrace_crawler.cli import CliContext, app
+from xtrace_crawler.cli import CliContext, _default_context, app
 from xtrace_crawler.config import Settings
 from xtrace_crawler.jobs.types import Job, JobStatus, JobType
 from xtrace_crawler.jobs.worker import JobWorker
@@ -396,6 +398,7 @@ def _base_context(
     list_source_videos: Callable[[str, int], Awaitable[list[str]]] | None = None,
     worker: JobWorker | None = None,
     store: FakeVectorStore | None = None,
+    embeddings: Any | None = None,
 ) -> CliContext:
     """Contexto CLI con fakes (NFR-003): sin BD y sin red."""
     return CliContext(
@@ -406,6 +409,7 @@ def _base_context(
         list_source_videos=list_source_videos or _no_videos,
         worker=worker,
         store=store,
+        embeddings=embeddings,
     )
 
 
@@ -1331,3 +1335,132 @@ def test_settings_invalid_concurrency_is_rejected(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("XTRACE_CRAWLER_WORKER_CONCURRENCY", "0")
     with pytest.raises(ValidationError):
         Settings()
+
+
+# ---------------------------------------------------------------------------
+# PR-050 · Proveedor de embeddings por env (FR-011 · ADR-0011 · contracts §6)
+# ---------------------------------------------------------------------------
+
+
+def test_settings_embeddings_default_and_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PR-050 · FR-011: `XTRACE_CRAWLER_EMBEDDINGS` parsea fake/siglip y rechaza otros.
+
+    El default es `fake` (igual que hoy, PR-030): los tests/CI siguen con el
+    `FakeEmbeddingProvider` determinista del pipeline y nunca cargan torch.
+    Un valor desconocido falla al construir `Settings` (fail-fast).
+    """
+    monkeypatch.delenv("XTRACE_CRAWLER_EMBEDDINGS", raising=False)
+    assert Settings().embeddings == "fake"  # default intacto
+    monkeypatch.setenv("XTRACE_CRAWLER_EMBEDDINGS", "siglip")
+    assert Settings().embeddings == "siglip"
+    monkeypatch.setenv("XTRACE_CRAWLER_EMBEDDINGS", "openai")
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_default_context_embeddings_fake_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PR-050: sin env (default fake) el contexto por defecto NO inyecta proveedor.
+
+    `CliContext.embeddings=None` → el pipeline (PR-030) usa su default, el
+    `FakeEmbeddingProvider` determinista del spike (sin torch). El switch
+    solo se evalúa en el contexto por defecto real: los tests inyectan su
+    propio `CliContext` (NFR-003) y nunca pasan por aquí.
+    """
+    monkeypatch.delenv("XTRACE_CRAWLER_EMBEDDINGS", raising=False)
+    context = _default_context()  # repos reales pero sin conexión (sin BD/red)
+    assert context.embeddings is None
+
+
+def test_default_context_siglip_builds_real_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PR-050 · FR-011: con `XTRACE_CRAWLER_EMBEDDINGS=siglip` el contexto por
+    defecto construye el `SiglipLocalProvider` REAL de `xtrace_spike`.
+
+    Se monkeypatchea el import dinámico del módulo del spike (y el
+    constructor) para NO cargar torch de verdad: el switch importa
+    `xtrace_spike.embeddings.siglip_local` e instancia `SiglipLocalProvider()`
+    sin argumentos (paridad con el spike: PR-005 · `resolve_embedding_provider`
+    del CLI del spike instancia la clase sin args; model_id/dimension L2).
+    """
+    monkeypatch.setenv("XTRACE_CRAWLER_EMBEDDINGS", "siglip")
+    imported: list[str] = []
+    instantiated: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    class _FakeSiglipProvider:
+        """Contrato `EmbeddingProvider` del spike (model_id/dimension L2)."""
+
+        model_id = "openclip-ViT-B-16-SigLIP-webli"
+        dimension = 768
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            instantiated.append((args, kwargs))
+
+        def embed_images(self, images: Sequence[Any]) -> Any:
+            raise AssertionError("no se deben calcular embeddings en este test")
+
+    class _FakeSiglipModule:
+        SiglipLocalProvider = _FakeSiglipProvider
+
+    real_import_module = importlib.import_module
+
+    def _import_spy(name: str) -> Any:
+        if name == "xtrace_spike.embeddings.siglip_local":
+            imported.append(name)
+            return _FakeSiglipModule()
+        return real_import_module(name)
+
+    monkeypatch.setattr(importlib, "import_module", _import_spy)
+    context = _default_context()
+    assert imported == ["xtrace_spike.embeddings.siglip_local"]
+    assert isinstance(context.embeddings, _FakeSiglipProvider)
+    assert instantiated == [((), {})]  # SiglipLocalProvider() sin argumentos (PR-005)
+
+
+def test_run_worker_uses_injected_embeddings_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR-050: la inyección de `deps.embeddings` para tests se mantiene intacta.
+
+    Los tests inyectan su propio proveedor (aquí un fake contador) vía
+    `CliContext.embeddings` y el pipeline (PR-030) lo usa en INDEX_VIDEO —
+    sin torch y sin pasar por el switch del contexto por defecto (NFR-003).
+    """
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MIN_INTERVAL_MS", "0")
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MAX_RPS", "1000")
+    repo = FakeRepo(sources=[_mock_source_record(enabled=True)])
+    jobs = FakeJobs(
+        jobs=[
+            _make_job(
+                JobType.DISCOVER,
+                payload={"source": "mock", "cursor": None, "limit": 1, "mode": "backfill"},
+            )
+        ]
+    )
+    registry = _registry_with_mock(catalog_size=1)
+    store = FakeVectorStore()
+
+    class _CountingProvider:
+        model_id = "test-counting"
+        dimension = 768
+
+        def __init__(self) -> None:
+            self.embedded_images = 0
+
+        def embed_images(self, images: Sequence[Any]) -> Any:
+            self.embedded_images += len(images)
+            return np.zeros((len(images), self.dimension), dtype=np.float32)
+
+    provider = _CountingProvider()
+    result = _invoke(
+        ["run-worker", "--once"],
+        _base_context(
+            repo=repo,
+            jobs=jobs,
+            registry=registry,
+            settings=Settings(),
+            store=store,
+            embeddings=provider,
+        ),
+    )
+    assert _stdout_json(result) == {"processed": 3}  # DISCOVER + FETCH + INDEX
+    assert all(record.status == "indexed" for record in repo.videos.values())
+    assert provider.embedded_images > 0  # el proveedor inyectado fue usado por el pipeline
