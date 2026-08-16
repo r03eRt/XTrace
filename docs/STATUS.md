@@ -10,12 +10,17 @@
 > python-crawler-quality, quality, e2e, security, spec-compliance, GitGuardian).
 
 > 🧪 **Pruebas reales del operador (2026-08-16)**: habilitadores PR-049 (`backfill
-> --section`), PR-050 (`XTRACE_CRAWLER_EMBEDDINGS=fake|siglip`) y PR-051 (extra `siglip`
-> + allowlist `thumbs-gcore`) mergeados a `main`. Prueba del tag `/tags/buttfucking`
-> (max-videos=20): **20/20 vídeos `indexed`, 46 frames con embeddings SigLIP reales**;
-> búsqueda con un thumbnail real → Top-1 `video.uuadpbta957` (0.857) y Top-2
-> `video.kmcedoka08e` con visual=1.0/phash=1.0 (coincidencia exacta). Bucle completo
-> captura→crawl→índice→búsqueda validado con datos reales.
+> --section`), PR-050 (`XTRACE_CRAWLER_EMBEDDINGS=fake|siglip`), PR-051 (extra `siglip`
+> + allowlist `thumbs-gcore`) y PR-052 (paginación por lista numerada de tags)
+> mergeados a `main`. **Índice completo del tag `/tags/buttfucking`: 104 vídeos
+> `indexed`** (267/267 jobs done, 239 frames con SigLIP real, 398 requests con ~16 min
+> de rate-limit waits, 0 descargas de vídeo completo). **Búsqueda real: captura de
+> `video.hvbbcbmc85e` → Top-1 exacto (score 1.0, visual 1.0, phash 1.0, 2 frames,
+> ts 2,46 s)**; resto de resultados del mismo tag (0.66-0.68). Bucle completo
+> captura→crawl(tag)→índice→búsqueda validado con datos reales. Estrategia de escala:
+> corpus acotados por tag/categoría + `--max-videos` + INCREMENTAL; xvideos completo
+> (12-14 M vídeos) descartado por crawl (~1 año a 0,5 rps) y almacenamiento (~200-400 GB
+> de embeddings); umbral Qdrant documentado en el plan de coste.
 
 ## Setup de agentes (esta ejecución)
 
