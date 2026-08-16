@@ -13,6 +13,12 @@ Sección worker/operación (PR-032, contracts §5): concurrencia y lease timeout
 `run-worker` y límites por defecto de `backfill`/`check-availability`, todos
 overrideables por env con prefijo `XTRACE_CRAWLER_` (la base PR-019/022 no se rompe:
 nuevos campos con defaults y validación).
+
+Sección embeddings (PR-050, contracts §6 · FR-011 · ADR-0011): `XTRACE_CRAWLER_EMBEDDINGS`
+(`fake` | `siglip`, default `fake`). `fake` (igual que hoy) → el `FakeEmbeddingProvider`
+determinista del pipeline (PR-030): tests/CI sin torch. `siglip` → el CLI construye el
+pipeline con el `SiglipLocalProvider` REAL de `xtrace_spike` para las validaciones reales
+del operador (torch se importa lazy, PR-005).
 """
 
 from __future__ import annotations
@@ -20,7 +26,7 @@ from __future__ import annotations
 import os
 import re
 from functools import lru_cache
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from pydantic.fields import FieldInfo
@@ -91,6 +97,13 @@ class Settings(BaseSettings):
     # Ajustes generales.
     log_level: str = "INFO"
     request_timeout_seconds: float = 30.0
+
+    # Proveedor de embeddings (PR-050 · FR-011 · ADR-0011 · contracts §6):
+    # `fake` (default, igual que hoy) → FakeEmbeddingProvider determinista del
+    # pipeline (PR-030; tests/CI sin torch); `siglip` → el CLI construye el
+    # pipeline con el SiglipLocalProvider REAL de xtrace_spike (validaciones
+    # del operador con embeddings reales; torch se importa lazy, PR-005).
+    embeddings: Literal["fake", "siglip"] = "fake"
 
     # Rate limits por fuente (PR-022 · FR-009 · D5 · contracts §4): defaults en el
     # spec de rate limit y overrides por env (leídos por `_RateLimitEnvSource`).

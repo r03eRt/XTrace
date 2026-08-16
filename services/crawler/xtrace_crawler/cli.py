@@ -44,6 +44,16 @@ inyectan un contexto con fakes vía `CliRunner.invoke(..., obj=...)`. El worker
 del `run-worker` también es inyectable (`CliContext.worker`) para probar la
 pasada sin cablear el pipeline.
 
+**PR-050 (FR-011 · ADR-0011 · contracts §6)**: el contexto por defecto
+construye el proveedor de embeddings según la env `XTRACE_CRAWLER_EMBEDDINGS`
+(`fake` por defecto → `CliContext.embeddings=None`: el pipeline usa el
+`FakeEmbeddingProvider` determinista de PR-030, sin torch; `siglip` →
+`SiglipLocalProvider` REAL de `xtrace_spike.embeddings.siglip_local` para las
+validaciones reales del operador — import dinámico, mismo patrón que el
+adapter xvideos; el constructor no carga torch, PR-005). El switch solo se
+evalúa en el contexto por defecto real: los tests inyectan `deps.embeddings`
+y nunca pasan por aquí (sin torch en CI).
+
 `config.py` (PR-032) aporta los defaults del worker y de los límites:
 `worker_concurrency`, `job_lease_timeout_seconds`, `backfill_default_limit`,
 `check_availability_default_limit` (override por env `XTRACE_CRAWLER_*`).
@@ -61,7 +71,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated, Any, NoReturn, Protocol
+from typing import Annotated, Any, NoReturn, Protocol, cast
 
 import typer
 from xtrace_spike.vectorstore.base import VectorStore  # type: ignore[import-untyped]
@@ -654,8 +664,40 @@ def _list_source_videos_for(repo: CrawlerRepo) -> Callable[[str, int], Awaitable
     return _list
 
 
+def _embedding_provider_for(settings: Settings) -> EmbeddingProviderProtocol | None:
+    """Proveedor de embeddings del contexto por defecto (PR-050 · FR-011 · contracts §6).
+
+    `XTRACE_CRAWLER_EMBEDDINGS=fake` (default) → `None`: el pipeline (PR-030)
+    usa su default, el `FakeEmbeddingProvider` determinista de `xtrace_spike`
+    (dimensión del esquema; tests/CI sin torch — comportamiento de hoy).
+
+    `siglip` → el **`SiglipLocalProvider` REAL** de
+    `xtrace_spike.embeddings.siglip_local` (ADR-0011): import dinámico (mismo
+    patrón que el adapter xvideos, SC-007) e instanciación **sin argumentos**
+    (paridad con el CLI del spike, PR-005: `ViT-B-16-SigLIP`/`webli`, D=768,
+    embeddings L2-normalizados). El constructor no carga torch (carga lazy en
+    el primer `embed_images`), así que la selección en sí no exige el extra
+    `siglip` instalado; solo su uso real lo requiere.
+
+    El switch solo se evalúa en el contexto por defecto real (este helper solo
+    lo llama `_default_context`): los tests inyectan `CliContext.embeddings`
+    y nunca cargan torch.
+    """
+    if settings.embeddings == "siglip":
+        module: Any = importlib.import_module("xtrace_spike.embeddings.siglip_local")
+        provider = module.SiglipLocalProvider()
+        return cast(EmbeddingProviderProtocol, provider)
+    return None
+
+
 def _default_context() -> CliContext:
-    """Contexto por defecto: repos reales + registry con mock/xvideos + env (D5)."""
+    """Contexto por defecto: repos reales + registry con mock/xvideos + env (D5).
+
+    PR-050 (FR-011 · contracts §6): `embeddings` se resuelve desde
+    `XTRACE_CRAWLER_EMBEDDINGS` — `fake` (default) → `None` (el pipeline usa
+    su FakeEmbeddingProvider determinista); `siglip` → `SiglipLocalProvider`
+    real para las validaciones del operador.
+    """
     settings = Settings()
     repo = CrawlerRepo()
     shared_limiters: dict[str, RateLimiter] = {}
@@ -687,6 +729,7 @@ def _default_context() -> CliContext:
         repo=repo,
         jobs=JobsRepo(),
         list_source_videos=_list_source_videos_for(repo),
+        embeddings=_embedding_provider_for(settings),
         limiter_factory=limiter_factory,
         rate_limits_provider=rate_limits_provider,
     )

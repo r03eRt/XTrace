@@ -168,6 +168,20 @@ xtrace-crawler check-availability --source <name> [--limit N]
   `EmbeddingProvider` (SigLIP/fake), `VectorStore`/`PgVectorStore`, ranking y exclusión.
 - El spike **no** se modifica; cualquier cambio necesario en él es un PR propio trazado a
   esta spec.
+- **Proveedor de embeddings por env (PR-050 · FR-011)**: env `XTRACE_CRAWLER_EMBEDDINGS`
+  (`fake` | `siglip`, default **`fake`** — igual que hoy):
+  - `fake` (default) → `CliContext.embeddings=None`: el pipeline (PR-030) usa el
+    `FakeEmbeddingProvider` determinista de `xtrace_spike` (dimensión del esquema;
+    tests/CI sin torch).
+  - `siglip` → el CLI construye el pipeline con el **`SiglipLocalProvider` REAL** de
+    `xtrace_spike.embeddings.siglip_local` (ADR-0011): instanciado **sin argumentos**
+    (paridad con el CLI del spike, PR-005: `ViT-B-16-SigLIP`/`webli`, D=768, embeddings
+    L2-normalizados) para las **validaciones reales del operador** (FR-011). El
+    constructor no carga torch (carga lazy en el primer uso, PR-005).
+  - El switch solo se evalúa en el **contexto por defecto real** del CLI
+    (`_default_context`); `CliContext.embeddings` sigue siendo **inyectable en tests**
+    (sin torch en CI, NFR-003). Un valor distinto de `fake`/`siglip` falla al construir
+    `Settings` (fail-fast).
 
 ## 7. Invariantes
 
