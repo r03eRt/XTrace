@@ -1,4 +1,4 @@
-# Fixtures sintéticos de xvideos (PR-031/PR-043/PR-044 · SEC-004)
+# Fixtures sintéticos de xvideos (PR-031/PR-043/PR-044/PR-052 · SEC-004)
 
 Fixtures **sintéticos** que replican la **estructura observada** del HTML real
 de xvideos.com (validación real 2026-08-16, hallazgo PR-033) con títulos
@@ -48,6 +48,19 @@ cambia, los tests fallan con mensajes claros (regresión de estructura).
 - **Anti-bucle (PR-043)**: si `a.dir.next` apunta al path actual de la
   respuesta, o si una página devuelve 0 IDs **nuevos** (no vistos en la
   instancia del adapter), `next_cursor=None` (fin).
+- **Paginación por lista numerada de los TAGS (`listing_tag_page_*.html`,
+  PR-052)**: hallazgo de la prueba del tag `/tags/buttfucking` (7a validación
+  real, 2026-08-16) — los TAGS **NO usan `a.dir.next`** (que sí usan `/best` y
+  `/c`); su paginación real es
+  `<div class="pagination "><ul><li><a class="active" href="">1</a></li>
+  <li><a href="/tags/xxx/1">2</a></li>…</ul></div>` (el `div.pagination` de
+  `/best` es distinto: `<a>` planos con clase `current`, sin `ul/li`). **Ojo
+  al esquema**: la página 1 es la URL base (`/tags/xxx`) y la página N+1 es
+  `/tags/xxx/N` (numeración 0-indexada en la URL). El cursor para avanzar es
+  el href del **LI siguiente al que contiene `a.active`**; el enlace "Next"
+  (clases `no-page next-page`) no es un número de página y se descarta: con
+  el activo al final de la lista → `next_cursor=None` (última página).
+  `a.dir.next`, cuando existe, manda (prioridad).
 
 ### Página de vídeo (`video_page_*.html`)
 
@@ -81,5 +94,9 @@ cambia, los tests fallan con mensajes claros (regresión de estructura).
 | `listing_page_1.html` | 3 thumbs (uno con `thumb-link` duplicado para probar dedup) + `dir.prev` y `dir.next` → `/best/2026-07/1` |
 | `listing_page_2.html` | 1 thumb (synth00004) + `dir.next` → `/best/2026-07/2` |
 | `listing_page_3.html` | 1 thumb (synth00005), sin `dir.next` → fin de paginación |
+| `listing_tag_page_1.html` | **Página de TAG (PR-052)**: 3 thumbs (synth00014..16) + `ul.pagination` con `a.active`=1 y LIs numerados 2,3,4 (`/tags/xxx/1..3`) + enlace "Next" (`no-page next-page`) → cursor `/tags/xxx/1` |
+| `listing_tag_page_2.html` | Página 2 del tag (`/tags/xxx/1`): 2 thumbs (synth00017..18), `a.active`=2, LIs 1,3,4 → cursor `/tags/xxx/2` |
+| `listing_tag_page_3.html` | Página 3 del tag (`/tags/xxx/2`): 1 thumb (synth00019), `a.active`=3, LIs 1,2,4 → cursor `/tags/xxx/3` |
+| `listing_tag_page_4.html` | ÚLTIMA página del tag (`/tags/xxx/3`): 1 thumb (synth00020), `a.active`=4 (último LI numerado; el "Next" apunta a `/tags/xxx/4`, inexistente, y se descarta) → `next_cursor=None` |
 | `video_page_full.html` | Estructura real completa: og:title/url/duration/image, h2 con `span.duration`, galería `xv_1..xv_6_t.jpg` (JSON-escapada), `setVideoUrlLow` (mp4 prohibido), JSON-LD con `uploadDate`/`keywords` |
 | `video_page_minimal.html` | Solo og:title + og:url: campos opcionales `None` (edge case de la spec) |
