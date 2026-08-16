@@ -7,6 +7,10 @@ Trazabilidad (constitución §3): cada test marca el requisito que valida:
   cursor de paginación y **protección anti-bucle** (hallazgo de la validación
   real PR-033: 0 IDs nuevos → fin; cursor repetido → fin; cursor desde la URL
   FINAL de la respuesta tras redirects) y `get_video()` sobre HTML de xvideos.
+- PR-044: la HOME real NO usa `a.thumb-link` — los enlaces viven en
+  `div.thumb > a[href^="/video."]` **sin clase** y la home NO tiene paginación
+  `a.dir.next` (hallazgo de la 2a validación real, 2026-08-16); el selector
+  ampliado cubre la home y `/best/...` (donde sí existe `a.thumb-link`).
 - FR-002 (soporte): `VideoSource` normalizado poblado desde el parseo
   (og:*, JSON-LD).
 - FR-005/SC-006: `get_visual_assets` devuelve la galería de thumbnails
@@ -82,7 +86,9 @@ _FALLBACK_VIDEO_HTML = f"""<!DOCTYPE html>
 #: Página de listado cuyo `a.dir.next` apunta a su propio path (anti-bucle).
 _LOOP_CURSOR_HTML = (
     "<html><body>"
+    "<div class='thumb'>"
     "<a class='thumb-link' href='/video.synth00006/titulo-de-ejemplo-6'>v</a>"
+    "</div>"
     "<a href='/best/2026-07/3' class='dir next'>Next</a>"
     "</body></html>"
 )
@@ -107,6 +113,8 @@ def _fixture_handler() -> Callable[[httpx.Request], httpx.Response]:
     - `/video.synth50000/...` → 200 con HTML sin estructura de vídeo (estructura cambiada)
     - `/video.synth99999/...` → 404 (vídeo retirado)
     - `/` → `listing_page_1.html` (ids 1..3, `dir.next` → `/best/2026-07/1`)
+    - `/home` → `home_page.html` (HOME real: `div.thumb` SIN `a.thumb-link`,
+      sin paginación → ids 10..12 y fin)
     - `/best/1` → 302 → `/best/2026-07` (redirect canónico del cursor)
     - `/best/2026-07` → `listing_page_1.html` (URL FINAL tras el redirect)
     - `/best/2026-07/1` → `listing_page_2.html` (id 4, `dir.next` → `/best/2026-07/2`)
@@ -131,6 +139,8 @@ def _fixture_handler() -> Callable[[httpx.Request], httpx.Response]:
             return httpx.Response(404, content=b"", request=request)
         elif path == "/":
             body = _fixture("listing_page_1.html").encode("utf-8")
+        elif path == "/home":
+            body = _fixture("home_page.html").encode("utf-8")
         elif path == "/best/1":
             return httpx.Response(302, headers={"location": "/best/2026-07"}, request=request)
         elif path == "/best/2026-07":
@@ -387,7 +397,9 @@ def test_parse_listing_page_fin_de_paginacion() -> None:
 def test_parse_listing_page_href_absoluto_normalizado_a_path() -> None:
     """FR-004: el enlace `dir.next` absoluto se normaliza a path como cursor."""
     html = (
-        "<html><body><a class='thumb-link' href='/video.synth00009/x'>v</a>"
+        "<html><body><div class='thumb'>"
+        "<a class='thumb-link' href='/video.synth00009/x'>v</a>"
+        "</div>"
         "<a class='dir next' href='https://www.xvideos.invalid/best/3'>Next</a>"
         "</body></html>"
     )
@@ -398,7 +410,9 @@ def test_parse_listing_page_href_absoluto_normalizado_a_path() -> None:
 def test_parse_listing_page_cursor_repite_path_actual_fin() -> None:
     """PR-043 anti-bucle: `dir.next` == path actual de la respuesta → fin (None)."""
     html = (
-        "<html><body><a class='thumb-link' href='/video.synth00006/x'>v</a>"
+        "<html><body><div class='thumb'>"
+        "<a class='thumb-link' href='/video.synth00006/x'>v</a>"
+        "</div>"
         "<a href='/best/2026-07' class='dir next'>Next</a>"
         "</body></html>"
     )
@@ -422,6 +436,26 @@ def test_parse_listing_page_estructura_cambiada_devuelve_vacio() -> None:
     assert page.next_cursor is None
 
 
+def test_parse_listing_page_home_sin_clase_thumb_link_ids_y_sin_paginacion() -> None:
+    """PR-044: la HOME real NO usa `a.thumb-link` — los enlaces viven en `div.thumb`.
+
+    Hallazgo de la 2a validación real (2026-08-16): en la home los enlaces de
+    vídeo son `div.thumb > a[href^="/video."]` **sin clase** (el `a.thumb-link`
+    solo existe en `/best/...`), y la home NO tiene paginación `a.dir.next`
+    (grid de una sola página). El selector ampliado parsea los IDs (dedup por
+    href: el thumb synth00010 repite su enlace) y `next_cursor` queda `None`;
+    el enlace del título (`div.thumb-under`, fuera de `div.thumb`) no cuenta
+    dos veces.
+    """
+    page = parse_listing_page(_fixture("home_page.html"))
+    assert page.external_ids == [
+        "video.synth00010",
+        "video.synth00011",
+        "video.synth00012",
+    ]
+    assert page.next_cursor is None
+
+
 # ---------------------------------------------------------------------------
 # FR-004 · discover() con transporte mock (sin red) + protección anti-bucle
 # ---------------------------------------------------------------------------
@@ -438,6 +472,30 @@ def test_discover_primera_pagina_ids_y_cursor() -> None:
     _run(scenario)
     assert page.external_ids == ["video.synth00001", "video.synth00002", "video.synth00003"]
     assert page.next_cursor == "/best/2026-07/1"
+
+
+def test_discover_home_sin_clase_thumb_link_ids_y_fin_sin_paginacion() -> None:
+    """PR-044: discover contra la HOME real (sin `a.thumb-link` ni paginación).
+
+    El flujo completo del hallazgo de la 2a validación real: la home devuelve
+    los IDs con el selector ampliado `div.thumb a[href^="/video."]` y
+    `next_cursor=None` — no hay `a.dir.next` (una sola página). El anti-bucle
+    de 0 IDs nuevos (PR-043) ni siquiera se alcanza: la cadena termina en la
+    propia home.
+    """
+    page: DiscoverPage
+
+    async def scenario() -> None:
+        nonlocal page
+        page = await _adapter().discover(cursor="/home", limit=100)
+
+    _run(scenario)
+    assert page.external_ids == [
+        "video.synth00010",
+        "video.synth00011",
+        "video.synth00012",
+    ]
+    assert page.next_cursor is None
 
 
 def test_discover_cadena_de_paginacion_hasta_fin() -> None:

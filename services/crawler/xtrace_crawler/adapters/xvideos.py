@@ -16,15 +16,23 @@ Estructura HTML **observada** (validación real 2026-08-16, PR-033; capturas
 del operador en `/tmp/xvideos-probe/` — **nunca copiadas al repo**, SEC-004;
 fixtures anonimizados en `tests/fixtures/xvideos/`):
 
-- **Listado/discover**: ítems `a.thumb-link[href^="/video"]` — el ID externo
+- **Listado/discover**: ítems `div.thumb a[href^="/video."]` — el ID externo
   es el **primer segmento del path** `/video.<encoded>/<slug>` (p. ej.
   `/video.abc12345/…` → `external_id="video.abc12345"`; el `<encoded>` NO es
-  numérico); thumb lazy en `img[data-src]` del CDN
-  `thumb-cdn77.xvideos-cdn.com` (ficheros `xv_<N>_t.jpg`); título en
-  `div.thumb-under div.title a`. Paginación: `a.dir.next[href]` — el cursor
-  es el **path** del enlace siguiente (p. ej. `/best/2026-07/1`), `None` en la
-  última página. `/best/1` **redirige** a `/best/2026-07`: el cursor se toma
-  de la **URL FINAL de la respuesta** (`response.url`).
+  numérico). **PR-044 (2a validación real, 2026-08-16)**: la HOME no usa
+  `a.thumb-link` — el enlace de vídeo es hijo directo de `div.thumb` **sin
+  clase** (`<div class="thumb"><a href="/video.…">…`); en `/best/…` sí existe
+  `a.thumb-link` (dentro del mismo `div.thumb`). El selector ampliado cubre
+  ambas estructuras; el enlace del título (`div.thumb-under`, **fuera** de
+  `div.thumb`) no cuenta dos veces y los hrefs repetidos se deduplican. Thumb
+  lazy en `img[data-src]` del CDN `thumb-cdn77.xvideos-cdn.com` (ficheros
+  `xv_<N>_t.jpg`); título en `div.thumb-under div.title a`. Paginación:
+  `a.dir.next[href]` — el cursor es el **path** del enlace siguiente (p. ej.
+  `/best/2026-07/1`), `None` en la última página. **La HOME no tiene
+  paginación** (`a.dir.next` ausente: grid de una sola página, ~30 vídeos) —
+  `discover()` devuelve los IDs y `next_cursor=None` (fin). `/best/1`
+  **redirige** a `/best/2026-07`: el cursor se toma de la **URL FINAL de la
+  respuesta** (`response.url`).
 - **Página de vídeo**: metadata en `meta[property="og:*"]` — `og:title`,
   `og:url` (page_url), `og:duration` (segundos) y `og:image` (thumbnail);
   fallback `h2.page-title` (sin el `span.duration` interno); fecha y tags en
@@ -91,7 +99,10 @@ XV_VIDEO_URL_TEMPLATE = "https://www.xvideos.com/{external_id}/"
 
 # Selectores clave (regresión de estructura: si cambian, los tests de los
 # fixtures fallan con mensaje claro).
-_LISTING_ITEM_SELECTOR = "a.thumb-link[href^='/video']"
+# PR-044 (2a validación real): la HOME NO usa `a.thumb-link` — los enlaces de
+# vídeo son `div.thumb > a[href^="/video."]` SIN clase; en `/best/…` el mismo
+# selector cubre los `a.thumb-link` (que también viven dentro de `div.thumb`).
+_LISTING_ITEM_SELECTOR = "div.thumb a[href^='/video.']"
 _LISTING_NEXT_SELECTOR = "a.dir.next[href]"
 _VIDEO_TITLE_SELECTOR = "h2.page-title"
 _OG_TITLE_SELECTOR = "meta[property='og:title']"
@@ -177,6 +188,14 @@ def _jsonld(html: str) -> dict[str, Any] | None:
 
 def parse_listing_page(html: str, *, current_path: str | None = None) -> DiscoverPage:
     """Parsea una página de listado/discover: IDs externos (dedup) + cursor.
+
+    Los ítems se detectan con `div.thumb a[href^="/video."]` (PR-044): cubre
+    la **HOME** real — enlaces de vídeo **sin clase** dentro de `div.thumb`,
+    sin paginación (`a.dir.next` ausente → `next_cursor=None`, grid de una
+    sola página) — y los listados `/best/…`, donde el enlace sí lleva
+    `a.thumb-link` (también dentro de `div.thumb`). Los hrefs repetidos
+    (p. ej. overlay + imagen) se deduplican por ID externo; el enlace del
+    título (`div.thumb-under`, fuera de `div.thumb`) no se cuenta dos veces.
 
     `current_path` es el path de la **URL FINAL de la respuesta** (tras
     redirects, `response.url`): si el enlace `a.dir.next` apunta al mismo
@@ -422,6 +441,11 @@ class XvideosAdapter:
         - si el `a.dir.next` repite el path actual → `next_cursor=None`;
         - si la página devuelve 0 IDs **nuevos** (no vistos en esta
           instancia) → `next_cursor=None` (fin de la cadena).
+
+        **PR-044 (2a validación real)**: la HOME (cursor=None) parsea los IDs
+        con `div.thumb a[href^="/video."]` (enlaces **sin clase**; en `/best/…`
+        el mismo selector cubre `a.thumb-link`) y NO tiene `a.dir.next` — una
+        sola página: devuelve los IDs con `next_cursor=None` (fin).
         """
         if cursor is None:
             # Nueva cadena de paginación: se reinicia el conjunto de vistos.
