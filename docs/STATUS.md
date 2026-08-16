@@ -43,9 +43,12 @@ con el dataset real del operador (43 vídeos).**
 objetivos, dependencias, `allowed_paths`, tests y criterios. Grafo de dependencias y plan
 de paralelización incluidos allí.
 
-- **PRs completados**: PR-019 (bootstrap) + **Ola A completa**: PR-020 (contrato SDK), PR-022 (rate limiter), PR-023 (backoff), PR-024 (HTTP seguro), PR-025 (migración DB) — todos revisados APPROVED y mergeados a la rama de fase. Gates de la unión verificados (pytest/mypy/ruff + pgTAP 139 PASS).
-- **PRs abiertos**: — (arrancando la Ola B: PR-021/026/028/029/031 en paralelo)
-- **Siguiente**: Ola B (MockAdapter+fixtures, repo de jobs, registry+repo, assets, XvideosAdapter) → PR-027 → PR-030 → PR-032 → PR-033.
+- **PRs completados**: PR-019 (bootstrap) + **Ola A** (PR-020/022/023/024/025) + **Ola B**
+  (PR-021 MockAdapter+fixtures, PR-026 repo de jobs, PR-028 registry+repo, PR-029 assets,
+  PR-031 XvideosAdapter) — todos revisados APPROVED y mergeados a la rama de fase. Gates de
+  la unión verificados: **212 passed** (pytest) + mypy/ruff verdes.
+- **PRs abiertos**: — (Ola C en curso: PR-027 worker de jobs)
+- **Siguiente**: PR-027 → PR-030 (pipeline) → PR-032 (CLI) → PR-033 (validación xvideos real, requiere revisión legal humana).
 - **Puerta legal**: el adapter real de xvideos permanece deshabilitado hasta la revisión
   legal/ToS/robots del humano (SEC-002); el desarrollo no depende de ello (mock/fixtures).
 

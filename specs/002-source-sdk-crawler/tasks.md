@@ -69,7 +69,7 @@ termina en un PR aislado).
 - **Paralelizable con**: PR-022, PR-023, PR-024, PR-025
 
 ### PR-021 · [P] `MockAdapter` + fixtures + harness sin red
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola B)
 - **Prioridad**: P1 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: bajo
 - **Spec/Req**: FR-003, SC-001 · contracts §1
 - **Objetivo**: `adapters/mock.py`: adapter determinista (catálogo sintético con paginación
@@ -150,7 +150,7 @@ termina en un PR aislado).
 - **Paralelizable con**: PR-020, PR-021, PR-022, PR-023, PR-024
 
 ### PR-026 · [P] Repositorio de jobs (SKIP LOCKED + lease)
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola B)
 - **Prioridad**: P0 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: medio
 - **Spec/Req**: FR-006, FR-008 · ADR-0010 · contracts §3
 - **Objetivo**: `jobs/types.py` + `jobs/repo.py`: encolar (dedupe por unicidad de payload
@@ -173,25 +173,30 @@ termina en un PR aislado).
 - **Objetivo**: `jobs/worker.py`: bucle async con concurrencia configurable; `claim →
   ejecutar handler según job_type → complete/fail`; lease reset periódico; un fallo de
   handler **no** tumba el worker ni otros jobs; handlers de DISCOVER/CHECK_AVAILABILITY.
+  **Nota de la revisión PR-021**: `backoff.classify_error` recibe la excepción; los errores
+  "removed" del mock se clasifican terminales solo si el worker pasa el mensaje/atributos —
+  coordina `classify_error` con los errores tipados del mock (PR-021) y usa el estado
+  `unavailable` para terminales (FR-008).
 - **Dependencias**: PR-023, PR-026
 - **allowed_paths**: `services/crawler/xtrace_crawler/jobs/worker.py`,
   `services/crawler/xtrace_crawler/jobs/backoff.py` (solo si hay que extender la lista de
-  errores terminales, p. ej. `unavailable` — nota de la revisión PR-023),
+  errores terminales — nota de la revisión PR-023),
   `services/crawler/tests/unit/test_worker.py`,
   `services/crawler/tests/integration/test_worker.py`, `docs/handoffs/PR-027.md`
 - **Tests**: unit con repo fake (transiciones, aislamiento SC-008); integration con Supabase
   local (despacho real + crash simulado → lease reset).
 - **Done**: worker fiable ante fallos de una fuente; estados terminales garantizados.
-- **Paralelizable con**: PR-029 (archivos disjuntos)
+- **Paralelizable con**: — (Ola C; desbloquea PR-030)
 
 ### PR-028 · [P] Registro de adapters (gate SEC-002) + repo de fuentes/vídeos-web/stats
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola B)
 - **Prioridad**: P0 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: medio (SEC)
 - **Spec/Req**: FR-012, FR-013, FR-014, SEC-002 · ADR-0009 · `data-model.md`
 - **Objetivo**: `adapters/registry.py` (resuelve adapters por nombre; **no habilita**
-  adapters reales sin `robots_reviewed`/`terms_reviewed` en true + `enabled` en `sources`)
-  y `repo.py` (CRUD sources, upsert vídeos web por `(source_id, external_id)`, estados
-  ampliados, `exclude`, `stats`).
+  adapters reales sin las 4 condiciones del gate — `robots_reviewed`, `terms_reviewed`,
+  `review_date` presente y `enabled` en `sources`; decisión de revisión: `review_date` se
+  mantiene por SEC-002) y `repo.py` (CRUD sources, upsert vídeos web por
+  `(source_id, external_id)`, estados ampliados, `exclude`, `stats`).
 - **Dependencias**: PR-020, PR-025
 - **allowed_paths**: `services/crawler/xtrace_crawler/adapters/registry.py`,
   `services/crawler/xtrace_crawler/repo.py`,
@@ -207,7 +212,7 @@ termina en un PR aislado).
 ## Fase 3 — US2: del asset al índice (P1) 🎯
 
 ### PR-029 · [P] Descarga y transformación de visual assets (nunca vídeo completo)
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola B)
 - **Prioridad**: P1 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: medio
 - **Spec/Req**: FR-005, FR-015, SC-006 · contracts §7
 - **Objetivo**: `assets/fetch.py` (descarga via `http.py` a dir temporal, cleanup
@@ -236,10 +241,15 @@ termina en un PR aislado).
   `crawling/ratelimit.py` la importa y se borra su duplicado; el pipeline consume
   `manifest.rate_limit` (contracts §1). Ajustar imports/tipos donde haga falta (sin romper
   los tests de PR-020/022).
+  **Notas de la revisión de la Ola B**: (1) declarar `pillow` explícitamente en
+  `pyproject.toml` (PR-029 lo usa transitivo) y refrescar `uv.lock`; (2) `upsert_source` de
+  PR-028 sobrescribe `enabled` — al actualizar manifest pásale el estado completo para no
+  revocar una habilitación previa.
 - **Dependencias**: PR-021, PR-022, PR-026, PR-027, PR-028, PR-029
 - **allowed_paths**: `services/crawler/xtrace_crawler/pipeline.py`,
   `services/crawler/xtrace_crawler/adapters/base.py` (RateLimitSpec canónico),
   `services/crawler/xtrace_crawler/crawling/ratelimit.py` (importar, borrar duplicado),
+  `services/crawler/pyproject.toml` + `services/crawler/uv.lock` (solo añadir pillow),
   `services/crawler/tests/unit/test_ratelimit.py` y
   `services/crawler/tests/unit/test_adapters_base.py` (solo si la unificación exige
   ajustarlos, sin debilitarlos),
@@ -251,7 +261,7 @@ termina en un PR aislado).
 - **Paralelizable con**: PR-031 (archivos disjuntos)
 
 ### PR-031 · [P] `XvideosAdapter` + fixtures sintéticos (deshabilitado por defecto)
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola B)
 - **Prioridad**: P1 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: medio (SEC)
 - **Spec/Req**: FR-004, SEC-001/002, SC-007 · ADR-0009 · plan §Risks
 - **Objetivo**: `adapters/xvideos.py`: parsing HTML (selectolax) de página de vídeo y de
