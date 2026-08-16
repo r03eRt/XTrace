@@ -4,7 +4,7 @@
 > orquestador tras cada PR. Fuente de verdad de requisitos: `docs/PRODUCT_IDEA.md` y
 > `specs/`. Contrato: `AGENTS.md` + `.specify/memory/constitution.md`.
 
-**Última actualización**: 2026-08-14 · por DeepSeek V4 Pro (orquestador).
+**Última actualización**: 2026-08-16 · por DeepSeek V4 Pro (orquestador).
 
 ## Setup de agentes (esta ejecución)
 
@@ -21,6 +21,30 @@
 - **`deepseek-v4-pro`** (orquestador): SOLO para orquestación y puertas de decisión (p. ej. PR-016). Coste ≈ $0.435 / $0.87 por 1M tokens (in/out).
 - **`deepseek-v4-flash`** (implementador y revisor DeepSeek): modelo por defecto de ejecución, para ahorrar tokens. Coste ≈ $0.14 / $0.28 por 1M tokens.
 - **Enforcement**: el orquestador fija el modelo del implementador vía `workflow.agent({ provider: "deepseek-official", model: "deepseek-v4-flash" })`, porque la tool `subagent` no expone selector de modelo (hereda el default `deepseek-v4-pro`). El revisor, si es DeepSeek, usa también flash; idealmente otro proveedor (constitución §5).
+
+#### Qué puede hacer PRO (lista cerrada)
+
+1. `tasks.md` (único editor), asignación y dependencias, merges y resolución de conflictos.
+2. Puertas de decisión y validaciones de datos reales (p. ej. PR-016/PR-017 del spike).
+3. Aprobar/rechazar la salida de un agente flash en las puertas (no rehacer su trabajo).
+
+#### Qué debe ir a FLASH (todo lo demás)
+
+- **Planificación**: borradores de `spec.md` (spec-authoring), `plan.md`/ADRs/contratos
+  (technical-planning) y `tasks.md` inicial los produce un agente flash con un contrato
+  detallado; el orquestador solo revisa y consolida. *(Corrección 2026-08-16: la fase 2
+  se planificó en pro; no repetir.)*
+- **Implementación y revisión**: todos los PRs, incluidos fixes pequeños de config,
+  lint/format ignores, seed SQL y docs de handoff (los handoffs los escribe el implementador
+  de cada PR). Si el orquestador detecta un fix trivial, crea una tarea flash (p. ej.
+  PR-035), no lo aplica él mismo.
+- **Verificación de gates**: re-ejecutar pytest/ruff/mypy/pgTAP/JS en worktrees es tarea de
+  los agentes flash (implementador y revisor); el orquestador solo relee los informes.
+
+#### Nota operativa
+
+- El token de `gh` del operador está caducado (2026-08-16): los PRs a `main` los abre el
+  humano (web o `gh auth login`). El push de ramas vía SSH funciona.
 
 ## Fase actual
 
