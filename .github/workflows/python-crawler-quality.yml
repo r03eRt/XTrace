@@ -2,6 +2,20 @@
 # Aditivo: job independiente que NO altera la pipeline JS (quality.yml) ni el
 # job del spike (python-quality.yml). Se dispara también ante cambios en
 # services/search-spike/** porque xtrace_spike es dependencia editable (ADR-0011).
+#
+# DECISION (PR-037 · security-review P2-CI · precedente del spike, misma
+# politica que python-quality.yml de la fase 1): pgTAP y los tests de
+# integracion contra Postgres/pgvector NO corren en CI — requieren el stack
+# Supabase completo — y se ejecutan localmente como gates del plan
+# §CI strategy:
+#   supabase start        # stack local (Postgres + pgvector)
+#   supabase test db      # pgTAP de supabase/tests/ (PR-025 y anteriores)
+#   uv run pytest         # unit + integration (con DB local levantada)
+# Los tests de integracion de services/crawler/tests/integration ya hacen
+# skip limpio en CI sin BD (pytest.mark.skipif sobre _db_available()).
+#
+# Hardening PR-037 (security-review P2-CI): actions pineadas por SHA completo
+# (supply-chain, sin tags moviles) y permissions minimas del job.
 name: python-crawler-quality
 
 on:
@@ -24,17 +38,24 @@ concurrency:
 jobs:
   python-crawler-quality:
     runs-on: ubuntu-latest
+    # Permisos minimos (security-review P2-CI): el job solo lee el contenido
+    # del repo; sin tokens de escritura ni id-token.
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: services/crawler
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout v4 (misma version que python-quality.yml) — pin por SHA
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        # astral-sh/setup-uv v5 (misma version que python-quality.yml) — pin por SHA
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       - name: Setup Python 3.11
-        uses: actions/setup-python@v5
+        # actions/setup-python v5 (misma version que python-quality.yml) — pin por SHA
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
 
