@@ -11,6 +11,11 @@ Trazabilidad (constitución §3): cada test marca el requisito que valida:
   `div.thumb > a[href^="/video."]` **sin clase** y la home NO tiene paginación
   `a.dir.next` (hallazgo de la 2a validación real, 2026-08-16); el selector
   ampliado cubre la home y `/best/...` (donde sí existe `a.thumb-link`).
+- PR-047: `get_visual_assets` y `check_availability` usan `video.page_url`
+  (URL canónica con slug) para sus peticiones — hallazgo de la 5a validación
+  real (2026-08-16): sin el slug, la reconstrucción `/video.<id>/` devuelve
+  404 en INDEX_VIDEO y `removed` falso en CHECK_AVAILABILITY; fallback a la
+  plantilla solo con `page_url` vacío.
 - FR-002 (soporte): `VideoSource` normalizado poblado desde el parseo
   (og:*, JSON-LD).
 - FR-005/SC-006: `get_visual_assets` devuelve la galería de thumbnails
@@ -898,6 +903,64 @@ def test_get_visual_assets_video_sin_assets_devuelve_vacio() -> None:
     assert assets == []
 
 
+def test_get_visual_assets_con_page_url_usa_la_url_completa() -> None:
+    """PR-047 (5a validación): con `page_url` completo, pide la URL canónica con slug.
+
+    Hallazgo de la 5a validación real (2026-08-16): INDEX_VIDEO fallaba con 404
+    porque el adapter reconstruía `/video.<id>/` SIN el slug aunque el
+    `VideoSource` recibido SÍ llevaba el `page_url` completo (persistido por
+    DISCOVER, PR-045/046, y mapeado por `video_source_from_record`). Con
+    `page_url`, el adapter resuelve la URL completa contra el host canónico y
+    pide exactamente esa — la única que la fuente acepta. Además se verifica
+    que la galería de thumbnails (filtro por el path CDN de og:image, PR-043)
+    sigue parseándose desde la página servida en la URL completa.
+    """
+    requested: list[str] = []
+    page_url = "https://www.xvideos.com/video.synth00001/titulo-de-ejemplo-1"
+    video = _full_video().model_copy(update={"page_url": page_url})
+    assets: list[VisualAsset] = []
+
+    async def scenario() -> None:
+        nonlocal assets
+        handler = _fixture_handler()
+        adapter = XvideosAdapter(
+            transport=httpx.MockTransport(
+                lambda request: requested.append(str(request.url)) or handler(request)
+            )
+        )
+        assets = await adapter.get_visual_assets(video)
+
+    _run(scenario)
+    assert requested == [page_url]
+    assert len(assets) == 6  # PR-043: galería xv_1..xv_6_t.jpg desde la página completa
+
+
+def test_get_visual_assets_page_url_vacio_fallback_a_la_plantilla() -> None:
+    """PR-047: `page_url` vacío → fallback a `/video.<id>/` (retrocompatible).
+
+    `VideoSource.page_url` es obligatoria en el contrato, pero el fallback se
+    mantiene como red de seguridad (y para llamadores sin href canónico): sin
+    URL con slug, el adapter reconstruye la plantilla como antes.
+    """
+    requested: list[str] = []
+    video = _full_video().model_copy(update={"page_url": ""})
+    assets: list[VisualAsset] = []
+
+    async def scenario() -> None:
+        nonlocal assets
+        handler = _fixture_handler()
+        adapter = XvideosAdapter(
+            transport=httpx.MockTransport(
+                lambda request: requested.append(str(request.url)) or handler(request)
+            )
+        )
+        assets = await adapter.get_visual_assets(video)
+
+    _run(scenario)
+    assert requested == ["https://www.xvideos.com/video.synth00001/"]
+    assert len(assets) == 6
+
+
 # ---------------------------------------------------------------------------
 # FR-001 · check_availability()
 # ---------------------------------------------------------------------------
@@ -939,6 +1002,55 @@ def test_check_availability_estructura_cambiada_unavailable() -> None:
 
     _run(scenario)
     assert availability == VideoAvailability.UNAVAILABLE
+
+
+def test_check_availability_con_page_url_usa_la_url_completa() -> None:
+    """PR-047 (5a validación): con `page_url`, check_availability pide la URL con slug.
+
+    Mismo hallazgo que INDEX_VIDEO: reconstruir `/video.<id>/` sin el slug
+    devuelve 404, que el adapter interpretaba como `removed` — falso negativo
+    terminal (el vídeo sigue en la fuente). Con `page_url` completo se pide la
+    URL canónica exacta y la disponibilidad se confirma.
+    """
+    requested: list[str] = []
+    page_url = "https://www.xvideos.com/video.synth00001/titulo-de-ejemplo-1"
+    video = _full_video().model_copy(update={"page_url": page_url})
+    availability: VideoAvailability
+
+    async def scenario() -> None:
+        nonlocal availability
+        handler = _fixture_handler()
+        adapter = XvideosAdapter(
+            transport=httpx.MockTransport(
+                lambda request: requested.append(str(request.url)) or handler(request)
+            )
+        )
+        availability = await adapter.check_availability(video)
+
+    _run(scenario)
+    assert requested == [page_url]
+    assert availability == VideoAvailability.AVAILABLE
+
+
+def test_check_availability_page_url_vacio_fallback_a_la_plantilla() -> None:
+    """PR-047: `page_url` vacío → fallback a `/video.<id>/` (retrocompatible)."""
+    requested: list[str] = []
+    video = _full_video().model_copy(update={"page_url": ""})
+    availability: VideoAvailability
+
+    async def scenario() -> None:
+        nonlocal availability
+        handler = _fixture_handler()
+        adapter = XvideosAdapter(
+            transport=httpx.MockTransport(
+                lambda request: requested.append(str(request.url)) or handler(request)
+            )
+        )
+        availability = await adapter.check_availability(video)
+
+    _run(scenario)
+    assert requested == ["https://www.xvideos.com/video.synth00001/"]
+    assert availability == VideoAvailability.AVAILABLE
 
 
 # ---------------------------------------------------------------------------

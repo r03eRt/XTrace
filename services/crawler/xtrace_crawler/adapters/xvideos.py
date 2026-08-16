@@ -40,6 +40,13 @@ fixtures anonimizados en `tests/fixtures/xvideos/`):
   `DiscoverPage.page_urls[external_id]` con el href **completo** del listado
   y `get_video(..., page_url=...)` lo usa (resuelto contra el host); sin
   `page_url` reconstruye `/video.<id>/` como antes (fallback).
+  **PR-047 (5a validación real, 2026-08-16)**: el `VideoSource` que reciben
+  `get_visual_assets` y `check_availability` YA lleva el `page_url` completo
+  (mapeado desde la fila persistida por `video_source_from_record`,
+  PR-045/046), pero ambos reconstruían `/video.<id>/` sin el slug → 404 en
+  INDEX_VIDEO y `removed` falso en CHECK_AVAILABILITY. Ambos usan ahora
+  `video.page_url` (resuelto contra el host, SEC-001) con fallback a la
+  plantilla solo si está vacío.
 - **Página de vídeo**: metadata en `meta[property="og:*"]` — `og:title`,
   `og:url` (page_url), `og:duration` (segundos) y `og:image` (thumbnail);
   fallback `h2.page-title` (sin el `span.duration` interno); fecha y tags en
@@ -555,10 +562,24 @@ class XvideosAdapter:
         página — 1 request extra por vídeo, ver handoff). Sin galería, degrada
         a la miniatura única `thumbnail_url` (jerarquía de assets, FR-005);
         nunca un mp4 completo (SC-006).
+
+        **PR-047 (5a validación real, 2026-08-16)**: la petición usa
+        `video.page_url` (la URL canónica CON slug que DISCOVER persistió y
+        FETCH_METADATA reenvía, PR-045/046): reconstruir `/video.<id>/` sin el
+        slug devuelve 404 y INDEX_VIDEO fallaba pese a que el `VideoSource`
+        recibido sí llevaba el `page_url` completo. El `page_url` se valida
+        contra el host canónico (SEC-001, `_resolve_listing_href`); vacío o
+        ajeno → fallback a la plantilla `/video.<id>/` (retrocompatible). El
+        filtro de la galería por el path CDN de og:image (PR-043) es
+        independiente de la URL pedida: parsea el HTML de la página completa
+        servida en la URL canónica.
         """
-        response = await self._client.get(
-            XV_VIDEO_URL_TEMPLATE.format(external_id=video.external_id)
-        )
+        url = XV_VIDEO_URL_TEMPLATE.format(external_id=video.external_id)
+        if video.page_url:
+            resolved = _resolve_listing_href(video.page_url)
+            if resolved is not None:
+                url = resolved
+        response = await self._client.get(url)
         response.raise_for_status()
         assets = _thumb_gallery(
             response.text, thumbnail_url=video.thumbnail_url, duration_ms=video.duration_ms
@@ -575,8 +596,20 @@ class XvideosAdapter:
         404 → `removed` (terminal, sin reintentos); página válida → `available`;
         cualquier otra cosa (error HTTP, estructura cambiada) → `unavailable`
         (no se puede confirmar ahora).
+
+        **PR-047 (5a validación real, 2026-08-16)**: igual que
+        `get_visual_assets`, la petición usa `video.page_url` (URL canónica
+        con slug) cuando está disponible — sin el slug, el 404 de la
+        reconstrucción `/video.<id>/` se interpretaba como `removed`, un falso
+        negativo terminal (el vídeo sigue en la fuente). `page_url` vacío o
+        ajeno al host canónico (SEC-001, `_resolve_listing_href`) → fallback a
+        la plantilla (retrocompatible).
         """
         url = XV_VIDEO_URL_TEMPLATE.format(external_id=video.external_id)
+        if video.page_url:
+            resolved = _resolve_listing_href(video.page_url)
+            if resolved is not None:
+                url = resolved
         response = await self._client.get(url)
         if response.status_code == 404:
             return VideoAvailability.REMOVED
