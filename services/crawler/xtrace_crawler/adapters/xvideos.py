@@ -47,6 +47,12 @@ fixtures anonimizados en `tests/fixtures/xvideos/`):
   INDEX_VIDEO y `removed` falso en CHECK_AVAILABILITY. Ambos usan ahora
   `video.page_url` (resuelto contra el host, SEC-001) con fallback a la
   plantilla solo si está vacío.
+  **PR-049 (6a validación · discover acotado por sección, 2026-08-16 ·
+  FR-007 · pruebas del operador)**: `discover` gana el kwarg **opcional**
+  `section` (ruta de categoría/tag, p. ej. `/tags/xxx`, SIEMPRE con '/'
+  inicial): la primera página se pide a `https://www.xvideos.com<section>`
+  en vez de la home; con cursor la URL sale del cursor; la paginación
+  (`a.dir.next` de la página de la sección) y el anti-bucle no cambian.
 - **Página de vídeo**: metadata en `meta[property="og:*"]` — `og:title`,
   `og:url` (page_url), `og:duration` (segundos) y `og:image` (thumbnail);
   fallback `h2.page-title` (sin el `span.duration` interno); fecha y tags en
@@ -466,7 +472,9 @@ class XvideosAdapter:
 
     # -- FR-004 · discover ----------------------------------------------------
 
-    async def discover(self, *, cursor: str | None, limit: int) -> DiscoverPage:
+    async def discover(
+        self, *, cursor: str | None, limit: int, section: str | None = None
+    ) -> DiscoverPage:
         """Descubre IDs externos de una página de listado (FR-004 · PR-043).
 
         `cursor` es el path de la página siguiente (None → primera página).
@@ -474,6 +482,16 @@ class XvideosAdapter:
         soportada** — si la página trae más IDs que `limit`, se lanza
         `XvideosParseError` indicando los tamaños reales (nunca se descartan
         IDs en silencio ni se repite el cursor recibido).
+
+        **PR-049 (discover acotado por sección, 2026-08-16 · FR-007 · pruebas
+        del operador)**: `section` (opcional) es la **ruta de sección** del
+        sitio (categoría/tag, p. ej. `/tags/xxx`; SIEMPRE empieza por '/' —
+        el CLI lo valida y aquí se defiende con `ValueError`): en la primera
+        página (cursor=None) la URL inicial es `https://www.xvideos.com
+        <section>` en vez de la home. Con cursor, la URL sale del cursor (la
+        sección solo fija el arranque). El cursor, la paginación (`a.dir.next`
+        de la página de la sección) y el anti-bucle son idénticos a los de la
+        home.
 
         **Protección anti-bucle (hallazgo de la validación real, PR-033)**:
         - el cursor se toma de la URL **FINAL** de la respuesta
@@ -492,10 +510,19 @@ class XvideosAdapter:
         pipeline lo reenvía a `get_video(..., page_url=...)` porque la URL
         canónica reconstruida sin slug devuelve 404 (ver `parse_listing_page`).
         """
+        if section is not None and not section.startswith("/"):
+            raise ValueError(
+                f"section debe empezar por '/'; recibido {section!r} "
+                "(ruta de sección del sitio, p. ej. /tags/xxx)"
+            )
         if cursor is None:
             # Nueva cadena de paginación: se reinicia el conjunto de vistos.
             self._seen_external_ids.clear()
-        url = f"{XV_BASE_URL}/" if cursor is None else f"{XV_BASE_URL}{cursor}"
+            # PR-049: con `section` la cadena arranca en la sección (categoría/
+            # tag) en vez de la home; sin sección, la home de siempre.
+            url = f"{XV_BASE_URL}{section}" if section is not None else f"{XV_BASE_URL}/"
+        else:
+            url = f"{XV_BASE_URL}{cursor}"
         response = await self._client.get(url)
         response.raise_for_status()
         current_path = urlsplit(str(response.url)).path

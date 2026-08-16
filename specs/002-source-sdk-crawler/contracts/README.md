@@ -26,7 +26,13 @@ class AdapterManifest(BaseModel):        # frozen + strict
 
 class SourceAdapter(Protocol):
     manifest: AdapterManifest
-    async def discover(self, *, cursor: str | None, limit: int) -> DiscoverPage: ...
+    # PR-049 (enmienda): `section` OPCIONAL (kwarg, default None) — ruta de
+    # sección del sitio (categoría/tag, p. ej. `/tags/xxx`, SIEMPRE con '/'
+    # inicial): la fuente la usa como URL INICIAL del discover
+    # (`https://www.xvideos.com<section>`) en vez de la home; con cursor, la
+    # URL sale del cursor. None → home (retrocompatible: el MockAdapter
+    # acepta el kwarg y lo ignora).
+    async def discover(self, *, cursor: str | None, limit: int, section: str | None = None) -> DiscoverPage: ...
     # PR-045 (enmienda): `page_url` OPCIONAL (kwarg, default None) — href
     # COMPLETO del listado (p. ej. /video.<id>/<num>/<num>/<slug>) para fuentes
     # cuyo URL canónico exige el slug; None → la fuente reconstruye como antes.
@@ -140,13 +146,24 @@ Salida **JSON** por stdout (tests/observabilidad); logs por stderr.
 
 ```
 xtrace-crawler sources [--json]
-xtrace-crawler backfill --source <name> [--limit N] [--max-videos N] [--incremental]
+xtrace-crawler backfill --source <name> [--limit N] [--max-videos N] [--incremental] [--section <path>]
 xtrace-crawler run-worker [--concurrency N] [--once]
 xtrace-crawler stats [--json]
 xtrace-crawler check-availability --source <name> [--limit N]
 ```
 
 - `backfill` encola `DISCOVER`; sin `--incremental` es BACKFILL (FR-007).
+- **`--section <path>` (PR-049 · FR-007 · pruebas del operador)**: acota el
+  discover a una **sección** del sitio (categoría/tag, p. ej. `/tags/xxx`).
+  El path SIEMPRE empieza por '/' (validado: sin la barra inicial → error de
+  uso, exit 2). El payload del DISCOVER incluye `section` (**null si no se
+  da**) y el adapter la usa como **URL INICIAL** del discover
+  (`https://www.xvideos.com<section>`) en vez de la home; el cursor, la
+  paginación (`a.dir.next` de la página de la sección) y el anti-bucle son
+  idénticos. El pipeline la propaga al siguiente DISCOVER (payload y
+  `dedupe_key` de la cadena) y el JSON de salida del backfill incluye
+  `section` cuando se da. Retrocompatible: sin `--section` el comportamiento
+  es exactamente el previo (el MockAdapter acepta el kwarg y lo ignora).
 - **`--limit` de `backfill` es el TAMAÑO DE PÁGINA de DISCOVER** (vídeos devueltos por
   página del catálogo), **no** una cota global del backfill: el handler de PR-030 encola el
   siguiente `DISCOVER` con el cursor hasta agotar el catálogo.

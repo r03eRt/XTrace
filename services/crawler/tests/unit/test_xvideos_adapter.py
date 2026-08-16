@@ -16,6 +16,11 @@ Trazabilidad (constitución §3): cada test marca el requisito que valida:
   real (2026-08-16): sin el slug, la reconstrucción `/video.<id>/` devuelve
   404 en INDEX_VIDEO y `removed` falso en CHECK_AVAILABILITY; fallback a la
   plantilla solo con `page_url` vacío.
+- PR-049: `discover` con `section` (ruta de categoría/tag, p. ej. `/tags/x`)
+  arranca en `https://www.xvideos.com<section>` en vez de la home; con cursor,
+  la URL sale del cursor (la sección solo fija el arranque) y la paginación
+  sigue a `a.dir.next` igual que siempre; una sección sin '/' inicial es error
+  del llamador.
 - FR-002 (soporte): `VideoSource` normalizado poblado desde el parseo
   (og:*, JSON-LD).
 - FR-005/SC-006: `get_visual_assets` devuelve la galería de thumbnails
@@ -698,6 +703,112 @@ def test_discover_error_http_se_propaga() -> None:
     async def scenario() -> None:
         with pytest.raises(httpx.HTTPStatusError):
             await _adapter().discover(cursor="/ruta-desconocida", limit=10)
+
+    _run(scenario)
+
+
+def _section_handler() -> Callable[[httpx.Request], httpx.Response]:
+    """Transporte mock con la sección `/tags/x` servida con `listing_page_1.html`.
+
+    El listado de la sección usa la MISMA estructura que el resto de fixtures
+    (sintética, SEC-004) y su `a.dir.next` apunta a `/best/2026-07/1`: la
+    paginación desde la sección recorre la cadena normal.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/tags/x":
+            return httpx.Response(
+                200, content=_fixture("listing_page_1.html").encode("utf-8"), request=request
+            )
+        return _fixture_handler()(request)
+
+    return handler
+
+
+def test_discover_section_arranca_en_la_url_de_la_seccion() -> None:
+    """PR-049: con `section`, discover arranca en `https://www.xvideos.com<section>`.
+
+    La primera URL pedida es exactamente la de la sección (categoría/tag) en
+    vez de la home; el parseo del listado y el cursor son los de siempre (los
+    IDs y el `a.dir.next` de la página de la sección).
+    """
+    requested: list[str] = []
+    page: DiscoverPage
+
+    async def scenario() -> None:
+        nonlocal requested, page
+        adapter = XvideosAdapter(
+            transport=httpx.MockTransport(
+                lambda request: requested.append(str(request.url)) or _section_handler()(request)
+            )
+        )
+        page = await adapter.discover(cursor=None, limit=100, section="/tags/x")
+
+    _run(scenario)
+    assert requested == ["https://www.xvideos.com/tags/x"]
+    assert page.external_ids == ["video.synth00001", "video.synth00002", "video.synth00003"]
+    assert page.next_cursor == "/best/2026-07/1"
+
+
+def test_discover_section_pagina_dentro_de_la_seccion() -> None:
+    """PR-049: la cadena de paginación sigue a `a.dir.next` DESDE la sección.
+
+    Tras arrancar en la sección, la segunda página se pide con el cursor de la
+    primera (`a.dir.next` de la página de la sección): la paginación y el
+    anti-bucle son idénticos a los de la home.
+    """
+    requested: list[str] = []
+    pages: list[DiscoverPage] = []
+
+    async def scenario() -> None:
+        nonlocal requested, pages
+        adapter = XvideosAdapter(
+            transport=httpx.MockTransport(
+                lambda request: requested.append(str(request.url)) or _section_handler()(request)
+            )
+        )
+        pages.append(await adapter.discover(cursor=None, limit=100, section="/tags/x"))
+        pages.append(await adapter.discover(cursor=pages[0].next_cursor, limit=100))
+
+    _run(scenario)
+    assert requested == [
+        "https://www.xvideos.com/tags/x",
+        "https://www.xvideos.com/best/2026-07/1",
+    ]
+    assert pages[0].external_ids == ["video.synth00001", "video.synth00002", "video.synth00003"]
+    assert pages[1].external_ids == ["video.synth00004"]
+    assert pages[1].next_cursor == "/best/2026-07/2"
+
+
+def test_discover_section_se_ignora_cuando_hay_cursor() -> None:
+    """PR-049: con cursor, la URL sale del cursor — la sección solo fija el arranque."""
+    requested: list[str] = []
+
+    async def scenario() -> None:
+        nonlocal requested
+        base = _fixture_handler()
+        adapter = XvideosAdapter(
+            transport=httpx.MockTransport(
+                lambda request: requested.append(str(request.url)) or base(request)
+            )
+        )
+        page = await adapter.discover(cursor="/best/2026-07/1", limit=100, section="/tags/x")
+        assert page.external_ids == ["video.synth00004"]
+
+    _run(scenario)
+    assert requested == ["https://www.xvideos.com/best/2026-07/1"]
+
+
+def test_discover_section_sin_barra_inicial_lanza_error() -> None:
+    """PR-049: una sección sin '/' inicial es error del llamador (ValueError).
+
+    El contrato exige rutas absolutas del sitio (empezando por '/'): cualquier
+    otro valor no debe construir una URL de discover.
+    """
+
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="empezar por '/'"):
+            await _adapter().discover(cursor=None, limit=100, section="tags/x")
 
     _run(scenario)
 

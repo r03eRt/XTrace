@@ -5,14 +5,21 @@ Comandos Typer (`xtrace-crawler`):
 
 - `sources [--json]` — lista las fuentes registradas en BD (`sources`, DATA-001)
   con su manifest de compliance y `enabled` (lectura vía `CrawlerRepo`).
-- `backfill --source <name> [--limit N] [--max-videos N] [--incremental]` — valida
-  que la fuente exista (registry + BD) y esté habilitada (gate SEC-002) y **encola
-  el job DISCOVER inicial** con el payload del contrato de PR-030 + cota global
-  PR-036 (`{"source", "cursor": None, "limit", "mode", "max_videos"}`) vía
-  `JobsRepo.enqueue` (FR-006/FR-007). Salida JSON `{job_id, source, mode, max_videos}`.
+- `backfill --source <name> [--limit N] [--max-videos N] [--incremental]
+  [--section <path>]` — valida que la fuente exista (registry + BD) y esté
+  habilitada (gate SEC-002) y **encola el job DISCOVER inicial** con el
+  payload del contrato de PR-030 + cota global PR-036 + `section` PR-049
+  (`{"source", "cursor": None, "limit", "mode", "max_videos", "section"}`)
+  vía `JobsRepo.enqueue` (FR-006/FR-007). Salida JSON
+  `{job_id, source, mode, max_videos}` (+ `section` cuando se da).
   `--max-videos` es la cota GLOBAL del backfill (SC-002, analyze hallazgo 2):
-  el pipeline corta la cadena de paginación al alcanzarla; es **obligatoria** para
-  el backfill real de xvideos (default: `XTRACE_CRAWLER_BACKFILL_MAX_VIDEOS`).
+  el pipeline corta la cadena de paginación al alcanzarla; es **obligatoria**
+  para el backfill real de xvideos (default: `XTRACE_CRAWLER_BACKFILL_MAX_VIDEOS`).
+  **`--section <path>` (PR-049 · FR-007 · pruebas del operador)**: ruta de
+  sección del sitio (categoría/tag, p. ej. `/tags/xxx`) que **debe empezar
+  por '/'** (si no, error de uso exit 2): el DISCOVER arranca en
+  `https://www.xvideos.com<section>` en vez de la home; el payload lleva
+  `section` (null sin flag) y el dedupe distingue la cadena.
 - `run-worker [--concurrency N] [--once]` — arranca el `JobWorker` (PR-027) con
   los **handlers del pipeline** (PR-030) y el registry (SEC-002: cada job resuelve
   su adapter con el gate y el `enabled` de BD); `--once` procesa una pasada de
@@ -246,6 +253,18 @@ def backfill_cmd(
         bool,
         typer.Option("--incremental", help="Modo INCREMENTAL: solo IDs nuevos (FR-007 · SC-003)"),
     ] = False,
+    section: Annotated[
+        str | None,
+        typer.Option(
+            "--section",
+            callback=_validate_section_path,
+            help=(
+                "Sección del sitio (categoría/tag, p. ej. /tags/xxx): el DISCOVER "
+                "arranca en https://www.xvideos.com<section> en vez de la home "
+                "(PR-049 · FR-007 · pruebas del operador)"
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Valida la fuente (registry + BD + SEC-002) y encola el job DISCOVER inicial (FR-006/007)."""
     deps = _deps(ctx)
@@ -257,6 +276,7 @@ def backfill_cmd(
                 limit=limit,
                 max_videos=max_videos,
                 incremental=incremental,
+                section=section,
             )
         )
     except CliUserError as error:
@@ -331,18 +351,43 @@ def check_availability_cmd(
 # -- Lógica async de los comandos ----------------------------------------------
 
 
+def _validate_section_path(value: str | None) -> str | None:
+    """Valida `--section` (PR-049 · FR-007 · contracts §5): ruta de sección del
+    sitio que SIEMPRE empieza por '/' (p. ej. `/tags/xxx`).
+
+    Sin la barra inicial (o vacía) → `typer.BadParameter` → error de uso
+    (exit code 2, contracts §5: 2 = error de uso del CLI).
+    """
+    if value is not None and not value.startswith("/"):
+        raise typer.BadParameter(
+            "debe empezar por '/' (ruta de sección del sitio, p. ej. /tags/xxx)"
+        )
+    return value
+
+
 async def _backfill(
-    deps: CliContext, *, source: str, limit: int | None, max_videos: int | None, incremental: bool
+    deps: CliContext,
+    *,
+    source: str,
+    limit: int | None,
+    max_videos: int | None,
+    incremental: bool,
+    section: str | None,
 ) -> dict[str, Any]:
     """Encola el job DISCOVER inicial tras validar la fuente (FR-006/FR-007 · SEC-002).
 
-    Payload del contrato de PR-030 + cota global PR-036:
-    `{"source", "cursor": None, "limit", "mode", "max_videos"}`; el `dedupe_key`
-    (`discover:<source>:None:<mode>`) evita duplicar el DISCOVER inicial
-    mientras esté activo (JobsRepo PR-026). La cota `--max-videos` (o el
-    default de config) es la cota GLOBAL del backfill: el pipeline corta la
-    cadena de paginación al alcanzarla (analyze hallazgo 2 · SC-002); es
-    **obligatoria** para el backfill real de xvideos (contracts §5).
+    Payload del contrato de PR-030 + cota global PR-036 + sección PR-049:
+    `{"source", "cursor": None, "limit", "mode", "max_videos", "section"}`; el
+    `dedupe_key` (`discover:<source>:None:<mode>`; con `--section`, se añade
+    la sección al final para no colisionar cadenas de secciones distintas)
+    evita duplicar el DISCOVER inicial mientras esté activo (JobsRepo PR-026).
+    La cota `--max-videos` (o el default de config) es la cota GLOBAL del
+    backfill: el pipeline corta la cadena de paginación al alcanzarla (analyze
+    hallazgo 2 · SC-002); es **obligatoria** para el backfill real de xvideos
+    (contracts §5). La sección `--section` (validada por el callback del
+    flag: empieza por '/') acota el discover a la categoría/tag (PR-049 ·
+    FR-007 · pruebas del operador): el JSON de salida incluye `section` solo
+    cuando se da.
     """
     record = await _validate_source(deps, source)
     mode = "incremental" if incremental else "backfill"
@@ -350,6 +395,9 @@ async def _backfill(
     effective_max_videos = (
         max_videos if max_videos is not None else deps.settings.backfill_max_videos
     )
+    dedupe_key = f"discover:{source}:None:{mode}"
+    if section is not None:
+        dedupe_key = f"{dedupe_key}:{section}"
     job = await deps.jobs.enqueue(
         JobType.DISCOVER,
         source_id=parse_uuid(record.id, "source_id"),
@@ -359,22 +407,27 @@ async def _backfill(
             "limit": effective_limit,
             "mode": mode,
             "max_videos": effective_max_videos,
+            "section": section,  # PR-049: null sin --section (contracts §5)
         },
-        dedupe_key=f"discover:{source}:None:{mode}",
+        dedupe_key=dedupe_key,
     )
     logger.info(
-        "backfill %s encolado: job %s (limit=%d, max_videos=%d)",
+        "backfill %s encolado: job %s (limit=%d, max_videos=%d, section=%s)",
         mode,
         job.id,
         effective_limit,
         effective_max_videos,
+        section,
     )
-    return {
+    result = {
         "job_id": str(job.id),
         "source": source,
         "mode": mode,
         "max_videos": effective_max_videos,
     }
+    if section is not None:
+        result["section"] = section  # PR-049: solo cuando se da
+    return result
 
 
 async def _check_availability(

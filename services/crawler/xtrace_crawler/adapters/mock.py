@@ -324,11 +324,19 @@ class MockAdapter:
 
     # -- Contrato SourceAdapter (FR-001) -----------------------------------
 
-    async def discover(self, *, cursor: str | None, limit: int) -> DiscoverPage:
+    async def discover(
+        self, *, cursor: str | None, limit: int, section: str | None = None
+    ) -> DiscoverPage:
         """Página de `external_ids` con paginación por cursor (FR-003).
 
         El cursor es opaco (índice del siguiente inicio como string); `None`
         cuando el catálogo está agotado.
+
+        `section` (PR-049, kwarg opcional del contrato): el mock lo **acepta
+        por compatibilidad de firma y lo ignora** — el catálogo sintético no
+        tiene secciones; la paginación por cursor es idéntica con o sin
+        sección (retrocompatible). El pipeline (PR-049) lo pasa en cada página
+        desde el payload del DISCOVER.
         """
         self._raise_global_fault(self.faults.discover, "discover")
         if limit < 1:
