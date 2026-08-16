@@ -6,6 +6,9 @@
 
 **Última actualización**: 2026-08-16 · por DeepSeek V4 Pro (orquestador).
 
+> ✅ **Fase 2 MERGEADA a `main`** (PR #3, 2026-08-16, aprobación humana; CI 6/6 verde:
+> python-crawler-quality, quality, e2e, security, spec-compliance, GitGuardian).
+
 ## Setup de agentes (esta ejecución)
 
 - **Orquestador**: DeepSeek V4 Pro (`deepseek-v4-pro`) → asigna tareas, resuelve dependencias, actualiza este
