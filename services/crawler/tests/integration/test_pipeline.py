@@ -20,8 +20,11 @@ Cubren los handlers concretos de `xtrace_crawler/pipeline.py` con el MockAdapter
   (`videos_counted`), sin perder trazabilidad.
 - **PR-045 (3a validación real)**: durante DISCOVER el pipeline reenvía a
   `get_video` el `page_url` del listado (`DiscoverPage.page_urls`, href
-  completo con slug) — la URL canónica que la fuente exige (404 sin slug);
-  FETCH_METADATA sigue llamando sin él y el flujo no cambia.
+  completo con slug) — la URL canónica que la fuente exige (404 sin slug).
+- **PR-046 (4a validación real)**: FETCH_METADATA ya no reconstruye la URL a
+  ciegas — lee `videos.page_url` persistido por DISCOVER y lo reenvía a
+  `get_video(..., page_url=...)`; sin fila previa (o con `page_url` vacío)
+  sigue llamando sin él (retrocompatible).
 - **FR-013**: CHECK_AVAILABILITY `unavailable`/`removed` → estado del vídeo +
   exclusión del índice (frames eliminados y ocultos en `ann_search`).
 - **Nota revisión Ola B** (tasks.md PR-030): `sync_source` conserva
@@ -393,13 +396,15 @@ class _PageUrlsRecordingAdapter(MockAdapter):
 
 
 def test_discover_pasa_page_urls_a_get_video(monkeypatch: pytest.MonkeyPatch) -> None:
-    """PR-045: durante DISCOVER el pipeline pasa `page_url` (href del listado) a get_video.
+    """PR-045 + PR-046: DISCOVER pasa el href del listado; FETCH_METADATA el persistido.
 
     Hallazgo de la 3a validación real (2026-08-16): la URL canónica del vídeo
     exige el slug del listado (reconstruir `/video.<id>/` sin slug → 404). El
-    pipeline reenvía `page.page_urls[external_id]` en las llamadas de DISCOVER;
-    FETCH_METADATA (no tiene el href) sigue llamando sin `page_url` (`None`) y
-    el flujo no cambia: mismo nº de jobs y vídeos que el BACKFILL estándar.
+    pipeline reenvía `page.page_urls[external_id]` en las llamadas de DISCOVER.
+    **PR-046 (4a validación real)**: las de FETCH_METADATA ya no van a ciegas —
+    leen `videos.page_url` persistido por DISCOVER y lo reenvían (el mock lo
+    persiste como `MOCK_BASE_URL/videos/<id>`). El flujo no cambia: mismo nº
+    de jobs y vídeos que el BACKFILL estándar.
     """
     _fast_rate(monkeypatch)
     adapter = _PageUrlsRecordingAdapter(seed=42, catalog_size=3)
@@ -408,17 +413,84 @@ def test_discover_pasa_page_urls_a_get_video(monkeypatch: pytest.MonkeyPatch) ->
 
     calls = adapter.get_video_calls
     assert len(calls) == 6  # 3 del DISCOVER + 3 de FETCH_METADATA
-    with_page_url = [call for call in calls if call[1] is not None]
-    without_page_url = [call for call in calls if call[1] is None]
-    assert len(with_page_url) == 3  # SOLO las del DISCOVER llevan el href
-    assert len(without_page_url) == 3  # las de FETCH_METADATA siguen sin él
-    assert {external_id for external_id, _ in with_page_url} == {
-        f"mock-vid-{index:04d}" for index in range(3)
-    }
-    for external_id, page_url in with_page_url:
+    assert all(page_url is not None for _, page_url in calls)  # PR-046: ninguna a ciegas
+    listing = [call for call in calls if call[1] is not None and call[1].endswith("/slug")]
+    persisted = [call for call in calls if call[1] is not None and not call[1].endswith("/slug")]
+    assert len(listing) == 3  # las del DISCOVER llevan el href del listado
+    assert len(persisted) == 3  # las de FETCH_METADATA llevan el page_url persistido
+    for external_id, page_url in listing:
         assert page_url == f"/videos/{external_id}/1/2/slug"  # = page.page_urls[external_id]
+    for external_id, page_url in persisted:
+        assert page_url == f"{MOCK_BASE_URL}/videos/{external_id}"  # = videos.page_url
 
     assert len(_videos()) == 3  # el flujo no cambia (SC-003: sin duplicados)
+    assert _leftover_asset_dirs() == []
+
+
+# ---------------------------------------------------------------------------
+# PR-046 · FETCH_METADATA reenvía el page_url persistido (o no, retrocompatible)
+# ---------------------------------------------------------------------------
+
+
+def _insert_video_row(external_id: str, *, page_url: str | None = None) -> None:
+    """Fila `videos` previa (estado `discovered`) con `page_url` opcional."""
+    with psycopg.connect(resolve_dsn(), autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "insert into public.videos (source_id, external_id, local_ref, status, page_url) "
+                "select id, %s, 'web:' || id::text || ':' || %s, 'discovered', %s "
+                "from public.sources where name = 'mock'",
+                (external_id, external_id, page_url),
+            )
+
+
+def test_fetch_metadata_reenvia_page_url_persistido_o_retrocompatible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR-046: FETCH_METADATA usa `videos.page_url` persistido si existe; si no, retrocompatible.
+
+    Hallazgo de la 4a validación real (2026-08-16): FETCH_METADATA reconstruía
+    `/video.<id>/` sin slug → 404 → falso `unavailable` terminal. Ahora el
+    handler lee la fila por `(source, external_id)` y reenvía su `page_url` a
+    `get_video` (caso 1: fila previa CON page_url). Sin fila previa (caso 2) o
+    con `page_url` NULL en BD (caso 3) llama como hasta ahora, sin `page_url`
+    (retrocompatible) y el flujo no cambia (INDEX_VIDEO se encola).
+    """
+    _fast_rate(monkeypatch)
+    adapter = _PageUrlsRecordingAdapter(seed=42, catalog_size=3)
+    pipeline, worker, jobs = _build(adapter, client=_client(), worker_id="it-pipeline-pr046")
+    # Fuente registrada con su manifest real, sin DISCOVER previo (el CLI encola
+    # FETCH_METADATA directo, PR-032).
+    _run(pipeline.sync_source(adapter))
+
+    async def _enqueue_fetch(external_id: str) -> None:
+        await jobs.enqueue(
+            JobType.FETCH_METADATA,
+            payload={"source": "mock", "external_id": external_id},
+        )
+        assert await worker.run_once() == 2  # FETCH_METADATA + INDEX_VIDEO
+
+    # Caso 1: fila previa CON page_url (href con slug) → get_video lo recibe tal cual.
+    persisted_url = "https://fuente.test/videos/mock-vid-0000/slug-del-titulo"
+    _insert_video_row("mock-vid-0000", page_url=persisted_url)
+    _run(_enqueue_fetch("mock-vid-0000"))
+    assert adapter.get_video_calls[-1] == ("mock-vid-0000", persisted_url)
+
+    # Caso 2: SIN fila previa → get_video sin page_url (la fuente reconstruye, retrocompatible).
+    _run(_enqueue_fetch("mock-vid-0001"))
+    assert adapter.get_video_calls[-1] == ("mock-vid-0001", None)
+
+    # Caso 3: fila previa con page_url NULL → get_video sin page_url (retrocompatible).
+    _insert_video_row("mock-vid-0002", page_url=None)
+    _run(_enqueue_fetch("mock-vid-0002"))
+    assert adapter.get_video_calls[-1] == ("mock-vid-0002", None)
+
+    # El flujo no cambia: los 3 vídeos se actualizaron (nunca `unavailable`) y
+    # sus INDEX_VIDEO se completaron (nada colgado).
+    videos = {video["external_id"]: video for video in _videos()}
+    assert set(videos) == {"mock-vid-0000", "mock-vid-0001", "mock-vid-0002"}
+    assert all(video["status"] == "indexed" for video in videos.values())
+    assert all(job["status"] == JobStatus.DONE.value for job in _jobs())
     assert _leftover_asset_dirs() == []
 
 

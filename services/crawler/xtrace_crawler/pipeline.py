@@ -29,6 +29,13 @@ discover → get_video → get_visual_assets → frames → pHash + embedding �
   que ya no existe en la fuente es **terminal** (`VideoUnavailableError`):
   vídeo `unavailable` + `exclude` y el job termina en `unavailable` sin
   reintentos (contracts §3 · spec edge cases).
+  **PR-046 (4a validación real, 2026-08-16)**: antes de llamar al adapter, el
+  handler lee la fila persistida por `(source, external_id)` y, si
+  `videos.page_url` es no vacío (href completo con slug que DISCOVER ya
+  persiste desde PR-045), lo reenvía a `get_video(..., page_url=...)` — la URL
+  canónica exige el slug (reconstruir `/video.<id>/` sin él → 404 falso). Sin
+  fila previa o con `page_url` vacío → `get_video(external_id)` como hasta
+  ahora (retrocompatible).
 - **INDEX_VIDEO** (FR-011 · SC-002): `adapter.get_visual_assets` → bytes de
   assets permitidos (storyboard/thumbnail/preview; **nunca** vídeo completo,
   SC-006) → frames con timestamp (storyboard con `timestamp_ms`/`position` como
@@ -553,13 +560,33 @@ class CrawlerPipeline:
         Un vídeo que ya no existe en la fuente es terminal (spec edge case
         404/removed): vídeo `unavailable` + exclusión y el job termina en
         `unavailable` sin reintentos (contracts §3).
+
+        **PR-046 (4a validación real, 2026-08-16)**: la URL canónica de un
+        vídeo exige el slug del listado (reconstruir `/video.<id>/` sin él →
+        404 falso terminal). DISCOVER (PR-045) ya persiste el href completo en
+        `videos.page_url`; aquí se lee la fila persistida por `(source,
+        external_id)` y, si `page_url` es no vacío, se reenvía a
+        `get_video(..., page_url=...)`. Sin fila previa o con `page_url`
+        vacío → `get_video(external_id)` como hasta ahora (retrocompatible).
         """
         source = self._source_name(job)
         external_id = self._external_id(job)
         adapter = self._adapter_for(job)
+        # PR-046: el href con slug del listado ya está persistido por DISCOVER
+        # (PR-045) — se reenvía tal cual; sin fila previa o con page_url vacío
+        # la fuente reconstruye su URL como antes (retrocompatible).
+        persisted = await self._repo.get_web_video(source, external_id)
+        page_url = persisted.page_url if persisted is not None and persisted.page_url else None
+        if page_url is not None:
+            logger.info(
+                "FETCH_METADATA: %s de %s usa page_url persistido (%s) (PR-046)",
+                external_id,
+                source,
+                page_url,
+            )
         await self._acquire(adapter)
         started = time.perf_counter()
-        video = await adapter.get_video(external_id)
+        video = await adapter.get_video(external_id, page_url=page_url)
         logger.info(
             "etapa=metadata source=%s external_id=%s job=%s duration_ms=%.1f",
             source,
