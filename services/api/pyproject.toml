@@ -13,6 +13,10 @@ dependencies = [
     "python-multipart>=0.0.20,<1",
     "pydantic-settings>=2.6,<3",
     "uvicorn>=0.34,<1",
+    # Driver PostgreSQL explícito (PR-055): la API importa psycopg para
+    # tipar el 503 index_unavailable (contracts §5); antes llegaba transitivo
+    # vía xtrace-spike (misma decisión que PR-029 en el crawler).
+    "psycopg[binary]>=3.3.4,<4",
     # Pipeline del spike reutilizado como dependencia editable (ADR-0011/0012):
     # la API añade solo transporte HTTP, contrato y analítica propios.
     "xtrace-spike",
