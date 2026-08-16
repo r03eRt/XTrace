@@ -26,7 +26,7 @@ combina **frames + perceptual hashes (pHash) + visual embeddings (SigLIP) + vect
 - **Fase 2 — Source SDK + Primer Crawler**: **`IMPLEMENTED`** (2026-08-16). Contrato
   `SourceAdapter` + entidad normalizada `VideoSource` + cola de jobs en Postgres
   (`FOR UPDATE SKIP LOCKED`, sin Redis) + `XvideosAdapter` real. **Validación real
-  completada con xvideos** (ver sección *Validación real* abajo). Diseño en
+  completada con xvideos** (ver sección _Validación real_ abajo). Diseño en
   `specs/002-source-sdk-crawler/` + ADR-0009…0011.
 - Detalle vivo (PRs completados/abiertos, blockers, decisiones pendientes, costes):
   **`docs/STATUS.md`**.
@@ -119,15 +119,15 @@ measure first · replaceable infrastructure**.
 
 **Qué se validó** (bucle completo `captura → crawl de sección → índice → búsqueda`):
 
-| Métrica | Resultado |
-| --- | --- |
-| Corpus del tag `/tags/buttfucking` | **104 vídeos `indexed`** (267/267 jobs `done`, 239+ frames) |
-| Embbeddings | SigLIP real (`openclip-ViT-B-16-SigLIP-webli`, D=768, CPU local) |
-| Rate limits | 398 requests con ~16 min de espera medida; **0 violaciones** |
-| Descargas | Solo thumbnails del CDN; **0 vídeos completos** (SC-006) |
-| Búsqueda con captura real | **Top-1 exacto: score 1.0 (visual 1.0, phash 1.0)**, 2 frames, timestamp aproximado correcto |
-| Capturas del operador (4) | Vídeos correctos recuperados entre los primeros resultados |
-| Hallazgos corregidos | 6 bugs reales (selectores HTML, slugs, paginación de tags, timestamps de galería, CDN `thumbs-gcore`, extra `siglip`) — PR-042…PR-053 |
+| Métrica                            | Resultado                                                                                                                             |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Corpus del tag `/tags/buttfucking` | **104 vídeos `indexed`** (267/267 jobs `done`, 239+ frames)                                                                           |
+| Embbeddings                        | SigLIP real (`openclip-ViT-B-16-SigLIP-webli`, D=768, CPU local)                                                                      |
+| Rate limits                        | 398 requests con ~16 min de espera medida; **0 violaciones**                                                                          |
+| Descargas                          | Solo thumbnails del CDN; **0 vídeos completos** (SC-006)                                                                              |
+| Búsqueda con captura real          | **Top-1 exacto: score 1.0 (visual 1.0, phash 1.0)**, 2 frames, timestamp aproximado correcto                                          |
+| Capturas del operador (4)          | Vídeos correctos recuperados entre los primeros resultados                                                                            |
+| Hallazgos corregidos               | 6 bugs reales (selectores HTML, slugs, paginación de tags, timestamps de galería, CDN `thumbs-gcore`, extra `siglip`) — PR-042…PR-053 |
 
 **Cómo reproducirlo** (desde `main`, Supabase local arriba):
 
