@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -303,6 +303,38 @@ class FakeJobs:
         return 0
 
 
+class FakeVectorStore:
+    """Fake del contrato `VectorStore` del spike (ADR-0007): in-memory, sin BD.
+
+    PR-034: con el mock sirviendo sus assets in-process (`fetch_asset_bytes`,
+    sin red), el pipeline SÍ produce frames e indexa en la pasada del CLI;
+    este fake mantiene NFR-003 (sin BD real), igual que FakeRepo/FakeJobs, y
+    deja los frames indexados visibles para poder asertarlos.
+    """
+
+    def __init__(self) -> None:
+        self.frames: list[Any] = []
+
+    async def upsert_frames(self, frames: Sequence[Any]) -> int:
+        self.frames.extend(frames)
+        return len(frames)
+
+    async def ann_search(
+        self, embedding: Sequence[float], k: int, exclude_videos: bool = True
+    ) -> list[Any]:
+        return []
+
+    async def delete_video(self, video_id: str) -> None:
+        self.frames = [frame for frame in self.frames if frame["video_id"] != video_id]
+
+    async def stats(self) -> dict[str, int]:
+        return {
+            "videos": len({frame["video_id"] for frame in self.frames}),
+            "frames": len(self.frames),
+            "vectors": len(self.frames),
+        }
+
+
 def _make_job(
     job_type: JobType = JobType.DISCOVER,
     *,
@@ -346,6 +378,7 @@ def _base_context(
     settings: Settings | None = None,
     list_source_videos: Callable[[str, int], Awaitable[list[str]]] | None = None,
     worker: JobWorker | None = None,
+    store: FakeVectorStore | None = None,
 ) -> CliContext:
     """Contexto CLI con fakes (NFR-003): sin BD y sin red."""
     return CliContext(
@@ -355,6 +388,7 @@ def _base_context(
         jobs=jobs if jobs is not None else FakeJobs(),
         list_source_videos=list_source_videos or _no_videos,
         worker=worker,
+        store=store,
     )
 
 
@@ -536,10 +570,11 @@ def test_run_worker_once_builds_pipeline_and_dispatches_discover(
     """Sin worker inyectado, `run-worker --once` cablea pipeline (PR-030) + registry.
 
     Un DISCOVER inicial (mock, catálogo de 5) produce 5 vídeos `discovered`, 5
-    jobs FETCH_METADATA y 5 INDEX_VIDEO (que agotan la pasada en su primer
-    intento: sin client inyectado los assets http degradan → 0 frames →
-    transitorio con backoff). Total procesado = 1 + 5 + 5 = 11 (determinista
-    con fakes).
+    jobs FETCH_METADATA y 5 INDEX_VIDEO. Con el fix PR-034 el mock sirve sus
+    assets **in-process** (`adapter.fetch_asset_bytes`, sin red): el pipeline
+    indexa los 5 vídeos (status `indexed`) en la misma pasada — 11 jobs `done`,
+    0 fallos transitorios. Total procesado = 1 + 5 + 5 = 11 (determinista con
+    fakes; el `VectorStore` es el fake in-memory, NFR-003: sin BD real).
     """
     monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MIN_INTERVAL_MS", "0")  # sin esperas reales
     repo = FakeRepo(sources=[_mock_source_record(enabled=True)])
@@ -553,19 +588,23 @@ def test_run_worker_once_builds_pipeline_and_dispatches_discover(
     )
     discover_job_id = next(iter(jobs.jobs))
     registry = _registry_with_mock(catalog_size=5)
+    store = FakeVectorStore()
     result = _invoke(
         ["run-worker", "--once"],
-        _base_context(repo=repo, jobs=jobs, registry=registry, settings=Settings()),
+        _base_context(repo=repo, jobs=jobs, registry=registry, settings=Settings(), store=store),
     )
     assert _stdout_json(result) == {"processed": 11}
     assert len(repo.videos) == 5  # vídeos únicos (DISCOVER + FETCH upsertan la misma fila)
-    # INDEX_VIDEO marca `indexing` antes de descargar (PR-030); el fallo de
-    # assets no revierte el estado del vídeo (limitación documentada PR-030).
-    assert all(record.status in ("discovered", "indexing") for record in repo.videos.values())
+    # PR-034: los assets del mock se sirven in-process (sin red) → el pipeline
+    # indexa los 5 vídeos en la pasada (antes del fix: 0 frames → transitorio
+    # con backoff y vídeos sin indexar).
+    assert all(record.status == "indexed" for record in repo.videos.values())
+    assert store.frames  # los frames indexados llegan al VectorStore (fake, NFR-003)
     assert [job.job_type for job in jobs.enqueued].count(JobType.FETCH_METADATA) == 5
     assert [job.job_type for job in jobs.enqueued].count(JobType.INDEX_VIDEO) == 5
     assert [record.name for record in repo.upserted_sources] == ["mock"]
     assert jobs.jobs[discover_job_id].status is JobStatus.DONE
+    assert jobs.failed == []  # INDEX_VIDEO ya no falla transitoriamente (PR-034)
 
 
 def test_run_worker_invalid_concurrency_is_usage_error() -> None:
