@@ -48,8 +48,9 @@ class SourceAdapter(Protocol):
 
 ## 2. Entidad normalizada `VideoSource` — FR-002
 
-> Nombre canónico del campo de duración: **`duration_ms`** (la spec/ADR lo citan como
-> `duration`; la implementación y esta sección usan `duration_ms` en ms).
+> Nombre canónico del campo de duración: **`duration_ms`** (ms; alineado en la spec con
+> PR-039 — FR-002 y Key Entities; solo el ADR-0009 lo cita como `duration`; la
+> implementación y esta sección usan `duration_ms`).
 
 ```python
 class VideoSource(BaseModel):          # pydantic, validación estricta
@@ -95,6 +96,11 @@ class VisualAsset(BaseModel):
   - `XTRACE_CRAWLER_RATE_<SOURCE>_MAX_RPS` (límite sostenido)
 - Implementación con jitter; esperas medibles en logs (SC-005).
 
+> **Nota (PR-039 · limitación conocida, security-review P2)**: el worker toma un
+> **snapshot de `sources.enabled` al arrancar** (`cli.py` → `_enabled_snapshot`); para
+> **deshabilitar una fuente hay que reiniciar el worker** — los cambios de `enabled` no se
+> aplican a jobs ya en vuelo.
+
 ## 5. CLI (`xtrace-crawler`, Typer)
 
 Salida **JSON** por stdout (tests/observabilidad); logs por stderr.
@@ -108,6 +114,11 @@ xtrace-crawler check-availability --source <name> [--limit N]
 ```
 
 - `backfill` encola `DISCOVER`; sin `--incremental` es BACKFILL (FR-007).
+- **`--limit` de `backfill` es el TAMAÑO DE PÁGINA de DISCOVER** (vídeos devueltos por
+  página del catálogo), **no** una cota global del backfill: el handler de PR-030 encola el
+  siguiente `DISCOVER` con el cursor hasta agotar el catálogo.
+- **Cota global `--max-videos`**: llega en **PR-036** y será **obligatoria** para el
+  backfill real de xvideos (SC-002: backfill acotado por el operador).
 - `stats` → jobs por estado/fuente, vídeos descubiertos/indexados/fallidos, errores
   recientes, rate-limit waits (FR-014).
 
