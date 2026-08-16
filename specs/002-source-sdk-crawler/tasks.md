@@ -3,7 +3,8 @@
 **Input**: `spec.md` (APPROVED), `plan.md`, `data-model.md`, `contracts/`, ADR-0009/0010/0011.
 
 **Feature branch base**: `feature/002-source-sdk-crawler` (cada PR usa su propia rama
-hija `feature/002-source-sdk-crawler/PR-0NN-slug` y termina en un PR aislado).
+plana `feature/002-source-sdk-crawler-PR-0NN-slug` — mismo esquema que la fase 1 — y
+termina en un PR aislado).
 
 **Convención de estado por tarea**: `READY` cuando cumple la Definición de Ready
 (AGENTS.md §11) y sus dependencias están `DONE`. Solo el orquestador cambia estos estados.
@@ -30,7 +31,7 @@ hija `feature/002-source-sdk-crawler/PR-0NN-slug` y termina en un PR aislado).
 ## Fase 0 — Setup
 
 ### PR-019 · Bootstrap del servicio crawler + CI
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED tras fix de mypy en CI + mergeado a la rama de fase)
 - **Prioridad**: P0 · **Complejidad**: S · **Rol**: implementer · **Riesgo**: bajo
 - **Spec/Req**: FR-003 (base) · ADR-0011 · plan §Project Structure
 - **Objetivo**: Crear `services/crawler/` (paquete `xtrace_crawler`): `pyproject.toml` con
@@ -52,7 +53,7 @@ hija `feature/002-source-sdk-crawler/PR-0NN-slug` y termina en un PR aislado).
 ## Fase 1 — US1: contrato SDK + mock + fixtures (P1) 🎯
 
 ### PR-020 · [P] `SourceAdapter` (ABC) + `AdapterManifest` + entidades normalizadas
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola A)
 - **Prioridad**: P0 · **Complejidad**: S · **Rol**: implementer · **Riesgo**: bajo
 - **Spec/Req**: FR-001, FR-002 · ADR-0009 · contracts §1/§2
 - **Objetivo**: `adapters/base.py` (protocolo async `SourceAdapter` + `AdapterManifest` +
@@ -84,7 +85,7 @@ hija `feature/002-source-sdk-crawler/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: PR-022, PR-023, PR-024, PR-026, PR-028, PR-029 (archivos disjuntos)
 
 ### PR-022 · [P] Rate limiter por adapter (defaults + env, D5)
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola A)
 - **Prioridad**: P1 · **Complejidad**: S · **Rol**: implementer · **Riesgo**: bajo
 - **Spec/Req**: FR-009, SC-005 · D5 · contracts §4
 - **Objetivo**: `crawling/ratelimit.py`: limitador async por fuente (intervalo mínimo +
@@ -100,7 +101,7 @@ hija `feature/002-source-sdk-crawler/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: PR-020, PR-021, PR-023, PR-024, PR-025
 
 ### PR-023 · [P] Backoff exponencial + jitter
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola A)
 - **Prioridad**: P1 · **Complejidad**: XS · **Rol**: implementer · **Riesgo**: bajo
 - **Spec/Req**: FR-008 · ADR-0010 · contracts §3
 - **Objetivo**: `jobs/backoff.py`: `next_attempt_delay(attempt, base=1s, factor=2,
@@ -114,7 +115,7 @@ hija `feature/002-source-sdk-crawler/PR-0NN-slug` y termina en un PR aislado).
 - **Paralelizable con**: PR-020, PR-021, PR-022, PR-024, PR-025
 
 ### PR-024 · [P] Cliente HTTP seguro (allowlist + anti-SSRF)
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola A)
 - **Prioridad**: P1 · **Complejidad**: S · **Rol**: implementer · **Riesgo**: medio (SEC)
 - **Spec/Req**: SEC-001/003 · plan §Security strategy
 - **Objetivo**: `crawling/http.py`: wrapper httpx async con **allowlist de hosts por
@@ -133,7 +134,7 @@ hija `feature/002-source-sdk-crawler/PR-0NN-slug` y termina en un PR aislado).
 ## Fase 2 — Datos y jobs (bloqueante)
 
 ### PR-025 · [P] Migración DB: sources + jobs + videos-web + pgTAP
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola A)
 - **Prioridad**: P0 · **Complejidad**: M · **Rol**: data-specialist · **Riesgo**: medio
 - **Spec/Req**: FR-006, FR-012, DATA-001/002/003 · ADR-0010 · `data-model.md`
 - **Objetivo**: Migración Supabase **no destructiva**: tabla `sources` (manifest jsonb,
@@ -174,6 +175,8 @@ hija `feature/002-source-sdk-crawler/PR-0NN-slug` y termina en un PR aislado).
   handler **no** tumba el worker ni otros jobs; handlers de DISCOVER/CHECK_AVAILABILITY.
 - **Dependencias**: PR-023, PR-026
 - **allowed_paths**: `services/crawler/xtrace_crawler/jobs/worker.py`,
+  `services/crawler/xtrace_crawler/jobs/backoff.py` (solo si hay que extender la lista de
+  errores terminales, p. ej. `unavailable` — nota de la revisión PR-023),
   `services/crawler/tests/unit/test_worker.py`,
   `services/crawler/tests/integration/test_worker.py`, `docs/handoffs/PR-027.md`
 - **Tests**: unit con repo fake (transiciones, aislamiento SC-008); integration con Supabase
@@ -228,8 +231,18 @@ hija `feature/002-source-sdk-crawler/PR-0NN-slug` y termina en un PR aislado).
   upsert vídeos → jobs FETCH_METADATA/INDEX_VIDEO/… → assets → frames → pHash + embedding
   (via `xtrace_spike`) → `VectorStore.upsert_frames` → vídeo `indexed`; idempotencia
   (SC-003) y cleanup (SC-004).
+  **Alineación exigida por la revisión de la Ola A**: unificar `RateLimitSpec` — definición
+  canónica ÚNICA en `adapters/base.py` (con defaults, `max_rps` con `gt=0`);
+  `crawling/ratelimit.py` la importa y se borra su duplicado; el pipeline consume
+  `manifest.rate_limit` (contracts §1). Ajustar imports/tipos donde haga falta (sin romper
+  los tests de PR-020/022).
 - **Dependencias**: PR-021, PR-022, PR-026, PR-027, PR-028, PR-029
 - **allowed_paths**: `services/crawler/xtrace_crawler/pipeline.py`,
+  `services/crawler/xtrace_crawler/adapters/base.py` (RateLimitSpec canónico),
+  `services/crawler/xtrace_crawler/crawling/ratelimit.py` (importar, borrar duplicado),
+  `services/crawler/tests/unit/test_ratelimit.py` y
+  `services/crawler/tests/unit/test_adapters_base.py` (solo si la unificación exige
+  ajustarlos, sin debilitarlos),
   `services/crawler/tests/integration/test_pipeline.py`, `docs/handoffs/PR-030.md`
 - **Tests**: integration end-to-end con MockAdapter contra Supabase local: vídeos+frames+
   embeddings consultables (SC-002); INCREMENTAL no duplica (SC-003); job fallido termina

@@ -5,11 +5,20 @@ requieren actualizar la spec/plan primero.
 
 ## 1. `SourceAdapter` (ABC, async) — FR-001 / ADR-0009
 
+> **Decisión de implementación (PR-020, revisado APPROVED)**: `AdapterManifest` se
+> implementa como **modelo pydantic `frozen` + `strict`** (en vez de `TypedDict`): exige
+> compliance en runtime (clave para SEC-002) e inmutabilidad. La firma funcional es la de
+> abajo.
+
 ```python
-class AdapterManifest(TypedDict):
+class RateLimitSpec(BaseModel):          # CANÓNICO — definido en adapters/base.py
+    min_interval_ms: int                 # default razonable del adapter
+    max_rps: float = Field(gt=0)         # > 0 siempre (evita divisiones por cero)
+
+class AdapterManifest(BaseModel):        # frozen + strict
     source: str                  # "xvideos"
     access_method: str           # jerarquía documentada: "html" | "json" | "sitemap" | "api"
-    assets_accessed: list[str]   # ["storyboard", "thumbnail", "preview"]
+    assets_accessed: list[str]   # ["storyboard", "thumbnail", "preview"] — nunca "video"
     robots_reviewed: bool        # False => adapter no habilitable
     terms_reviewed: bool         # False => adapter no habilitable
     rate_limit: RateLimitSpec    # defaults (D5)
@@ -28,8 +37,14 @@ class SourceAdapter(Protocol):
 - Regla de oro: el **core nunca ve HTML/JSON de la web**; solo `VideoSource`/`VisualAsset`.
 - `registry.py` no permite instanciar/habilitar un adapter real sin `robots_reviewed` y
   `terms_reviewed` en `true` + `enabled=true` en `sources` (SEC-002).
+- **Unicidad de `RateLimitSpec`**: existe UNA sola definición canónica
+  (`adapters/base.py`); `crawling/ratelimit.py` la **importa** y no redefine (alineación
+  exigida a PR-030).
 
 ## 2. Entidad normalizada `VideoSource` — FR-002
+
+> Nombre canónico del campo de duración: **`duration_ms`** (la spec/ADR lo citan como
+> `duration`; la implementación y esta sección usan `duration_ms` en ms).
 
 ```python
 class VideoSource(BaseModel):          # pydantic, validación estricta
