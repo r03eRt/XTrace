@@ -4,7 +4,7 @@
 
 **Created**: 2026-08-15
 
-**Status**: IMPLEMENTING
+**Status**: IMPLEMENTED
 
 **Input**: User description: "Fase 2 — el motor ya está validado (spike 001). Ahora toca cómo
 llenar el índice desde webs: contrato `SourceAdapter` + entidad normalizada `VideoSource` +
@@ -342,12 +342,14 @@ implementación.
 ## Approval
 
 **Estado**: `APPROVED` (aprobada por el humano responsable el 2026-08-15, frase exacta
-"Especificación aprobada") → **`IMPLEMENTING`** (2026-08-16): PR-019…PR-034 implementados,
-revisados (APPROVED) y mergeados a la rama de fase; quickstart validado con el mock en
-cableado real (50/50 vídeos `indexed`, INCREMENTAL sin duplicados, gate SEC-002
-verificado). **`IMPLEMENTED` queda pendiente de la puerta legal humana**: revisión
-ToS/robots de xvideos + habilitación + backfill acotado real (SC-002) — ver
-`docs/handoffs/PR-033.md`.
+"Especificación aprobada") → **`IMPLEMENTED`** (2026-08-16): PR-019…PR-047 implementados,
+revisados (APPROVED) y mergeados a la rama de fase, y **validación real completada**:
+aprobación del operador (SEC-002, "estamos probando al menos") + backfill acotado real
+contra xvideos.com — 5/5 vídeos `indexed` con frames (timestamps) y embeddings
+consultables (SC-002), INCREMENTAL sin duplicados (SC-003), rate limits respetados
+(SC-005), 0 descargas de vídeo completo (SC-006), gate SEC-002 verificado. PR-042…PR-047
+ajustaron el adapter a la estructura real observada (slugs `video.<id>`, CDN
+`thumb-cdn77.xvideos-cdn.com`, paginación con protección anti-bucle).
 
 ## Historial de decisiones
 
@@ -375,3 +377,11 @@ ToS/robots de xvideos + habilitación + backfill acotado real (SC-002) — ver
   `feature/002-source-sdk-crawler`. Quickstart validado end-to-end con el mock en cableado
   real. spec → `IMPLEMENTING`; `IMPLEMENTED` pendiente de la revisión legal humana de
   xvideos (SEC-002) y del backfill acotado real.
+- **2026-08-16 · Validación real (SEC-002 liberada por el operador)**: el operador dio su
+  OK a la revisión legal de xvideos ("estamos probando al menos"). PR-042 habilitó el
+  manifest (revisado 2026-08-16); PR-043…PR-047 adaptaron el adapter a la estructura real
+  observada (5 hallazgos reales corregidos: selector home, slugs en URLs, page_urls del
+  listado, page_url persistido en FETCH_METADATA y en INDEX_VIDEO). Backfill acotado real
+  (max-videos=5): **5/5 vídeos `indexed`** (10 frames con timestamp, embeddings en el
+  índice), INCREMENTAL sin duplicados, rate limits respetados, 0 descargas de vídeo
+  completo. spec → **`IMPLEMENTED`**.

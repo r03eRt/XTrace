@@ -49,16 +49,17 @@
 ## Fase actual
 
 **Fase 2 — Source SDK + Primer Crawler** (`specs/002-source-sdk-crawler`).
-Estado spec: **IMPLEMENTING** (2026-08-16; aprobación humana 2026-08-15). Documentación de
-diseño **completa**: `plan.md`, `data-model.md`, `contracts/`, `quickstart.md`, `tasks.md`,
-ADR-0009..0011.
+Estado spec: **IMPLEMENTED** (2026-08-16; aprobación humana 2026-08-15; validación real
+con xvideos completada). Documentación de diseño **completa**: `plan.md`, `data-model.md`,
+`contracts/`, `quickstart.md`, `tasks.md`, ADR-0009..0011.
 
-**Implementación COMPLETADA a falta de la puerta legal (SEC-002):** PR-019…PR-034
-(15 PRs + 1 fix de hallazgo) implementados, revisados (APPROVED) y **mergeados a la rama
-de fase**. Quickstart validado con cableado real sobre Supabase local: mock 50/50 vídeos
-`indexed`, INCREMENTAL sin duplicados, gate de xvideos rechazando correctamente.
-**Pendiente solo del humano**: revisión ToS/robots de xvideos → habilitar → backfill
-acotado real → spec `IMPLEMENTED` (ver `docs/handoffs/PR-033.md`).
+**Validación real (2026-08-16)**: operador liberó SEC-002 ("estamos probando al menos") →
+manifest revisado (PR-042) → backfill acotado real contra xvideos.com (**5/5 vídeos
+`indexed`**, 10 frames con timestamp, embeddings en el índice; INCREMENTAL sin duplicados;
+rate limits respetados; 0 descargas de vídeo completo). 5 hallazgos reales corregidos en
+PR-043…PR-047 (selectores home, slugs, page_urls, anti-bucle). Limitación documentada: la
+validación usó el proveedor de embeddings **fake** (default local); SigLIP real se activa
+por config para el índice de producción (validado ya en el spike).
 
 **Fase 1 (anterior) — Visual Search Spike**: **COMPLETADA.** PR-001…PR-018 (18 PRs) +
 FIX-phash implementados, revisados (APPROVED) y **mergeados a `main`**. **US1/US2/US4
@@ -71,14 +72,13 @@ con el dataset real del operador (43 vídeos).**
 objetivos, dependencias, `allowed_paths`, tests y criterios. Grafo de dependencias y plan
 de paralelización incluidos allí.
 
-- **PRs completados**: PR-019…PR-041 — **21/21 DONE** (revisados APPROVED y mergeados a la
-  rama de fase; PR-041 solo-docs). **Converge 2026-08-16: CONVERGED** (FR 15/15 · SEC 4/4 ·
-  DATA 3/3 · NFR 4/4 · SC 8/8; 0 tareas nuevas). Solo PR-033 queda BLOCKED por la
-  puerta legal humana (SEC-002).
+- **PRs completados**: PR-019…PR-047 — **29/29 DONE** (revisados APPROVED y mergeados a la
+  rama de fase; incluye los 6 PRs de la validación real PR-042…047). **Converge:
+  CONVERGED** (FR 15/15 · SEC 4/4 · DATA 3/3 · NFR 4/4 · SC 8/8, SC-002 validado real).
 - **PRs abiertos**: — (pendiente de abrir el PR de la rama de fase a `main`, con CI verde
-  y aprobación humana, cuando el operador cierre la puerta legal de xvideos)
-- **Siguiente**: puerta legal humana (ToS/robots xvideos) → habilitar → backfill acotado
-  real (SC-002) → spec `IMPLEMENTED` → merge a `main`.
+  y aprobación humana)
+- **Siguiente**: PR de `feature/002-source-sdk-crawler` a `main` → CI verde → aprobación
+  humana → merge.
 - **Puerta legal**: el adapter real de xvideos permanece deshabilitado hasta la revisión
   legal/ToS/robots del humano (SEC-002); el desarrollo no depende de ello (mock/fixtures).
 

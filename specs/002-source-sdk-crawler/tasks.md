@@ -326,9 +326,11 @@ termina en un PR aislado).
 - **Paralelizable con**: — (cierre)
 
 ### PR-033 · Validación operativa con xvideos real + cierre de la fase
-- **Estado**: BLOCKED — parte de orquestador COMPLETADA (quickstart validado con cableado
-  real + docs de cierre, 2026-08-16); **pendiente la puerta legal humana** (ToS/robots de
-  xvideos → habilitar → backfill acotado real, SC-002) — SEC-002. No es trabajo de código.
+- **Estado**: DONE (2026-08-16) — operador liberó SEC-002 ("estamos probando al menos");
+  backfill acotado real (max-videos=5): **5/5 vídeos indexed** (10 frames con timestamp,
+  embeddings en el índice), INCREMENTAL sin duplicados, rate limits respetados, 0
+  descargas de vídeo completo. Hallazgos reales corregidos en PR-043…PR-047. spec 002 →
+  IMPLEMENTED.
 - **Prioridad**: P2 · **Complejidad**: S · **Rol**: orchestrator + operador · **Riesgo**: medio
 - **Spec/Req**: SC-002, SC-003, SC-005, SC-006, SC-007, SC-008 · cierre spec 002
 - **Objetivo**: Con el manifest de xvideos revisado por el humano (`robots_reviewed`,
@@ -434,6 +436,39 @@ termina en un PR aislado).
   declara asset_hosts" corregida en `pipeline.py`/contracts. Solo-docs, sin comportamiento.
 - **Dependencias**: PR-040
 - **allowed_paths**: `contracts/README.md`, `pipeline.py` (docstring), handoff.
+
+---
+
+### PR-042 · Habilitar manifest de xvideos tras aprobación del operador
+- **Estado**: DONE (implementado + revisado + mergeado; 2026-08-16)
+- **Spec/Req**: SEC-002 (aprobación humana 2026-08-16, modo prueba)
+- **Objetivo**: manifest del adapter con robots/terms true + review_date 2026-08-16;
+  habilitación final sigue sujeta a sources.enabled (gate de 4 condiciones).
+- **Dependencias**: PR-031/040
+
+### PR-043 · XvideosAdapter a la estructura real + anti-bucle discover
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado)
+- **Spec/Req**: FR-004, SEC-001/004, SC-007 · hallazgo 1ª validación real (192 DISCOVER en bucle, 0 vídeos)
+- **Objetivo**: selectores reales (div.thumb a[href^="/video."]), cursor desde URL final,
+  anti-bucle doble, og:*/JSON-LD, galería xv_N_t.jpg, asset_hosts observados, fixtures
+  anonimizados.
+
+### PR-044 · Selector de discover para la home real
+- **Estado**: DONE (implementado + revisado por orquestador + mergeado)
+- **Spec/Req**: FR-004 · hallazgo 2ª validación real (home sin clase thumb-link)
+
+### PR-045 · DiscoverPage.page_urls + get_video(page_url)
+- **Estado**: DONE (implementado + revisado por orquestador + mergeado)
+- **Spec/Req**: FR-001/002 (enmienda de contrato documentada) · hallazgo 3ª validación real
+  (URL sin slug → 404)
+
+### PR-046 · FETCH_METADATA reenvía page_url persistido
+- **Estado**: DONE (implementado + revisado por orquestador + mergeado)
+- **Spec/Req**: FR-011 · hallazgo 4ª validación real
+
+### PR-047 · get_visual_assets/check_availability usan video.page_url
+- **Estado**: DONE (implementado + revisado por orquestador + mergeado)
+- **Spec/Req**: FR-005/011, SC-002 · hallazgo 5ª validación real
 
 ---
 ## Grafo de dependencias
