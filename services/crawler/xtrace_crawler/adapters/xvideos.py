@@ -1,9 +1,12 @@
 """Adapter de xvideos.com: parsing HTML con selectolax (PR-031 · FR-004 · SEC-001/002 · ADR-0009).
 
-**DESHABILITADO POR DISEÑO** (SEC-002): el manifest declara
-`robots_reviewed=False`, `terms_reviewed=False` y `review_date=None` — el
-registry (PR-028) no podrá habilitar esta fuente hasta la revisión
-legal/ToS/robots del humano y la aprobación explícita (PR-033).
+**HABILITADO POR MANIFEST tras revisión humana** (SEC-002, PR-042): el
+manifest declara `robots_reviewed=True`, `terms_reviewed=True` y
+`review_date="2026-08-16"` — aprobación explícita del operador (modo
+prueba). La habilitación **efectiva** sigue exigiendo el gate del registry
+(PR-028): manifest conforme Y `sources.enabled=true` en BD (aprobación
+humana final en producción, SEC-002); sin `enabled` la fuente se rechaza
+con `AdapterNotEnabledError`.
 
 Método de acceso (FR-004): **html** — xvideos no ofrece API/feed oficial ni
 sitemap estable para vídeos; el manifest documenta la elección dentro de la
@@ -264,29 +267,32 @@ def parse_video_page(html: str, *, page_url: str) -> VideoSource:
 class XvideosAdapter:
     """Adapter real de xvideos.com (HTML, storyboard/sprite + thumbnails) — FR-004.
 
-    Cumple el protocolo `SourceAdapter` (FR-001, ADR-0009). **Deshabilitado por
-    diseño** (SEC-002): sin revisión legal no es habilitable. Sin red en tests:
-    se inyecta un `httpx.MockTransport` y toda petición pasa por el cliente
-    HTTP seguro con allowlist (SEC-001).
+    Cumple el protocolo `SourceAdapter` (FR-001, ADR-0009). **Manifest
+    revisado** (SEC-002, PR-042): `robots_reviewed=True`,
+    `terms_reviewed=True`, `review_date="2026-08-16"` (aprobación del
+    operador, modo prueba); la habilitación efectiva sigue dependiendo de
+    `sources.enabled=true` en BD (gate del registry: manifest + enabled).
+    Sin red en tests: se inyecta un `httpx.MockTransport` y toda petición
+    pasa por el cliente HTTP seguro con allowlist (SEC-001).
 
     **PR-040 · SEC-001**: declara `asset_hosts` (**PROVISIONAL**, ver
     `XV_ASSET_HOSTS`): allowlist de hosts de sus assets que el pipeline
-    (PR-036) usa para la descarga por HTTP — validar contra la estructura real
-    en PR-033 tras la revisión legal humana (SEC-002).
+    (PR-036) usa para la descarga por HTTP — validar contra la estructura
+    real en PR-033 (captura real del operador).
     """
 
     manifest = AdapterManifest(
         source="xvideos",
         access_method="html",  # FR-004: jerarquía api → sitemap → json → html → navegador
         assets_accessed=["storyboard", "thumbnail"],  # SC-006: nunca el vídeo completo
-        robots_reviewed=False,
-        terms_reviewed=False,
+        robots_reviewed=True,  # SEC-002: revisión robots del operador (2026-08-16, modo prueba)
+        terms_reviewed=True,  # SEC-002: revisión ToS del operador (2026-08-16, modo prueba)
         rate_limit=RateLimitSpec(min_interval_ms=2_000, max_rps=0.5),  # conservador (D5)
-        review_date=None,
+        review_date="2026-08-16",  # SEC-002: aprobación humana explícita (operador, modo prueba)
     )
 
     # PR-040 · SEC-001 · contracts §1: allowlist de hosts de assets
-    # (PROVISIONAL — validar en PR-033 tras la revisión legal humana, SEC-002);
+    # (PROVISIONAL — validar contra la captura real en PR-033);
     # el pipeline la usa como allowlist del cliente de assets, nunca derivada
     # de las URLs parseadas (fail-closed).
     asset_hosts: list[str] = XV_ASSET_HOSTS
@@ -347,8 +353,9 @@ class XvideosAdapter:
 
         Solo se ofrecen kinds incluidos en `manifest.assets_accessed`: el
         `preview_url` parseado queda como metadata del `VideoSource` pero no se
-        expone como asset mientras el manifest no declare `preview` (SEC-002);
-        basta actualizar el manifest cuando la revisión legal lo apruebe.
+        expone como asset mientras el manifest no declare `preview` (SC-006:
+        la revisión del operador de 2026-08-16 mantuvo
+        `["storyboard", "thumbnail"]`; ampliar el manifest bastaría).
         """
         assets: list[VisualAsset] = []
         for url in video.storyboard_urls:

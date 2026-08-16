@@ -83,7 +83,7 @@ def _mock_source_record(*, enabled: bool = False) -> SourceRecord:
 
 
 def _xvideos_source_record(*, enabled: bool = False) -> SourceRecord:
-    """Fila `sources` del adapter real xvideos (manifest sin revisión legal, SEC-002)."""
+    """Fila `sources` del adapter real xvideos (manifest revisado, SEC-002 · PR-042)."""
     now = _now()
     return SourceRecord(
         id="00000000-0000-0000-0000-000000000002",
@@ -428,7 +428,8 @@ def test_sources_human_lists_sources_with_manifest_and_enabled() -> None:
     assert result.exit_code == 0
     assert "mock" in result.stdout and "enabled=yes" in result.stdout
     assert "xvideos" in result.stdout and "enabled=no" in result.stdout
-    assert "robots_reviewed=no" in result.stdout  # xvideos sin revisión legal (SEC-002)
+    assert "robots_reviewed=yes" in result.stdout  # xvideos: manifest revisado (SEC-002, PR-042)
+    assert "review_date=2026-08-16" in result.stdout  # aprobación del operador (PR-042)
 
 
 def test_sources_json_is_stable() -> None:
@@ -439,7 +440,7 @@ def test_sources_json_is_stable() -> None:
     assert [entry["name"] for entry in data] == ["mock", "xvideos"]
     assert {"name", "adapter", "enabled", "manifest"} == set(data[0])
     assert data[0]["manifest"]["robots_reviewed"] is True
-    assert data[1]["manifest"]["review_date"] is None
+    assert data[1]["manifest"]["review_date"] == "2026-08-16"  # PR-042: aprobación del operador
     again = _invoke(["sources", "--json"], _base_context(repo=repo))
     assert again.stdout == result.stdout  # estable entre invocaciones
 
@@ -571,7 +572,7 @@ def test_backfill_disabled_source_gate_sec_002() -> None:
     assert result.exit_code != 0
     assert "no habilitada" in result.stderr
     assert "SEC-002" in result.stderr
-    assert "robots_reviewed=false" in result.stderr
+    assert "sources.enabled=false" in result.stderr  # manifest revisado; falta enabled (PR-042)
     assert result.stdout == ""
 
 
