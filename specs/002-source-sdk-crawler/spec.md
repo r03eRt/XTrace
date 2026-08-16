@@ -4,7 +4,7 @@
 
 **Created**: 2026-08-15
 
-**Status**: APPROVED
+**Status**: IMPLEMENTING
 
 **Input**: User description: "Fase 2 — el motor ya está validado (spike 001). Ahora toca cómo
 llenar el índice desde webs: contrato `SourceAdapter` + entidad normalizada `VideoSource` +
@@ -341,8 +341,13 @@ implementación.
 
 ## Approval
 
-**Estado**: `APPROVED` — aprobada por el humano responsable el 2026-08-15 (aprobación
-explícita: **"Especificación aprobada"**). Habilitado el paso a `technical-planning`.
+**Estado**: `APPROVED` (aprobada por el humano responsable el 2026-08-15, frase exacta
+"Especificación aprobada") → **`IMPLEMENTING`** (2026-08-16): PR-019…PR-034 implementados,
+revisados (APPROVED) y mergeados a la rama de fase; quickstart validado con el mock en
+cableado real (50/50 vídeos `indexed`, INCREMENTAL sin duplicados, gate SEC-002
+verificado). **`IMPLEMENTED` queda pendiente de la puerta legal humana**: revisión
+ToS/robots de xvideos + habilitación + backfill acotado real (SC-002) — ver
+`docs/handoffs/PR-033.md`.
 
 ## Historial de decisiones
 
@@ -365,3 +370,8 @@ explícita: **"Especificación aprobada"**). Habilitado el paso a `technical-pla
   código + override por variable de entorno**. *Decisión del humano responsable.*
 - **2026-08-15 · Aprobación**: spec **`APPROVED`** por el humano responsable (frase exacta
   "Especificación aprobada"). Se habilita `technical-planning`.
+- **2026-08-16 · Implementación**: PR-019…PR-034 (15 PRs + 1 fix de hallazgo de
+  integración) implementados, revisados por agentes independientes (APPROVED) y mergeados a
+  `feature/002-source-sdk-crawler`. Quickstart validado end-to-end con el mock en cableado
+  real. spec → `IMPLEMENTING`; `IMPLEMENTED` pendiente de la revisión legal humana de
+  xvideos (SEC-002) y del backfill acotado real.

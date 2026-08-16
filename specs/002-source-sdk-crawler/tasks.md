@@ -298,7 +298,7 @@ termina en un PR aislado).
 - **Paralelizable con**: PR-031
 
 ### PR-034 · Fix: assets del mock servidos in-process (flujo offline real)
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase)
 - **Prioridad**: P0 · **Complejidad**: S · **Rol**: implementer · **Riesgo**: medio
 - **Spec/Req**: FR-003, FR-011, SC-001, SC-002 · ADR-0009 · contracts §1
 - **Objetivo** (hallazgo de la validación real del quickstart, PR-033): con el cableado
@@ -324,7 +324,7 @@ termina en un PR aislado).
 - **Paralelizable con**: — (cierre)
 
 ### PR-033 · Validación operativa con xvideos real + cierre de la fase
-- **Estado**: READY (bloqueado operativamente hasta la revisión legal del humano — SEC-002)
+- **Estado**: DONE (parte de orquestador: quickstart validado con cableado real + docs de cierre; **pendiente la puerta legal humana** para validar xvideos real — SEC-002)
 - **Prioridad**: P2 · **Complejidad**: S · **Rol**: orchestrator + operador · **Riesgo**: medio
 - **Spec/Req**: SC-002, SC-003, SC-005, SC-006, SC-007, SC-008 · cierre spec 002
 - **Objetivo**: Con el manifest de xvideos revisado por el humano (`robots_reviewed`,

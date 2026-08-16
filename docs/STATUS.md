@@ -25,12 +25,16 @@
 ## Fase actual
 
 **Fase 2 — Source SDK + Primer Crawler** (`specs/002-source-sdk-crawler`).
-Estado spec: **APPROVED** (2026-08-15; aprobación humana explícita). Documentación de
+Estado spec: **IMPLEMENTING** (2026-08-16; aprobación humana 2026-08-15). Documentación de
 diseño **completa**: `plan.md`, `data-model.md`, `contracts/`, `quickstart.md`, `tasks.md`,
 ADR-0009..0011.
 
-**En curso**: implementación de PR-019…PR-033 (roadmap en
-`specs/002-source-sdk-crawler/tasks.md`). Ningún PR completado todavía.
+**Implementación COMPLETADA a falta de la puerta legal (SEC-002):** PR-019…PR-034
+(15 PRs + 1 fix de hallazgo) implementados, revisados (APPROVED) y **mergeados a la rama
+de fase**. Quickstart validado con cableado real sobre Supabase local: mock 50/50 vídeos
+`indexed`, INCREMENTAL sin duplicados, gate de xvideos rechazando correctamente.
+**Pendiente solo del humano**: revisión ToS/robots de xvideos → habilitar → backfill
+acotado real → spec `IMPLEMENTED` (ver `docs/handoffs/PR-033.md`).
 
 **Fase 1 (anterior) — Visual Search Spike**: **COMPLETADA.** PR-001…PR-018 (18 PRs) +
 FIX-phash implementados, revisados (APPROVED) y **mergeados a `main`**. **US1/US2/US4
@@ -43,12 +47,13 @@ con el dataset real del operador (43 vídeos).**
 objetivos, dependencias, `allowed_paths`, tests y criterios. Grafo de dependencias y plan
 de paralelización incluidos allí.
 
-- **PRs completados**: PR-019 (bootstrap) + **Ola A** (PR-020/022/023/024/025) + **Ola B**
-  (PR-021 MockAdapter+fixtures, PR-026 repo de jobs, PR-028 registry+repo, PR-029 assets,
-  PR-031 XvideosAdapter) — todos revisados APPROVED y mergeados a la rama de fase. Gates de
-  la unión verificados: **212 passed** (pytest) + mypy/ruff verdes.
-- **PRs abiertos**: — (Ola C en curso: PR-027 worker de jobs)
-- **Siguiente**: PR-027 → PR-030 (pipeline) → PR-032 (CLI) → PR-033 (validación xvideos real, requiere revisión legal humana).
+- **PRs completados**: PR-019…PR-034 — **15/15 DONE** (revisados APPROVED y mergeados a la
+  rama de fase): bootstrap, SDK+mock, rate limiter, backoff, HTTP seguro, migración DB,
+  jobs repo/worker, registry+repo, assets, xvideos adapter, pipeline, CLI, fix assets mock.
+- **PRs abiertos**: — (pendiente de abrir el PR de la rama de fase a `main`, con CI verde
+  y aprobación humana, cuando el operador cierre la puerta legal de xvideos)
+- **Siguiente**: puerta legal humana (ToS/robots xvideos) → habilitar → backfill acotado
+  real (SC-002) → spec `IMPLEMENTED` → merge a `main`.
 - **Puerta legal**: el adapter real de xvideos permanece deshabilitado hasta la revisión
   legal/ToS/robots del humano (SEC-002); el desarrollo no depende de ello (mock/fixtures).
 

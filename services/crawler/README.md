@@ -37,12 +37,12 @@ debe ser un PR propio trazado a la spec 002.
 Sin secretos en el repositorio; todo se inyecta por env con prefijo
 `XTRACE_CRAWLER_` (ver `xtrace_crawler/config.py`):
 
-| Variable | Descripción |
-| --- | --- |
-| `XTRACE_CRAWLER_SUPABASE_URL` | URL del proyecto Supabase (SEC-003) |
+| Variable                                   | Descripción                          |
+| ------------------------------------------ | ------------------------------------ |
+| `XTRACE_CRAWLER_SUPABASE_URL`              | URL del proyecto Supabase (SEC-003)  |
 | `XTRACE_CRAWLER_SUPABASE_SERVICE_ROLE_KEY` | clave `service_role` (solo servidor) |
-| `XTRACE_CRAWLER_LOG_LEVEL` | nivel de log (default `INFO`) |
-| `XTRACE_CRAWLER_REQUEST_TIMEOUT_SECONDS` | timeout HTTP global (default `30.0`) |
+| `XTRACE_CRAWLER_LOG_LEVEL`                 | nivel de log (default `INFO`)        |
+| `XTRACE_CRAWLER_REQUEST_TIMEOUT_SECONDS`   | timeout HTTP global (default `30.0`) |
 
 ## Docker
 
