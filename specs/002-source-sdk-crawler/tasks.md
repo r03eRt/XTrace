@@ -471,6 +471,27 @@ termina en un PR aislado).
 - **Spec/Req**: FR-005/011, SC-002 · hallazgo 5ª validación real
 
 ---
+
+### PR-049 · backfill --section (discover acotado por categoría/tag)
+- **Estado**: DONE (implementado + revisado + mergeado a main, PR #5)
+- **Spec/Req**: FR-007 · habilitador de pruebas del operador
+- **Objetivo**: `backfill --section <path>` (p. ej. /tags/buttfucking) como URL inicial
+  del discover; cursor/anti-bucle/cota intactos. 366 tests.
+
+### PR-050 · XTRACE_CRAWLER_EMBEDDINGS=fake|siglip
+- **Estado**: DONE (implementado + revisado + mergeado a main, PR #6)
+- **Spec/Req**: FR-011 · ADR-0011 · habilitador de pruebas del operador
+- **Objetivo**: env para usar SigLIP real (D=768) en el pipeline; default fake intacto;
+  torch lazy. 362 tests.
+
+### PR-051 · extra siglip + allowlist thumbs-gcore
+- **Estado**: DONE (implementado + revisado + mergeado a main, PR #7)
+- **Spec/Req**: FR-011 · hallazgos de la 1ª ejecución real con SigLIP
+- **Objetivo**: extra opcional siglip (open-clip-torch, torch) con fail-fast claro;
+  thumbs-gcore.xvideos-cdn.com añadido a la allowlist. 372 tests. Con estos 3 PRs la
+  prueba real del tag buttfucking quedó 20/20 indexed + búsqueda Top-1 correcta.
+
+---
 ## Grafo de dependencias
 
 ```mermaid

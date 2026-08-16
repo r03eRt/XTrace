@@ -20,13 +20,14 @@ combina **frames + perceptual hashes (pHash) + visual embeddings (SigLIP) + vect
 ## Estado actual
 
 - **Producto definido**: `docs/PRODUCT_IDEA.md` (descubrimiento cerrado, `SPEC_APPROVED_PLANNED`).
-- **Spec 001 — Visual Search Spike**: **`APPROVED`** (2026-08-14). Diseño completo en
-  `specs/001-visual-search-spike/` (`spec.md`, `plan.md`, `data-model.md`, `contracts/`,
-  `tasks.md`) + ADR-0003…0008 + `docs/architecture/visual-search-spike.md`.
-- **Implementación en curso** (Fase 1 · spike): **PR-001** (bootstrap del servicio Python
-  - CI) y la **Ola A** (PR-002 `EmbeddingProvider`, PR-003 `VectorStore`, PR-004 `pHash`,
-    PR-008 ingest FFmpeg) **completados** y mergeados a `feature/001-visual-search-spike`.
-    Siguiente: **Ola B** (PR-005 SigLIP + PR-009 dedupe).
+- **Fase 1 — Visual Search Spike**: **`IMPLEMENTED`** (2026-08-15). Pipeline validado con
+  el dataset real del operador (43 vídeos): **SC-001 Top-5 95,6%** y **SC-002 FPR 0%**
+  (umbral 0.8). Diseño en `specs/001-visual-search-spike/` + ADR-0003…0008.
+- **Fase 2 — Source SDK + Primer Crawler**: **`IMPLEMENTED`** (2026-08-16). Contrato
+  `SourceAdapter` + entidad normalizada `VideoSource` + cola de jobs en Postgres
+  (`FOR UPDATE SKIP LOCKED`, sin Redis) + `XvideosAdapter` real. **Validación real
+  completada con xvideos** (ver sección _Validación real_ abajo). Diseño en
+  `specs/002-source-sdk-crawler/` + ADR-0009…0011.
 - Detalle vivo (PRs completados/abiertos, blockers, decisiones pendientes, costes):
   **`docs/STATUS.md`**.
 
@@ -110,23 +111,84 @@ measure first · replaceable infrastructure**.
 
 ---
 
+## Validación real (xvideos)
+
+> Pruebas del operador completadas el **2026-08-16** con datos reales de xvideos.com,
+> tras la revisión legal/ToS/robots y la aprobación humana de habilitación (SEC-002).
+> El adaptador real permanece **deshabilitado por defecto** (`sources.enabled=false`).
+
+**Qué se validó** (bucle completo `captura → crawl de sección → índice → búsqueda`):
+
+| Métrica                            | Resultado                                                                                                                             |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Corpus del tag `/tags/buttfucking` | **104 vídeos `indexed`** (267/267 jobs `done`, 239+ frames)                                                                           |
+| Embbeddings                        | SigLIP real (`openclip-ViT-B-16-SigLIP-webli`, D=768, CPU local)                                                                      |
+| Rate limits                        | 398 requests con ~16 min de espera medida; **0 violaciones**                                                                          |
+| Descargas                          | Solo thumbnails del CDN; **0 vídeos completos** (SC-006)                                                                              |
+| Búsqueda con captura real          | **Top-1 exacto: score 1.0 (visual 1.0, phash 1.0)**, 2 frames, timestamp aproximado correcto                                          |
+| Capturas del operador (4)          | Vídeos correctos recuperados entre los primeros resultados                                                                            |
+| Hallazgos corregidos               | 6 bugs reales (selectores HTML, slugs, paginación de tags, timestamps de galería, CDN `thumbs-gcore`, extra `siglip`) — PR-042…PR-053 |
+
+**Cómo reproducirlo** (desde `main`, Supabase local arriba):
+
+```bash
+cd services/crawler
+uv sync --extra siglip                       # una vez: torch + open-clip
+
+# 1) Registrar la fuente (seed automático con `supabase db reset`) y habilitarla:
+#    manifest con robots_reviewed/terms_reviewed/review_date + enabled=true
+#    (aprobación humana; ver specs/002-source-sdk-crawler/quickstart.md)
+
+# 2) Crawl acotado por tag/categoría con embeddings reales:
+XTRACE_CRAWLER_EMBEDDINGS=siglip uv run xtrace-crawler backfill \
+  --source xvideos --section /tags/buttfucking --limit 50 --max-videos 200
+XTRACE_CRAWLER_EMBEDDINGS=siglip uv run xtrace-crawler run-worker --once
+uv run xtrace-crawler stats --json
+
+# 3) Mantener fresco (solo IDs nuevos, sin duplicados):
+XTRACE_CRAWLER_EMBEDDINGS=siglip uv run xtrace-crawler backfill \
+  --source xvideos --section /tags/buttfucking --max-videos 200 --incremental
+XTRACE_CRAWLER_EMBEDDINGS=siglip uv run xtrace-crawler run-worker --once
+
+# 4) Buscar con una captura (borrada inmediatamente tras procesar, FR-018):
+cd ../search-spike
+SUPABASE_DB_URL=postgresql://postgres:postgres@127.0.0.1:55322/postgres \
+  uv run xtrace-spike search --image /ruta/a/captura.jpg --provider siglip --top-k 10
+```
+
+Notas:
+
+- Los **timestamps** de los frames derivados de galerías de thumbnails son
+  **aproximados** (`posición/máx_galería × duración`, clamp a duración) — precisión del
+  orden de decenas de segundos, no exacta de escena.
+- Los límites de la fuente son: página ≈ 27 vídeos, `--limit` ≥ tamaño de página,
+  rate limit 2 000 ms/0,5 rps (manifest), `--max-videos` como cota global del backfill.
+- **Escala**: indexar xvideos completo (12–14 M vídeos) no es viable (~1 año de crawl a
+  0,5 rps y ~200–400 GB de embeddings); la app está diseñada para **corpus acotados por
+  tag/categoría** con frescura INCREMENTAL. Umbral de migración a vector DB dedicada
+  (~1 M vídeos): documentado en `docs/STATUS.md` (plan de coste) y ADR-0004.
+
+---
+
 ## Roadmap de alto nivel
 
 1. **Fase 0 — Arquitectura/spec** (docs, ADRs, schemas, contracts) — **hecho**.
 2. **Fase 1 — Visual search spike** (dataset local → frames → pHash → SigLIP → pgvector →
-   image query → benchmark) — **en curso** (18 PRs, ver `tasks.md`).
-3. **Fase 2 — Source SDK** (`SourceAdapter`, normalización, mock source, fixtures).
-4. **Fase 3 — First crawler** (discover, metadata, visual assets, jobs).
-5. **Fase 4 — Index pipeline** (media worker, dedupe, embedding worker, status, retry).
-6. **Fase 5 — Search API** (imagen, resultados, ranking).
-7. **Fase 6 — Frontend** (home, upload, resultados, detalle).
-8. **Fase 7 — Video query** (clip, multi-frame, consistencia temporal).
-9. **Fase 8 — Multi-source** (adapters adicionales).
-10. **Fase 9 — Admin** · **Fase 10 — Hardening** (seguridad, rate limit, observabilidad,
-    compliance).
+   image query → benchmark) — **hecho** (18 PRs + FIX-phash; SC-001/SC-002 superadas).
+3. **Fase 2 — Source SDK + primer crawler** (contrato `SourceAdapter`, `VideoSource`, mock,
+   jobs en Postgres, `XvideosAdapter` real) — **hecho** (PR-019…PR-053; validación real con
+   xvideos, spec 002 `IMPLEMENTED`).
+4. **Fase 3 — Index pipeline** (media worker, dedupe, embedding worker, status, retry) —
+   parcialmente cubierto en Fase 2; restante según `tasks.md`.
+5. **Fase 4 — Search API** (imagen, resultados, ranking).
+6. **Fase 5 — Frontend** (home, upload, resultados, detalle).
+7. **Fase 6 — Video query** (clip, multi-frame, consistencia temporal).
+8. **Fase 7 — Multi-source** (adapters adicionales).
+9. **Fase 8 — Admin** · **Fase 9 — Hardening** (seguridad, rate limit, observabilidad,
+   compliance).
 
-> La puerta de decisión del spike es **SC-001: Top-5 ≥ 80%** (con latencia reportada,
-> SC-003) en el benchmark de ~210 casos. Si no se cumple, **no** se escala el crawling.
+> La puerta de decisión del spike (**SC-001: Top-5 ≥ 80%**) está **superada** (95,6%);
+> la validación con fuente real confirma la estrategia de crawling acotado.
 
 ---
 
@@ -210,11 +272,15 @@ constitution → specify → clarify → checklist → APROBACIÓN HUMANA
 
 - `docs/PRODUCT_IDEA.md` — requisitos y decisiones de producto.
 - `docs/STATUS.md` — estado vivo (fase, PRs, blockers, pendientes, costes).
-- `specs/001-visual-search-spike/spec.md` — qué/por qué del spike (**APPROVED**).
-- `specs/001-visual-search-spike/plan.md` · `data-model.md` · `contracts/` · `tasks.md`.
-- `docs/adr/` — ADR-0003…0008 (Python service, pgvector/HNSW, pHash+embeddings, media
-  temporal, abstracciones, CLI).
+- `specs/001-visual-search-spike/` — qué/por qué del spike (**IMPLEMENTED**): spec, plan,
+  data-model, contracts, tasks, quickstart.
+- `specs/002-source-sdk-crawler/` — Fase 2 (**IMPLEMENTED**): spec, plan, data-model,
+  contracts, tasks, **quickstart** (cómo crawlear y buscar).
+- `docs/adr/` — ADR-0003…0011 (Python service, pgvector/HNSW, pHash+embeddings, media
+  temporal, abstracciones, CLI, SourceAdapter, cola de jobs Postgres, spike como
+  dependencia editable).
 - `docs/architecture/visual-search-spike.md` — diagramas del spike.
+- `docs/handoffs/` — handoffs de cada PR (trazabilidad completa).
 - `docs/USAGE.md` — prompts de arranque para agentes.
 
 ---
@@ -225,8 +291,11 @@ constitution → specify → clarify → checklist → APROBACIÓN HUMANA
 # App Next.js (skeleton)
 pnpm install && pnpm dev
 
-# Servicio Python del spike
+# Servicio Python del spike (Fase 1)
 cd services/search-spike && uv sync && uv run xtrace-spike --help
+
+# Servicio crawler (Fase 2) — pruebas con xvideos: ver sección "Validación real"
+cd services/crawler && uv sync --extra siglip && uv run xtrace-crawler --help
 ```
 
 > Primer paso de cualquier agente al abrir el repo: leer `AGENTS.md`, la constitución y
