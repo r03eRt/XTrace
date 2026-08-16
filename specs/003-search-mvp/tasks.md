@@ -41,7 +41,7 @@ continúan tras PR-053 (fix del crawler, fase 2, ya mergeado a `main`).
 ## Fase 0 — Bootstrap
 
 ### PR-054 · Bootstrap del servicio `services/api/` + CI
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola A)
 - **Prioridad**: P0 · **Complejidad**: S · **Rol**: implementer · **Riesgo**: bajo
 - **Spec/Req**: FR-006 (base `/health`) · SEC-001/006 · NFR-001/003 · ADR-0011/0012 ·
   plan §Project Structure/§CI strategy
@@ -154,7 +154,7 @@ continúan tras PR-053 (fix del crawler, fase 2, ya mergeado a `main`).
 ## Fase 2 — US2: Frontend mínimo (P1) 🎯
 
 ### PR-057 · [P] Frontend: página `/buscar` + cliente API (zod) + env
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola A)
 - **Prioridad**: P1 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: bajo
 - **Spec/Req**: FR-009/010, FR-011 (UI) · UX-001/002/003 · SEC-001 · contracts §6
 - **Objetivo**: Página única **`src/app/buscar/page.tsx`** (server mínima, D2) +
