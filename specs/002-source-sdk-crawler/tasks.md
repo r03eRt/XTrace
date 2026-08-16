@@ -2,6 +2,8 @@
 
 **Input**: `spec.md` (APPROVED), `plan.md`, `data-model.md`, `contracts/`, ADR-0009/0010/0011.
 
+**Converge (2026-08-16)**: CONVERGED — 20 PRs de código (019..040) + PR-041 docs; FR 15/15 · SEC 4/4 · DATA 3/3 · NFR 4/4 · SC 8/8 (SC-002 real solo pendiente de la puerta legal humana, PR-033 BLOCKED). 0 tareas nuevas.
+
 **Feature branch base**: `feature/002-source-sdk-crawler` (cada PR usa su propia rama
 plana `feature/002-source-sdk-crawler-PR-0NN-slug` — mismo esquema que la fase 1 — y
 termina en un PR aislado).
@@ -419,12 +421,21 @@ termina en un PR aislado).
 - **Dependencias**: PR-036
 - **allowed_paths**: `adapters/base.py`, `adapters/mock.py`, `adapters/xvideos.py`,
   `services/crawler/README.md`, tests correspondientes, handoff.
-- **Notas de revisión (cosméticas, diferidas al próximo PR de código)**: sincronizar
-  `contracts/README.md` §1 (`frozenset|set` → `list[str]`) y la redacción obsoleta "el
-  mock no declara asset_hosts" en `pipeline.py`/`contracts`.
+- **Notas de revisión**: RESUELTAS en PR-041 (syncs cosméticos, DONE).
 
 ---
 
+
+### PR-041 · Syncs cosméticos `asset_hosts` (review L2/L3 de PR-040)
+- **Estado**: DONE (implementado + revisado APPROVED por orquestador + mergeado a la rama de fase)
+- **Prioridad**: P2 · **Complejidad**: XS · **Rol**: implementer · **Riesgo**: bajo
+- **Spec/Req**: trazabilidad · notas de revisión PR-040
+- **Objetivo**: contracts §1 `frozenset|set` → `list[str]`; redacción obsoleta "el mock no
+  declara asset_hosts" corregida en `pipeline.py`/contracts. Solo-docs, sin comportamiento.
+- **Dependencias**: PR-040
+- **allowed_paths**: `contracts/README.md`, `pipeline.py` (docstring), handoff.
+
+---
 ## Grafo de dependencias
 
 ```mermaid
