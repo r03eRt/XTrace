@@ -24,14 +24,32 @@ default global), soporte a FR-012 (estados available/unavailable/removed).
 
 Regla de oro del contrato (ADR-0009): el mock **no hace red** y el core nunca
 ve HTML/JSON; solo `VideoSource`/`VisualAsset` del contrato.
+
+**Assets in-process (PR-034 · FR-003 · SC-001)**: el mock implementa el método
+opcional del contrato `fetch_asset_bytes(url)` (ver `adapters/base.py`): sirve
+los bytes JPEG de sus assets como **imágenes Pillow sintéticas y deterministas**
+generadas desde la URL del catálogo (`synthetic_sprite`/`synthetic_thumbnail`,
+las mismas que los tests de integración ya usaban en su router). Hallazgo de la
+validación del quickstart (PR-033): con el cableado real (CLI + worker + repos +
+`SafeHTTPClient`), las URLs `http://mock.local/...` pasaban por el cliente HTTP
+real (allowlist/esquema lo bloquean) y los jobs `INDEX_VIDEO` degradaban TODOS
+los assets → 0 vídeos indexados. Ahora el pipeline prefiere los bytes del
+adapter (in-process, sin red) y solo cae a `AssetFetcher`/`SafeHTTPClient`
+cuando `fetch_asset_bytes` devuelve `None` (el `preview.mp4`, que no se fabrica
+sin ffmpeg, degrada con warning y el vídeo se indexa con storyboard+thumbnails).
 """
 
 from __future__ import annotations
 
+import io
 import random
+import zlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Literal, NoReturn
+from urllib.parse import urlsplit
+
+from PIL import Image, ImageDraw
 
 from xtrace_crawler.adapters.base import AdapterManifest, RateLimitSpec
 from xtrace_crawler.adapters.models import (
@@ -55,6 +73,108 @@ _NO_STORYBOARD_EVERY: int = 5
 _STORYBOARD_TILES: int = 6
 #: Número de thumbnails por vídeo.
 _THUMBNAILS: int = 3
+
+# -- Imágenes sintéticas de los assets (PR-034 · FR-003 · SC-001) --------------
+#
+# Los bytes de los assets del catálogo se generan **in-process** con Pillow, de
+# forma determinista: mismo URL → mismos bytes entre llamadas, instancias y
+# procesos (NFR-003). Los tamaños/colores son paridad exacta con el router que
+# los tests de integración ya servían por `httpx.MockTransport` (PR-029): el
+# pipeline indexa exactamente las mismas imágenes con o sin transporte fake.
+
+#: Grid del sprite storyboard sintético (paridad con tests/fixtures/assets/sprite_factory.py).
+_SPRITE_COLS: int = 2
+_SPRITE_ROWS: int = 2
+_SPRITE_TILE_W: int = 48
+_SPRITE_TILE_H: int = 27
+#: Sello de unicidad por vídeo pegado en el sprite (paridad con los tests de integración).
+_SPRITE_STAMP_SIZE: tuple[int, int] = (24, 13)
+_SPRITE_STAMP_POSITION: tuple[int, int] = (36, 20)
+
+
+def _tile_color(row: int, col: int) -> tuple[int, int, int]:
+    """Color único y estable de la tile (paridad con `sprite_factory.tile_color`)."""
+    return (
+        (row * 53 + col * 29) % 256,
+        (row * 17 + col * 71) % 256,
+        (row * 91 + col * 13) % 256,
+    )
+
+
+def _make_sprite() -> Image.Image:
+    """Sprite storyboard 2×2 de tiles con borde blanco (paridad con `make_sprite`)."""
+    sprite = Image.new("RGB", (_SPRITE_COLS * _SPRITE_TILE_W, _SPRITE_ROWS * _SPRITE_TILE_H))
+    draw = ImageDraw.Draw(sprite)
+    for row in range(_SPRITE_ROWS):
+        for col in range(_SPRITE_COLS):
+            x0, y0 = col * _SPRITE_TILE_W, row * _SPRITE_TILE_H
+            draw.rectangle(
+                [x0, y0, x0 + _SPRITE_TILE_W - 1, y0 + _SPRITE_TILE_H - 1],
+                fill=_tile_color(row, col),
+                outline=(255, 255, 255),
+                width=1,
+            )
+    return sprite
+
+
+def synthetic_sprite(external_id: str) -> Image.Image:
+    """Sprite storyboard determinista del vídeo (PR-034 · FR-003 · SC-001).
+
+    Imagen Pillow generada desde la URL del catálogo: mismo `external_id` →
+    misma imagen entre llamadas, instancias y procesos (NFR-003); vídeos
+    distintos → sprites distintos (sello de `zlib.crc32(external_id)`), la
+    unicidad que las búsquedas SC-002 necesitan.
+    """
+    sprite = _make_sprite()
+    seed = zlib.crc32(external_id.encode())
+    stamp = Image.new(
+        "RGB", _SPRITE_STAMP_SIZE, (seed % 256, (seed >> 8) % 256, (seed >> 16) % 256)
+    )
+    sprite.paste(stamp, _SPRITE_STAMP_POSITION)
+    return sprite
+
+
+def synthetic_thumbnail(position: int) -> Image.Image:
+    """Miniatura determinista del catálogo: color de tile por posición (PR-034)."""
+    return Image.new("RGB", (_SPRITE_TILE_W, _SPRITE_TILE_H), _tile_color(position, 0))
+
+
+def _jpeg_bytes(image: Image.Image) -> bytes:
+    """Codifica la imagen a JPEG (los tests de integración reutilizan los bytes)."""
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+def synthetic_asset_bytes(url: str) -> bytes | None:
+    """Bytes JPEG sintéticos de un asset del catálogo (PR-034); `None` si no hay
+    representación in-process (semántica del contrato: descargar por HTTP).
+
+    Solo las URLs del catálogo (`http://mock.local/assets/<external_id>/...`)
+    se fabrican: `storyboard.jpg` → sprite del vídeo; `thumb-<n>.jpg` →
+    miniatura por posición; `preview.mp4` → `None` (el mock no genera mp4 sin
+    ffmpeg; el preview degrada con warning y el vídeo se indexa con
+    storyboard+thumbnails — jerarquía de assets, FR-005). Cualquier otra URL
+    (ajena al mock, malformada o fuera del patrón) → `None`.
+    """
+    parsed = urlsplit(url)
+    if parsed.scheme != "http" or parsed.hostname != "mock.local":
+        return None
+    prefix = "/assets/"
+    path = parsed.path
+    if not path.startswith(prefix):
+        return None
+    external_id, _, filename = path[len(prefix) :].partition("/")
+    if filename == "storyboard.jpg":
+        return _jpeg_bytes(synthetic_sprite(external_id))
+    if filename.startswith("thumb-") and filename.endswith(".jpg"):
+        try:
+            position = int(filename.removeprefix("thumb-").removesuffix(".jpg"))
+        except ValueError:
+            return None
+        return _jpeg_bytes(synthetic_thumbnail(position))
+    return None  # p. ej. preview.mp4 → descarga HTTP (y degrada sin red)
+
 
 #: Títulos sintéticos (anonimizados; sin contenido real — SEC-004).
 _TITLES: tuple[str, ...] = (
@@ -245,6 +365,21 @@ class MockAdapter:
         if video.external_id not in self._catalog:
             return VideoAvailability.REMOVED
         return self.faults.availability.get(video.external_id, self.faults.availability_default)
+
+    # -- Método opcional del contrato (PR-034 · FR-003 · SC-001) ---------------
+
+    async def fetch_asset_bytes(self, url: str) -> bytes | None:
+        """Bytes del asset servidos **in-process, sin red** (contracts §1, PR-034).
+
+        Devuelve los bytes JPEG sintéticos y deterministas del catálogo
+        (imágenes Pillow de `synthetic_asset_bytes`: las mismas que los tests
+        de integración ya servían). Semántica del contrato: `None` → el
+        pipeline descarga por HTTP (`AssetFetcher`/`SafeHTTPClient`); el mock
+        solo devuelve `None` para `preview.mp4` (sin ffmpeg no fabrica mp4: el
+        preview degrada con warning y el vídeo se indexa con
+        storyboard+thumbnails — SC-001/SC-002 sin red).
+        """
+        return synthetic_asset_bytes(url)
 
     # -- Soporte a fixtures/harness (PR-021) --------------------------------
 

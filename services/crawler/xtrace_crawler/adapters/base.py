@@ -9,6 +9,19 @@ de cada fuente (SEC-002): el registry (PR-028) no habilita un adapter real sin
 Nota PR-020: el manifest es un modelo pydantic **frozen** (no un TypedDict como
 en contracts §1) para exigir los campos de compliance en runtime; la firma de
 campos y métodos es idéntica al contrato.
+
+**Método opcional (PR-034 · FR-003 · SC-001 · contracts §1)**: un adapter PUEDE
+implementar `fetch_asset_bytes(url) -> bytes | None` para servir los bytes de
+sus visual assets **in-process, sin red** (p. ej. el `MockAdapter` con imágenes
+sintéticas deterministas del catálogo). Semántica del contrato: `bytes` → el
+pipeline (PR-030) los usa directamente; `None` —o adapter que no implementa el
+método— → el pipeline descarga por HTTP (`AssetFetcher`/`SafeHTTPClient`, la
+ruta actual de las fuentes reales, p. ej. xvideos: su contrato funcional NO
+cambia). No se declara como miembro del cuerpo del protocolo a propósito: los
+protocolos estructurales exigen **todos** los miembros declarados (mypy) y el
+`runtime_checkable` exige su presencia en `isinstance`, lo que rompería la
+compatibilidad de los adapters que no lo implementan; el pipeline lo descubre
+con `getattr(adapter, "fetch_asset_bytes", None)` (ver docstring de la clase).
 """
 
 from __future__ import annotations
@@ -79,6 +92,21 @@ class SourceAdapter(Protocol):
 
     Regla de oro: el core nunca ve HTML/JSON de la web; solo
     `VideoSource`/`VisualAsset` (SC-007: añadir una fuente no toca el core).
+
+    **Método opcional (PR-034 · FR-003 · SC-001)**: un adapter PUEDE implementar
+
+        async def fetch_asset_bytes(self, url: str) -> bytes | None
+
+    para servir los bytes de un visual asset **in-process, sin red** (el
+    `MockAdapter` devuelve imágenes Pillow sintéticas y deterministas del
+    catálogo). Semántica del contrato: `bytes` → el pipeline los usa
+    directamente; `None` (o adapter sin el método) → descarga por HTTP con
+    `AssetFetcher`/`SafeHTTPClient` (ruta de las fuentes reales; el contrato
+    funcional de xvideos NO cambia). No se declara como miembro del cuerpo del
+    protocolo: los protocolos estructurales (mypy strict) y el
+    `runtime_checkable` (isinstance) exigirían el miembro en TODOS los
+    adapters, rompiendo la compatibilidad de los que no lo implementan; el
+    pipeline lo descubre con `getattr(adapter, "fetch_asset_bytes", None)`.
     """
 
     manifest: AdapterManifest

@@ -25,6 +25,15 @@ imágenes sintéticas (PR-029) y previews generados con FFmpeg si está disponib
 (si no, el preview degrada y los conteos se ajustan). Se **skippean** si la BD
 local no es alcanzable (patrón del spike); cada test limpia
 `jobs`/`videos`/`sources` al inicio (constitución §6).
+
+**PR-034 (hallazgo del quickstart, PR-033)**: con el cableado REAL (worker +
+repos + pipeline + `MockAdapter`, sin transporte HTTP inyectado), los jobs
+`INDEX_VIDEO` degradaban TODOS los assets (`http://mock.local/...` bloqueado por
+el `SafeHTTPClient` real) → 0 vídeos indexados. El mock ahora sirve sus assets
+**in-process** (`fetch_asset_bytes`, imágenes sintéticas deterministas) y el
+pipeline las prefiere: `test_real_wiring_mock_indexes_videos_without_network`
+reproduce el cableado real SIN fakes de fetch y verifica vídeos `indexed` con
+frames+embeddings consultables sin red (FR-003 · SC-001/SC-002).
 """
 
 from __future__ import annotations
@@ -46,14 +55,15 @@ from xtrace_spike.hashing.phash import compute_phash
 from xtrace_spike.vectorstore.pgvector import EMBEDDING_DIMENSION, PgVectorStore, phash_to_db
 
 from tests.fixtures.assets.preview_factory import ffmpeg_available, make_preview_mp4
-from tests.fixtures.assets.sprite_factory import make_sprite, tile_color
 from tests.fixtures.harness import MockHarness
 from xtrace_crawler.adapters.base import RateLimitSpec
 from xtrace_crawler.adapters.mock import (
+    MOCK_BASE_URL,
     MockAdapter,
     MockAdapterRemovedError,
     MockAdapterTransientError,
     MockFaults,
+    synthetic_asset_bytes,
 )
 from xtrace_crawler.adapters.models import VideoAvailability, VideoSource, VisualAsset
 from xtrace_crawler.crawling.http import SafeHTTPClient
@@ -115,19 +125,6 @@ def _fast_rate(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _storyboard_image(external_id: str) -> Image.Image:
-    """Sprite storyboard determinista del vídeo: único por external_id (zlib.crc32).
-
-    La unicidad es necesaria para el aserto de búsqueda (SC-002): el embedding de
-    un vídeo no debe ser idéntico al de otro.
-    """
-    sprite = make_sprite(cols=2, rows=2, tile_w=48, tile_h=27)
-    seed = zlib.crc32(external_id.encode())
-    stamp = Image.new("RGB", (24, 13), (seed % 256, (seed >> 8) % 256, (seed >> 16) % 256))
-    sprite.paste(stamp, (36, 20))
-    return sprite
-
-
 def _jpeg_bytes(image: Image.Image) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG")
@@ -135,21 +132,21 @@ def _jpeg_bytes(image: Image.Image) -> bytes:
 
 
 def _served_storyboard(external_id: str) -> Image.Image:
-    """La imagen EXACTA que el router sirve (JPEG decodificado): lo que indexa el pipeline.
+    """La imagen EXACTA que el MockAdapter sirve in-process (PR-034): JPEG decodificado.
 
     El proveedor fake hashea los bytes de píxeles (no es perceptual): la consulta
-    SC-002 debe usar la imagen tal y como se almacenó (con los artefactos JPEG),
-    no la imagen original sin codificar.
+    SC-002 debe usar la imagen tal y como se indexó (con los artefactos JPEG),
+    no la imagen original sin codificar. Los bytes vienen de
+    `synthetic_asset_bytes` (adapters/mock.py), la fuente ÚNICA de las imágenes
+    del catálogo — con o sin transporte HTTP, el pipeline indexa lo mismo.
     """
-    return Image.open(io.BytesIO(_jpeg_bytes(_storyboard_image(external_id)))).convert("RGB")
-
-
-def _thumb_bytes(position: int) -> bytes:
-    return _jpeg_bytes(Image.new("RGB", (48, 27), tile_color(position, 0)))
+    data = synthetic_asset_bytes(f"{MOCK_BASE_URL}/assets/{external_id}/storyboard.jpg")
+    assert data is not None
+    return Image.open(io.BytesIO(data)).convert("RGB")
 
 
 def _preview_bytes(url: str) -> bytes:
-    """Preview mp4 sintético (FFmpeg lavfi, PR-029); b\"\" si ffmpeg no está (degradará)."""
+    """Preview mp4 sintético (FFmpeg lavfi, PR-029); b"" si ffmpeg no está (degradará)."""
     if not ffmpeg_available():
         return b""
     tmp = Path(tempfile.gettempdir()) / f"xtrace-test-preview-{abs(zlib.crc32(url.encode()))}.mp4"
@@ -161,12 +158,10 @@ def _preview_bytes(url: str) -> bytes:
 
 
 def _asset_bytes(url: str) -> bytes:
-    if url.endswith("/storyboard.jpg"):
-        external_id = url.split("/")[-2]
-        return _jpeg_bytes(_storyboard_image(external_id))
-    if "/thumb-" in url:
-        position = int(url.rsplit("/", 1)[-1].removeprefix("thumb-").removesuffix(".jpg"))
-        return _thumb_bytes(position)
+    """Bytes del asset: las imágenes del MockAdapter (PR-034) o el preview FFmpeg."""
+    in_process = synthetic_asset_bytes(url)
+    if in_process is not None:
+        return in_process
     if url.endswith("/preview.mp4"):
         return _preview_bytes(url)
     raise AssertionError(f"URL de asset no contemplada por el router de tests: {url}")
@@ -697,3 +692,134 @@ def test_pipeline_uses_canonical_rate_limit_spec() -> None:
     spec = harness.adapter.manifest.rate_limit
     assert spec.min_interval_ms == 100  # default declarado por el MockAdapter (PR-021)
     assert spec.max_rps == 10.0
+
+
+# ---------------------------------------------------------------------------
+# PR-034 · Assets del mock servidos in-process (hallazgo del quickstart, PR-033)
+# ---------------------------------------------------------------------------
+
+
+class _NoInProcessAdapter(MockAdapter):
+    """MockAdapter SIN `fetch_asset_bytes` (PR-034): la descarga debe ir por HTTP.
+
+    `fetch_asset_bytes` es **opcional** en el contrato (contracts §1): sin él,
+    el pipeline cae a `AssetFetcher`/`SafeHTTPClient` (la ruta de las fuentes
+    reales, p. ej. xvideos). El cliente de tests (MockTransport) sirve los
+    mismos bytes sintéticos del catálogo.
+    """
+
+    fetch_asset_bytes: Callable[[str], Any] | None = None
+
+
+class _InProcessPreviewsAdapter(MockAdapter):
+    """MockAdapter que además sirve el preview **in-process** (PR-034).
+
+    Cubre la ruta del pipeline para bytes in-process de assets `preview`
+    (mp4 → archivo temporal → FFmpeg), sin red, como el resto del mock.
+    """
+
+    async def fetch_asset_bytes(self, url: str) -> bytes | None:
+        data = await super().fetch_asset_bytes(url)
+        if data is not None:
+            return data
+        if url.endswith("/preview.mp4"):
+            return _preview_bytes(url)
+        return None
+
+
+def test_real_wiring_mock_indexes_videos_without_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hallazgo PR-034 (regresión): el cableado REAL indexa el mock SIN red.
+
+    Reproduce el fallo de la validación del quickstart: worker + `JobsRepo` +
+    `CrawlerRepo` + pipeline + `MockAdapter` **sin fakes de fetch** (sin
+    `client` inyectado, sin MockTransport). Antes del fix, los jobs
+    `INDEX_VIDEO` degradaban TODOS los assets (`http://mock.local/...` pasa por
+    el `SafeHTTPClient` real: allowlist/esquema lo bloquean) → 0 vídeos
+    indexados y 45 jobs failed. Ahora el mock sirve sus imágenes **in-process**
+    (`fetch_asset_bytes`, FR-003 · SC-001) → vídeos `indexed` con
+    frames+embeddings **consultables** (SC-002); el preview (sin mp4 sintético)
+    degrada con warning y nunca se abre un socket (NFR-003).
+    """
+    _fast_rate(monkeypatch)
+    adapter = MockAdapter(seed=42, catalog_size=3)
+    jobs = JobsRepo(delay_fn=lambda _attempts: 0.0)
+    pipeline, worker, _ = _build(adapter, jobs=jobs, worker_id="it-pipeline-pr034")
+    assert _run_backfill(pipeline, worker, jobs, limit=2) == 8  # 2 DISCOVER + 3 + 3
+
+    videos = _videos()
+    assert len(videos) == 3
+    assert all(video["status"] == "indexed" for video in videos)  # 0 degradados (SC-002)
+
+    jobs_rows = _jobs()
+    assert all(job["status"] != JobStatus.RUNNING.value for job in jobs_rows)
+    assert all(job["status"] == JobStatus.DONE.value for job in jobs_rows)  # 0 failed (hallazgo)
+
+    by_external_id = {video["external_id"]: video for video in videos}
+    # Determinista SIN ffmpeg: storyboard+thumbnails in-process; preview degrada.
+    assert _frames_for(by_external_id["mock-vid-0000"]["id"]) == _MOCK_THUMBNAILS
+    for external_id in ("mock-vid-0001", "mock-vid-0002"):
+        assert _frames_for(by_external_id[external_id]["id"]) == (
+            _MOCK_STORYBOARD_TILES + _MOCK_THUMBNAILS
+        )
+
+    # Embeddings CONSULTABLES vía el VectorStore del spike (SC-002 · ADR-0011),
+    # con la imagen exacta que el mock sirve in-process (PR-034).
+    store = PgVectorStore()
+    provider = FakeEmbeddingProvider(dimension=EMBEDDING_DIMENSION)
+    query = [
+        float(value) for value in provider.embed_images([_served_storyboard("mock-vid-0001")])[0]
+    ]
+    hits = _run(store.ann_search(query, k=5))
+    assert str(hits[0]["video_id"]) == str(by_external_id["mock-vid-0001"]["id"])
+    assert hits[0]["distance"] == pytest.approx(0.0, abs=1e-6)
+
+    assert _leftover_asset_dirs() == []  # SC-004: sin temporales tras el flujo
+
+
+def test_adapter_without_fetch_asset_bytes_uses_http_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR-034: un adapter sin `fetch_asset_bytes` → `None` → ruta HTTP real.
+
+    El contrato de las fuentes reales NO cambia: sin el método opcional, el
+    pipeline construye su `AssetFetcher` con el cliente seguro (aquí con
+    MockTransport sirviendo los mismos bytes sintéticos del catálogo) y el
+    flujo indexa igual (regresión del contrato de xvideos).
+    """
+    _fast_rate(monkeypatch)
+    adapter = _NoInProcessAdapter(seed=42, catalog_size=3)
+    pipeline, worker, jobs = _build(
+        adapter, client=_client(), worker_id="it-pipeline-http-fallback"
+    )
+    assert _run_backfill(pipeline, worker, jobs, limit=2) == 8
+
+    videos = _videos()
+    assert len(videos) == 3
+    assert all(video["status"] == "indexed" for video in videos)
+    assert all(job["status"] == JobStatus.DONE.value for job in _jobs())
+    assert _leftover_asset_dirs() == []
+
+
+def test_in_process_preview_bytes_are_extracted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR-034: bytes `preview` servidos in-process se extraen con FFmpeg (sin red).
+
+    Si ffmpeg no está disponible el preview degrada (bytes vacíos) y el vídeo
+    sigue indexándose con storyboard+thumbnails (jerarquía de assets, FR-005);
+    con ffmpeg, el preview aporta frames adicionales al total.
+    """
+    _fast_rate(monkeypatch)
+    adapter = _InProcessPreviewsAdapter(seed=42, catalog_size=3)
+    pipeline, worker, jobs = _build(adapter, worker_id="it-pipeline-ip-preview")
+    assert _run_backfill(pipeline, worker, jobs, limit=2) == 8
+
+    videos = _videos()
+    assert len(videos) == 3
+    assert all(video["status"] == "indexed" for video in videos)
+    assert all(job["status"] == JobStatus.DONE.value for job in _jobs())
+    if ffmpeg_available():
+        assert _total_frames() > 3 * _MOCK_THUMBNAILS + 2 * _MOCK_STORYBOARD_TILES
+    assert _leftover_asset_dirs() == []

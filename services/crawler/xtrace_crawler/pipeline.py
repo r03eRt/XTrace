@@ -20,7 +20,7 @@ discover → get_video → get_visual_assets → frames → pHash + embedding �
   que ya no existe en la fuente es **terminal** (`VideoUnavailableError`):
   vídeo `unavailable` + `exclude` y el job termina en `unavailable` sin
   reintentos (contracts §3 · spec edge cases).
-- **INDEX_VIDEO** (FR-011 · SC-002): `adapter.get_visual_assets` → descarga de
+- **INDEX_VIDEO** (FR-011 · SC-002): `adapter.get_visual_assets` → bytes de
   assets permitidos (storyboard/thumbnail/preview; **nunca** vídeo completo,
   SC-006) → frames con timestamp (storyboard con `timestamp_ms`/`position` como
   frame; previews cortos vía FFmpeg con `PreviewFrameExtractor`, PR-029) →
@@ -29,6 +29,13 @@ discover → get_video → get_visual_assets → frames → pHash + embedding �
   real queda para ejecución local vía inyección) → `VectorStore.upsert_frames`
   (idempotente: `UNIQUE(video_id, frame_seq)`, SC-003) → vídeo `indexed`
   (FR-012).
+  **PR-034 (hallazgo del quickstart, PR-033)**: cada asset se sirve primero con
+  el método **opcional** del contrato `adapter.fetch_asset_bytes(url)`
+  (`adapters/base.py`) — bytes in-process, sin red (el `MockAdapter` devuelve
+  imágenes sintéticas deterministas, FR-003/SC-001); si devuelve `None` (o el
+  adapter no lo implementa) se descarga por HTTP con
+  `AssetFetcher`/`SafeHTTPClient` (ruta actual de las fuentes reales, p. ej.
+  xvideos: contrato funcional sin cambios).
 - **CHECK_AVAILABILITY** (FR-013): `adapter.check_availability` → `unavailable`/
   `removed` aplica el estado del vídeo + **exclusión del índice** (`repo.exclude`
   + `VectorStore.delete_video`, mecanismo del spike FR-014); `available` no
@@ -64,11 +71,15 @@ del job (p. ej. el registry de PR-028). Añadir una fuente no toca este módulo
 
 from __future__ import annotations
 
+import io
 import logging
+import shutil
+import tempfile
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Protocol, TypedDict
 from urllib.parse import urlsplit
 
@@ -478,7 +489,7 @@ class CrawlerPipeline:
         assets = await adapter.get_visual_assets(video)
         await self._repo.set_video_status(record.id, "indexing")
 
-        frames = await self._collect_frames(assets, video)
+        frames = await self._collect_frames(assets, video, adapter)
         try:
             if not frames:
                 raise ValueError(
@@ -534,31 +545,111 @@ class CrawlerPipeline:
     # -- Assets → frames (FR-005/FR-011/FR-015) ---------------------------------
 
     async def _collect_frames(
-        self, assets: list[VisualAsset], video: VideoSource
+        self, assets: list[VisualAsset], video: VideoSource, adapter: SourceAdapter
     ) -> list[IndexedFrame]:
-        """Descarga los assets y los convierte en frames; degradación por asset.
+        """Obtiene los bytes de los assets y los convierte en frames; degradación por asset.
+
+        **PR-034**: cada asset se sirve primero con el método **opcional** del
+        contrato `adapter.fetch_asset_bytes(url)` (`adapters/base.py`) — bytes
+        in-process, sin red (el `MockAdapter` devuelve imágenes sintéticas
+        deterministas, FR-003/SC-001). Si devuelve `None` —o el adapter no lo
+        implementa— se descarga por HTTP con `AssetFetcher`/`SafeHTTPClient`
+        (ruta actual de las fuentes reales; el cliente solo se construye si
+        algún asset necesita la red).
 
         Cada asset se procesa en su propio `try/except` de `_DEGRADABLE_ASSET_ERRORS`
-        (descarga/preview/crop): un asset fallido se omite con warning y el resto
-        del vídeo continúa (spec edge case: la jerarquía de assets degrada sin
-        fallar todo el vídeo).
+        (bytes in-process inválidos, descarga/preview/crop): un asset fallido se
+        omite con warning y el resto del vídeo continúa (spec edge case: la
+        jerarquía de assets degrada sin fallar todo el vídeo).
         """
-        client = self._client if self._client is not None else self._client_for_assets(assets)
-        fetcher = AssetFetcher(client)
+        fetcher: AssetFetcher | None = None
         frames: list[IndexedFrame] = []
         for asset in assets:
             try:
-                frames.extend(await self._frames_from_asset(fetcher, asset, video))
+                in_process = await self._in_process_bytes(adapter, asset)
+                if in_process is not None:
+                    frames.extend(await self._frames_from_bytes(in_process, asset, video))
+                else:
+                    if fetcher is None:
+                        fetcher = self._fetcher_for(assets)
+                    frames.extend(await self._frames_from_asset(fetcher, asset, video))
             except _DEGRADABLE_ASSET_ERRORS as exc:
                 logger.warning(
                     "asset %s (%s) omitido por degradación: %s", asset.url, asset.kind, exc
                 )
         return frames
 
+    async def _in_process_bytes(self, adapter: SourceAdapter, asset: VisualAsset) -> bytes | None:
+        """Bytes del asset servidos por el propio adapter (PR-034 · contracts §1).
+
+        El método `fetch_asset_bytes` es **opcional** en el contrato (los
+        adapters reales no lo implementan): se descubre con `getattr` y el
+        valor `None` —ausente o devolviendo `None`— significa descargar por
+        HTTP (`AssetFetcher`/`SafeHTTPClient`).
+        """
+        provider: Callable[[str], Awaitable[bytes | None]] | None = getattr(
+            adapter, "fetch_asset_bytes", None
+        )
+        if provider is None:
+            return None
+        return await provider(asset.url)
+
+    def _fetcher_for(self, assets: list[VisualAsset]) -> AssetFetcher:
+        """`AssetFetcher` con el cliente seguro de los assets (SEC-001).
+
+        Solo se construye si algún asset necesita la ruta HTTP (PR-034): el
+        mock in-process no crea ningún `SafeHTTPClient` (0 superficie de red).
+        """
+        client = self._client if self._client is not None else self._client_for_assets(assets)
+        return AssetFetcher(client)
+
+    async def _frames_from_bytes(
+        self, data: bytes, asset: VisualAsset, video: VideoSource
+    ) -> list[IndexedFrame]:
+        """Frames desde los bytes IN-PROCESS de un asset (PR-034 · FR-011).
+
+        - `preview`: bytes → archivo temporal dedicado → `PreviewFrameExtractor`
+          (FFmpeg sobre previews cortos, PR-029); el temporal se elimina en
+          `finally` (FR-015).
+        - `storyboard`/`thumbnail`: bytes → imagen en memoria (`BytesIO`), sin
+          archivos temporales (FR-015).
+        """
+        if asset.kind == "preview":
+            return await self._preview_frames_from_bytes(data, asset)
+        with Image.open(io.BytesIO(data)) as image:
+            return self._image_frames(image, asset, video)
+
+    async def _preview_frames_from_bytes(
+        self, data: bytes, asset: VisualAsset
+    ) -> list[IndexedFrame]:
+        """Frames de un preview servido IN-PROCESS (PR-034): bytes → temporal FFmpeg.
+
+        El mp4 se escribe en un directorio temporal dedicado que se elimina en
+        `finally` pase lo que pase (FR-015); los JPEGs extraídos viven dentro
+        de ese mismo directorio y las imágenes se copian a memoria antes de
+        borrar.
+        """
+        frames: list[IndexedFrame] = []
+        tmp_dir = Path(tempfile.mkdtemp(prefix="xtrace-crawler-asset-"))
+        try:
+            path = tmp_dir / "asset.mp4"
+            path.write_bytes(data)
+            extracted = self._preview_extractor.extract_frames(
+                path, interval_s=self._preview_interval_s, out_dir=tmp_dir
+            )
+            for preview_frame in extracted:
+                with Image.open(preview_frame.path) as image:
+                    frames.append(
+                        IndexedFrame(image=image.copy(), timestamp_ms=preview_frame.timestamp_ms)
+                    )
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        return frames
+
     async def _frames_from_asset(
         self, fetcher: AssetFetcher, asset: VisualAsset, video: VideoSource
     ) -> list[IndexedFrame]:
-        """Convierte UN asset en frames (imágenes en memoria, nunca archivos temporales).
+        """Convierte UN asset descargado por HTTP en frames (ruta de fuentes reales).
 
         - storyboard: si la fuente ya da `position`/`timestamp_ms` por asset, el
           asset ES un frame (con su timestamp); un sprite sin esos campos se
@@ -571,30 +662,34 @@ class CrawlerPipeline:
         """
         if asset.kind == "preview":
             return await self._preview_frames(fetcher, asset)
-        frames: list[IndexedFrame] = []
         async with fetcher.fetch(asset) as path:
             with Image.open(path) as image:
-                if (
-                    asset.kind == "storyboard"
-                    and asset.position is None
-                    and asset.timestamp_ms is None
-                ):
-                    grid = (
-                        self._storyboard_grid(asset) if self._storyboard_grid is not None else None
+                return self._image_frames(image, asset, video)
+
+    def _image_frames(
+        self, image: Image.Image, asset: VisualAsset, video: VideoSource
+    ) -> list[IndexedFrame]:
+        """Convierte una imagen ya abierta en frames (lógica compartida PR-034:
+        ruta HTTP y ruta in-process producen exactamente los mismos frames).
+
+        - storyboard: si la fuente ya da `position`/`timestamp_ms` por asset, el
+          asset ES un frame (con su timestamp); un sprite sin esos campos se
+          indexa como un único frame, salvo que `storyboard_grid` resuelva el
+          grid (entonces se recorta en tiles con timestamp aproximado, PR-029).
+        - thumbnail: un frame sin timestamp (paridad FR-012 del spike: el frame
+          se indexa sin timestamp, sin fallar).
+        """
+        if asset.kind == "storyboard" and asset.position is None and asset.timestamp_ms is None:
+            grid = self._storyboard_grid(asset) if self._storyboard_grid is not None else None
+            if grid is not None:
+                cols, rows = grid
+                return [
+                    IndexedFrame(image=tile.image.copy(), timestamp_ms=tile.timestamp_ms)
+                    for tile in split_storyboard(
+                        image, cols=cols, rows=rows, duration_ms=video.duration_ms
                     )
-                    if grid is not None:
-                        cols, rows = grid
-                        for tile in split_storyboard(
-                            image, cols=cols, rows=rows, duration_ms=video.duration_ms
-                        ):
-                            frames.append(
-                                IndexedFrame(
-                                    image=tile.image.copy(), timestamp_ms=tile.timestamp_ms
-                                )
-                            )
-                        return frames
-                frames.append(IndexedFrame(image=image.copy(), timestamp_ms=asset.timestamp_ms))
-        return frames
+                ]
+        return [IndexedFrame(image=image.copy(), timestamp_ms=asset.timestamp_ms)]
 
     async def _preview_frames(
         self, fetcher: AssetFetcher, asset: VisualAsset
