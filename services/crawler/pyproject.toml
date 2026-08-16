@@ -9,6 +9,7 @@ description = "Servicio crawler de XTrace: ingesta de fuentes web al índice vis
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
+    "httpx>=0.27,<1",
     "pydantic-settings>=2.6,<3",
     "typer>=0.15,<1",
     # Pipeline del spike reutilizado como dependencia editable (ADR-0011):
