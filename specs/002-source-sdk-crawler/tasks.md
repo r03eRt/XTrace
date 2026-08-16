@@ -357,7 +357,7 @@ termina en un PR aislado).
 - **Done**: pytest 287 verde; `stats` evidencia SC-005/NFR-004.
 
 ### PR-036 · Hardening de seguridad + cota global de backfill
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola G)
 - **Prioridad**: P0 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: medio (SEC)
 - **Spec/Req**: SEC-001/003, FR-007, SC-005 · security-review P1/P2 · analyze hallazgo 2
 - **Objetivo**:
@@ -407,6 +407,21 @@ termina en un PR aislado).
   (--limit=página, --max-videos previsto) y §4 (snapshot de enabled).
 - **Dependencias**: —
 - **allowed_paths**: `plan.md`, `spec.md`, `data-model.md`, `contracts/README.md`, handoff.
+
+### PR-040 · `asset_hosts` en el contrato de adapters + README seguridad
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola G2)
+- **Prioridad**: P1 · **Complejidad**: XS · **Rol**: implementer · **Riesgo**: bajo
+- **Spec/Req**: SEC-001 · follow-up de PR-036 (SSRF allowlist por fuente)
+- **Objetivo**: `asset_hosts` formalizado (docstring del protocolo + atributos de clase,
+  patrón `fetch_asset_bytes` PR-034): mock `[]` (in-process), xvideos lista PROVISIONAL
+  marcada para validar en PR-033; README del servicio con sección Seguridad (SSRF,
+  DNS rebinding, límite de píxeles, TOCTOU residual).
+- **Dependencias**: PR-036
+- **allowed_paths**: `adapters/base.py`, `adapters/mock.py`, `adapters/xvideos.py`,
+  `services/crawler/README.md`, tests correspondientes, handoff.
+- **Notas de revisión (cosméticas, diferidas al próximo PR de código)**: sincronizar
+  `contracts/README.md` §1 (`frozenset|set` → `list[str]`) y la redacción obsoleta "el
+  mock no declara asset_hosts" en `pipeline.py`/`contracts`.
 
 ---
 

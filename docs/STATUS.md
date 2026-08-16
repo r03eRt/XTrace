@@ -71,9 +71,12 @@ con el dataset real del operador (43 vídeos).**
 objetivos, dependencias, `allowed_paths`, tests y criterios. Grafo de dependencias y plan
 de paralelización incluidos allí.
 
-- **PRs completados**: PR-019…PR-034 — **15/15 DONE** (revisados APPROVED y mergeados a la
+- **PRs completados**: PR-019…PR-040 — **20/20 DONE** (revisados APPROVED y mergeados a la
   rama de fase): bootstrap, SDK+mock, rate limiter, backoff, HTTP seguro, migración DB,
-  jobs repo/worker, registry+repo, assets, xvideos adapter, pipeline, CLI, fix assets mock.
+  jobs repo/worker, registry+repo, assets, xvideos adapter, pipeline, CLI, fix assets mock,
+  observabilidad, hardening de seguridad (SSRF/rebinding/píxeles/--max-videos),
+  asset_hosts, CI hardening, seed y armonización docs. Solo PR-033 queda BLOCKED por la
+  puerta legal humana (SEC-002).
 - **PRs abiertos**: — (pendiente de abrir el PR de la rama de fase a `main`, con CI verde
   y aprobación humana, cuando el operador cierre la puerta legal de xvideos)
 - **Siguiente**: puerta legal humana (ToS/robots xvideos) → habilitar → backfill acotado
