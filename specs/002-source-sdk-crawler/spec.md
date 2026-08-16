@@ -44,7 +44,7 @@ llena desde internet de forma permitida, medible y barata.
 - Contrato `SourceAdapter` (async): `discover()`, `get_video(external_id)`,
   `get_visual_assets(video)`, `check_availability(video)` + **manifest de compliance**.
 - Entidad normalizada **`VideoSource`**: `source`, `external_id`, `title`, `page_url`,
-  `duration`, `thumbnail_url`, `preview_url`, `storyboard_urls`, `tags`, `published_at`.
+  `duration_ms`, `thumbnail_url`, `preview_url`, `storyboard_urls`, `tags`, `published_at`.
 - **Mock adapter + fixtures + harness de tests**: flujo completo sin red, determinista en CI.
 - **Primer crawler real con UNA fuente: `xvideos.com`** (Decisión D1 — storyboards/sprite +
   thumbnails, ejercicio completo del contrato sobre HTML real), habilitada solo tras revisión
@@ -189,7 +189,7 @@ jobs de otras fuentes siguen procesándose; consultar estadísticas de jobs por 
   `discover()`, `get_video(external_id)`, `get_visual_assets(video)` y
   `check_availability(video)`, más un **manifest de compliance** por adapter.
 - **FR-002**: El sistema MUST definir la entidad normalizada **`VideoSource`** con
-  `source`, `external_id`, `title`, `page_url`, `duration`, `thumbnail_url`, `preview_url`,
+  `source`, `external_id`, `title`, `page_url`, `duration_ms`, `thumbnail_url`, `preview_url`,
   `storyboard_urls`, `tags` y `published_at`, como única forma de datos entre adapters y core.
 - **FR-003**: El sistema MUST incluir un **mock adapter + fixtures + harness de tests** que
   permitan ejecutar el flujo completo **sin red**, de forma determinista, en CI.
@@ -264,7 +264,7 @@ jobs de otras fuentes siguen procesándose; consultar estadísticas de jobs por 
   method, assets accessed, robots reviewed, terms reviewed, rate limit, review date), estado
   (habilitada/deshabilitada).
 - **Video** (ampliación del spike): añade `source_id`, `external_id` (unicidad conjunta),
-  `page_url`, `title`, `duration`, `tags`, `published_at`, `thumbnail_url`, `preview_url`,
+  `page_url`, `title`, `duration_ms`, `tags`, `published_at`, `thumbnail_url`, `preview_url`,
   `storyboard_urls`, y estados `unavailable`/`removed`.
 - **Job**: unidad de trabajo de la cola. Atributos: tipo (`DISCOVER`/`FETCH_METADATA`/…),
   estado, `source_id`/`video_id` de referencia, nº de intentos, siguiente ejecución (backoff),

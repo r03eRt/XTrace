@@ -16,6 +16,12 @@
 | `created_at` | `timestamptz` NOT NULL default now() | |
 | `updated_at` | `timestamptz` NOT NULL default now() | trigger `set_updated_at` (reutilizado) |
 
+> **Nota (armonización PR-039 · hallazgo analyze)**: `rate_limit` **no es una columna
+> separada** de `sources` — vive **dentro** del jsonb `manifest` (defaults del adapter,
+> Decisión D5); los overrides se aplican por entorno (`XTRACE_CRAWLER_RATE_<SOURCE>_*`) sin
+> tocar la BD. El esquema real de la migración `20260815000001_source_sdk_crawler.sql` no
+> cambia.
+
 ## Tabla `videos` (ampliación del spike)
 
 Columnas nuevas (todas NULL por defecto para no afectar a las filas locales del spike):

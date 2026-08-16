@@ -109,7 +109,6 @@ services/
     │   │   ├── xvideos.py            # XvideosAdapter — deshabilitado sin manifest revisado
     │   │   └── registry.py           # registro de adapters + gate de habilitación (SEC-002)
     │   ├── crawling/
-    │   │   ├── discover.py           # orquesta discover por fuente (BACKFILL/INCREMENTAL) (FR-007)
     │   │   ├── ratelimit.py          # rate limiter por adapter (FR-009)
     │   │   └── http.py               # httpx client seguro: allowlist host, timeout, UA (SEC)
     │   ├── jobs/
@@ -121,7 +120,7 @@ services/
     │   │   ├── fetch.py              # descarga de assets permitidos (FR-005)
     │   │   ├── storyboard.py         # crop de tiles + timestamp aproximado
     │   │   └── preview.py            # ffmpeg sobre previews cortos (nunca vídeo completo)
-    │   ├── pipeline.py               # metadata→assets→frames→hash→embed→índice (FR-011)
+    │   ├── pipeline.py               # discover por fuente (FR-007) + metadata→assets→frames→hash→embed→índice (FR-011)
     │   └── repo.py                   # sources/videos-web/stats (FR-012/013/014)
     └── tests/
         ├── unit/                     # adapters, backoff, ratelimit, storyboard, worker
@@ -145,8 +144,9 @@ dependencia editable (ADR-0011) sin modificar sus ficheros. La DB se comparte v�
 
 - **sources**: `id` (uuid pk), `name` (text unique), `adapter` (text), `manifest` (jsonb:
   access method, assets accessed, robots reviewed, terms reviewed, rate limit, review date),
-  `enabled` (bool default false — gate SEC-002), `rate_limit` (jsonb: defaults),
-  `created_at`, `updated_at`.
+  `enabled` (bool default false — gate SEC-002), `created_at`, `updated_at`. El rate limit
+  **no es una columna separada**: vive dentro del jsonb `manifest` (defaults del adapter,
+  D5); overrides por env (`XTRACE_CRAWLER_RATE_<SOURCE>_*`).
 - **videos** (ampliación no destructiva): + `source_id` (uuid null FK→sources),
   `external_id` (text null), `page_url`, `title`, `tags` (jsonb), `published_at`
   (timestamptz), `thumbnail_url`, `preview_url`, `storyboard_urls` (jsonb). Unicidad:
@@ -215,6 +215,12 @@ class SourceAdapter(Protocol):
 ## Deployment / CI strategy
 
 - **Local-first**: CLI + Supabase local (Docker). No despliegue a Vercel en esta feature.
+- **Ausencia de Preview de Vercel por PR (interpretación registrada — constitución §4)**: la
+  constitución exige despliegue Preview por PR de la **app web**; esta feature es un
+  **servicio CLI local-first sin UI** que **no toca el frontend**, por lo que no existe
+  artefacto web desplegable que previsualizar. Se registra explícitamente esta
+  interpretación (el requisito de Preview aplica a la app web; un servicio sin UI queda
+  fuera) para **no requerir enmienda** constitucional.
 - Nuevo job de CI para `services/crawler/` (mismo patrón que el del spike): `ruff`, `mypy`,
   `pytest` (unit + integration con servicio Postgres/pgvector) y `pgTAP` de la nueva
   migración. La pipeline JS y el job CI del spike permanecen verdes.
@@ -239,7 +245,7 @@ class SourceAdapter(Protocol):
 | FR-004 | manifest (`access_method` con jerarquía documentada) + `adapters/xvideos.py` |
 | FR-005 | `assets/fetch.py`, `assets/storyboard.py`, `assets/preview.py` (nunca vídeo completo) |
 | FR-006 | `jobs/repo.py` (`FOR UPDATE SKIP LOCKED`) + migración `jobs` |
-| FR-007 | `crawling/discover.py` (BACKFILL/INCREMENTAL) |
+| FR-007 | `pipeline.py` (`_discover`, BACKFILL/INCREMENTAL) |
 | FR-008 | `jobs/backoff.py`, `jobs/worker.py` (intentos máx, estados terminales) |
 | FR-009 | `crawling/ratelimit.py` + `config.py` (D5) |
 | FR-010 | aislamiento por fuente en `worker.py`/`pipeline.py` |
@@ -265,6 +271,10 @@ class SourceAdapter(Protocol):
   con fixtures sintéticos de la misma estructura.
 - **Reutilización del spike** → dependencia editable de solo lectura; si aparecen conflictos
   de empaquetado se documenta en ADR-0011 (alternativa: extraer paquete compartido).
+- **DNS rebinding (anti-SSRF)** → la allowlist de hosts del `SafeHTTPClient` valida el
+  hostname, no la IP resuelta: un host permitido que resuelva a una IP interna
+  (p. ej. metadata de cloud) podría eludir la política. Mitigación prevista: **validación de
+  la IP resuelta** (denegar rangos privados/loopback/link-local) en PR-036.
 
 ## ADRs (creados en `docs/adr/`)
 
