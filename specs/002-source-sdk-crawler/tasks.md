@@ -324,7 +324,9 @@ termina en un PR aislado).
 - **Paralelizable con**: — (cierre)
 
 ### PR-033 · Validación operativa con xvideos real + cierre de la fase
-- **Estado**: DONE (parte de orquestador: quickstart validado con cableado real + docs de cierre; **pendiente la puerta legal humana** para validar xvideos real — SEC-002)
+- **Estado**: BLOCKED — parte de orquestador COMPLETADA (quickstart validado con cableado
+  real + docs de cierre, 2026-08-16); **pendiente la puerta legal humana** (ToS/robots de
+  xvideos → habilitar → backfill acotado real, SC-002) — SEC-002. No es trabajo de código.
 - **Prioridad**: P2 · **Complejidad**: S · **Rol**: orchestrator + operador · **Riesgo**: medio
 - **Spec/Req**: SC-002, SC-003, SC-005, SC-006, SC-007, SC-008 · cierre spec 002
 - **Objetivo**: Con el manifest de xvideos revisado por el humano (`robots_reviewed`,
@@ -338,6 +340,73 @@ termina en un PR aislado).
 - **Tests**: gates Python + pgTAP + `pnpm verify` en verde; evidencias del backfill real.
 - **Done**: índice alimentado desde xvideos de forma permitida y medida; fase cerrada.
 - **Paralelizable con**: —
+
+---
+
+## Fase 4b — Cierre de calidad (post-analyze/converge/security-review)
+
+### PR-035 · Observabilidad: stats con rate-limit waits + logs por etapa
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola F1)
+- **Prioridad**: P1 · **Complejidad**: S · **Rol**: implementer · **Riesgo**: bajo
+- **Spec/Req**: FR-014, SC-005, NFR-004 · plan §Observability · converge F1/F2
+- **Objetivo**: `stats --json` con sección `rate_limits` por fuente (requests,
+  rate_limit_waits, total_wait_ms) sin romper campos existentes; logs con intento N/M,
+  delay de backoff real y duración por etapa (discover/metadata/assets/embed).
+- **Dependencias**: PR-028, PR-032
+- **allowed_paths**: `repo.py`, `cli.py`, `pipeline.py`, `jobs/worker.py` + tests correspondientes + handoff.
+- **Done**: pytest 287 verde; `stats` evidencia SC-005/NFR-004.
+
+### PR-036 · Hardening de seguridad + cota global de backfill
+- **Estado**: READY
+- **Prioridad**: P0 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: medio (SEC)
+- **Spec/Req**: SEC-001/003, FR-007, SC-005 · security-review P1/P2 · analyze hallazgo 2
+- **Objetivo**:
+  (1) **SSRF**: `_client_for_assets` no derivará la allowlist de las URLs parseadas — lista
+  por fuente revisada (xvideos.com + CDNs documentados); (2) **DNS rebinding**: validar la
+  IP resuelta (rechazar RFC1918/link-local/metadata 169.254.169.254) + documentar en
+  README/plan; (3) **decompression bomb**: límite estricto de píxeles al abrir imágenes
+  (además del max_bytes); (4) **cota global `--max-videos`** en `backfill` (payload +
+  pipeline la respeta; obligatoria para el backfill real de xvideos); (5) alinear el
+  manifest del mock en `supabase/seed.sql` con el manifest canónico del código; (6)
+  sincronizar `contracts/README.md` §5 con la sección `rate_limits` de PR-035.
+- **Dependencias**: PR-024, PR-032, PR-034, PR-035, PR-038
+- **allowed_paths**: `crawling/http.py`, `pipeline.py`, `assets/fetch.py`,
+  `assets/storyboard.py`, `cli.py`, `config.py`, `supabase/seed.sql`,
+  `specs/002-source-sdk-crawler/contracts/README.md`, tests correspondientes
+  (`test_http.py`, `test_pipeline.py`, `test_cli.py`, `test_assets.py`), handoff.
+- **Tests**: URL de asset con host fuera de la allowlist por fuente → rechazada (sin
+  depender del parseo); IP privada/metadata rechazada; imagen con píxeles por encima del
+  límite → error tipado; `--max-videos` corta el discover sin perder trazabilidad;
+  regresión: mock sigue indexando offline (PR-034).
+- **Done**: pytest/mypy/ruff verdes; gate xvideos intacto; quickstart mock sigue verde.
+
+### PR-037 · CI hardening del workflow crawler
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola F1)
+- **Prioridad**: P2 · **Complejidad**: XS · **Rol**: implementer · **Riesgo**: bajo
+- **Spec/Req**: NFR-001/003 · security-review P2-CI · converge F3
+- **Objetivo**: actions pineadas por SHA + `permissions: contents: read` + decisión
+  documentada (pgTAP/integración local, precedente del spike). Triggers/paths intactos.
+- **Dependencias**: PR-019, PR-025
+- **allowed_paths**: `.github/workflows/python-crawler-quality.yml`, handoff.
+
+### PR-038 · Seed reproducible de sources
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola F1)
+- **Prioridad**: P2 · **Complejidad**: XS · **Rol**: data-specialist · **Riesgo**: bajo
+- **Spec/Req**: DATA-001, SEC-002 · converge F4
+- **Objetivo**: `supabase/seed.sql` con mock (enabled) y xvideos (deshabilitado) idempotente;
+  quickstart actualizado (registro automático con `db reset`).
+- **Dependencias**: PR-025
+- **allowed_paths**: `supabase/seed.sql`, `quickstart.md`, handoff.
+
+### PR-039 · Armonización documental post-analyze
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola F1)
+- **Prioridad**: P2 · **Complejidad**: S · **Rol**: docs · **Riesgo**: bajo
+- **Spec/Req**: trazabilidad constitución §3 · analyze hallazgos 1/6/8/9
+- **Objetivo**: justificación Vercel/Preview en plan.md; árbol sin `discover.py`;
+  `duration_ms` en spec; `rate_limit` dentro de manifest en data-model; contracts §5
+  (--limit=página, --max-videos previsto) y §4 (snapshot de enabled).
+- **Dependencias**: —
+- **allowed_paths**: `plan.md`, `spec.md`, `data-model.md`, `contracts/README.md`, handoff.
 
 ---
 
@@ -357,10 +426,20 @@ flowchart TD
     PR027 --> PR030
     PR028 --> PR030 & PR032
     PR029 --> PR030
-    PR030 --> PR032
+    PR030 --> PR032 & PR034
     PR027 --> PR032
     PR031 --> PR033
-    PR032 --> PR033
+    PR032 --> PR033 & PR034 & PR035
+    PR028 --> PR035
+    PR025 --> PR037 & PR038
+    PR034 --> PR036
+    PR035 --> PR036
+    PR032 --> PR036
+    PR024 --> PR036
+    PR036 --> PR033
+    PR037 --> PR033
+    PR038 --> PR033
+    PR039 --> PR033
 ```
 
 ## Plan de paralelización (para el orquestador)
@@ -372,7 +451,11 @@ flowchart TD
 - **Ola C**: PR-027 (tras PR-023/026).
 - **Ola D**: PR-030 (tras PR-021/022/026/027/028/029) en paralelo con PR-031.
 - **Ola E**: PR-032 (tras PR-027/028/030).
-- **Ola F**: PR-033 — requiere además la **revisión legal humana de xvideos** y ejecución
+- **Ola F (cierre de calidad, post-analyze/converge/security)**: PR-035 (observabilidad),
+  PR-037 (CI hardening), PR-038 (seed) y PR-039 (docs) en paralelo; PR-034 fue un fix de
+  hallazgo de la validación del quickstart (entre PR-032 y PR-033).
+- **Ola G**: PR-036 (hardening de seguridad + cota global) tras PR-034/035.
+- **Ola H**: PR-033 — requiere además la **revisión legal humana de xvideos** y ejecución
   manual del backfill acotado.
 - Un **revisor distinto** al implementador valida cada PR (constitución §5). Con PR-033
   (puerta operativa) revisa un modelo/proveedor diferente.
@@ -381,22 +464,22 @@ flowchart TD
 
 | Req | PR |
 | --- | --- |
-| FR-001/002 | PR-020 |
-| FR-003 / SC-001 | PR-019, PR-021 |
+| FR-001/002 | PR-020, PR-039 (armonización duration_ms) |
+| FR-003 / SC-001 | PR-019, PR-021, PR-034 (assets mock in-process) |
 | FR-004 | PR-031 |
 | FR-005 / SC-006 | PR-029 |
 | FR-006 | PR-025, PR-026, PR-027, PR-032 |
-| FR-007 / SC-003 | PR-030, PR-032 |
-| FR-008 / SC-004 | PR-023, PR-026, PR-027 |
-| FR-009 / SC-005 | PR-022 |
+| FR-007 / SC-003 | PR-030, PR-032, PR-033 (validación real) |
+| FR-008 / SC-004 | PR-023, PR-026, PR-027, PR-030 |
+| FR-009 / SC-005 | PR-022, PR-035 (waits en stats) |
 | FR-010 / SC-008 | PR-027, PR-030 |
-| FR-011 / SC-002 | PR-030, PR-033 |
+| FR-011 / SC-002 | PR-030, PR-034, PR-033 |
 | FR-012/013 | PR-025, PR-028 |
-| FR-014 | PR-028, PR-032 |
+| FR-014 | PR-028, PR-032, PR-035 |
 | FR-015 | PR-029, PR-030 |
-| SEC-001/003 | PR-024 |
-| SEC-002 | PR-028, PR-031, PR-033 |
+| SEC-001/003 | PR-024, PR-025 (RLS/pgTAP), PR-036 (SSRF/rebinding) |
+| SEC-002 | PR-028, PR-031, PR-033, PR-038 (seed deshabilitado) |
 | SEC-004 | PR-031 |
-| DATA-001/002/003 | PR-025 |
-| NFR-001..004 | PR-019 (CI), PR-022, PR-024, PR-027, PR-033 |
+| DATA-001/002/003 | PR-025, PR-038 (seed) |
+| NFR-001..004 | PR-019 (CI), PR-022, PR-024, PR-027, PR-035, PR-037 |
 | SC-007 | PR-031 (+ evidencia PR-033) |
