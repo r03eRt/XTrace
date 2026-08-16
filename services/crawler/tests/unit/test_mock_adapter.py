@@ -77,6 +77,18 @@ def test_mock_adapter_manifest_is_compliant() -> None:
     assert manifest.rate_limit.max_rps > 0
 
 
+def test_mock_asset_hosts_empty_fail_closed() -> None:
+    """PR-040 · SEC-001 · contracts §1: el mock declara `asset_hosts` VACÍO.
+
+    Lista vacía => fail-closed: el pipeline (PR-036) NO descarga assets por
+    HTTP para esta fuente (`NoAssetHostsError`); el mock sirve sus assets
+    in-process vía `fetch_asset_bytes` (PR-034) y el preview sin
+    representación degrada — 0 superficie de red.
+    """
+    adapter = MockAdapter()
+    assert adapter.asset_hosts == []
+
+
 # ---------------------------------------------------------------------------
 # FR-003 · Flujo completo offline determinista (SC-001)
 # ---------------------------------------------------------------------------

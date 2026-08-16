@@ -107,6 +107,22 @@ class SourceAdapter(Protocol):
     `runtime_checkable` (isinstance) exigirían el miembro en TODOS los
     adapters, rompiendo la compatibilidad de los que no lo implementan; el
     pipeline lo descubre con `getattr(adapter, "fetch_asset_bytes", None)`.
+
+    **Atributo `asset_hosts` (PR-040 · SEC-001 · contracts §1)**: todo adapter
+    DEBE declarar `asset_hosts: list[str]` — la allowlist de hosts de sus
+    assets (dominio canónico + CDNs de imágenes/vídeo revisados), **nunca**
+    derivada de las URLs parseadas (PR-036): un asset cuya URL apunte a un
+    host fuera de la lista se rechaza (`HostNotAllowedError`, degradación por
+    asset, sin red). **Lista VACÍA => la fuente no descarga assets por HTTP**
+    (fail-closed: `NoAssetHostsError` en el pipeline). No se declara como
+    miembro del cuerpo del protocolo por la misma razón que
+    `fetch_asset_bytes` (conformidad estructural de mypy strict y
+    `runtime_checkable`): el pipeline lo lee con
+    `getattr(adapter, "asset_hosts", None)` y los adapters lo declaran como
+    atributo de clase tipado. El `MockAdapter` lo declara vacío a propósito
+    (servicio in-process, `fetch_asset_bytes`); los adapters reales declaran
+    sus hosts revisados (xvideos: **PROVISIONAL** — validar contra la
+    estructura real en PR-033 tras la revisión legal humana, SEC-002).
     """
 
     manifest: AdapterManifest
