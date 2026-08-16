@@ -20,10 +20,29 @@ cd services/crawler
 uv sync --locked            # deps + xtrace_spike editable (ADR-0011)
 # Supabase local (desde la raíz del repo):
 supabase start              # aplica la migración <ts>_source_sdk_crawler.sql
+supabase db reset           # + seed.sql: registra las fuentes mock/xvideos (PR-038)
 supabase test db            # pgTAP: esquema + RLS
 ```
 
-## Registrar fuentes (una vez; la habilitación es aprobación humana — SEC-002)
+## Registrar fuentes (automático con `supabase db reset` — seed.sql)
+
+Las dos fuentes de desarrollo se registran **automáticamente** al ejecutar
+`supabase db reset` (o `pnpm supabase:reset`): el seed `supabase/seed.sql`
+inserta `mock` (`enabled=true`, sin red — FR-003) y `xvideos`
+(`enabled=false`, gate SEC-002) de forma **idempotente**
+(`on conflict (name) do nothing`, DATA-001). No hace falta insertarlas a mano.
+
+Verificación:
+
+```sql
+select name, enabled from public.sources order by name;
+-- mock    | t
+-- xvideos | f
+```
+
+El SQL manual de abajo queda solo como **referencia** de los manifiestos que
+siembra el seed y para la **habilitación** de xvideos (ver "Habilitar xvideos",
+que requiere la revisión legal humana — SEC-002):
 
 ```sql
 -- mock: habilitado para desarrollo (sin red, FR-003)
