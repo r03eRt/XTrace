@@ -9,6 +9,9 @@ const publicSchema = z.object({
   NEXT_PUBLIC_APP_URL: z.string().url().default("http://localhost:3000"),
   NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
   NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1, "NEXT_PUBLIC_SUPABASE_ANON_KEY requerida"),
+  // API de búsqueda XTrace (spec 003 · contracts §6): solo local, sin auth (SEC-001).
+  // Default http://127.0.0.1:8000 → build/CI no necesitan env adicional.
+  NEXT_PUBLIC_XTRACE_API_URL: z.string().url().default("http://127.0.0.1:8000"),
 });
 
 const serverSchema = z.object({
@@ -23,6 +26,7 @@ const publicParsed = publicSchema.safeParse({
   NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
   NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
   NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  NEXT_PUBLIC_XTRACE_API_URL: process.env.NEXT_PUBLIC_XTRACE_API_URL,
 });
 
 if (!publicParsed.success) {
