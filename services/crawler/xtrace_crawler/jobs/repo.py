@@ -33,7 +33,7 @@ from psycopg.types.json import Jsonb
 from xtrace_spike.repo import resolve_dsn  # type: ignore[import-untyped]
 
 from xtrace_crawler.jobs.backoff import next_attempt_delay
-from xtrace_crawler.jobs.types import Job, JobType
+from xtrace_crawler.jobs.types import TERMINAL_STATUSES, Job, JobType
 
 
 class JobsRepo:
@@ -79,10 +79,11 @@ class JobsRepo:
         """Persiste un job en estado `pending` y lo devuelve (FR-006).
 
         Con `dedupe_key`, la clave se persiste en `payload["dedupe_key"]` y, si ya
-        existe un job **no terminal** (`pending`/`running`/`failed`) del mismo
-        `job_type` con esa clave, se devuelve el existente sin insertar (tasks.md
-        PR-026). Sin índice único en la BD (migración PR-025) el dedupe es
-        best-effort: suficiente para evitar duplicados en operación normal.
+        existe un job **no terminal** (`pending`/`running`; los terminales
+        `done`/`failed`/`unavailable` no bloquean, FR-008 · contracts §3) del
+        mismo `job_type` con esa clave, se devuelve el existente sin insertar
+        (tasks.md PR-026). Sin índice único en la BD (migración PR-025) el dedupe
+        es best-effort: suficiente para evitar duplicados en operación normal.
 
         Args:
             job_type: tipo del job (DATA-002 · contracts §3).
@@ -253,13 +254,19 @@ class JobsRepo:
         job_type: JobType,
         dedupe_key: str,
     ) -> Job | None:
-        """Job activo (no terminal) con el mismo `job_type` y `payload->>'dedupe_key'`."""
+        """Job activo (no terminal: `pending`/`running`) con el mismo `job_type` y
+        `payload->>'dedupe_key'`.
+
+        Coherente con `TERMINAL_STATUSES` (jobs/types.py · FR-008 · contracts §3):
+        un `failed` definitivo NO bloquea un re-encolado con la misma clave.
+        """
+        terminal_statuses = [status.value for status in TERMINAL_STATUSES]
         cur = await conn.execute(
             "select * from public.jobs "
             "where job_type = %s and payload ->> 'dedupe_key' = %s "
-            "and status <> 'done' and status <> 'unavailable' "
+            "and status <> all(%s) "
             "limit 1",
-            (job_type.value, dedupe_key),
+            (job_type.value, dedupe_key, terminal_statuses),
         )
         row = await cur.fetchone()
         return Job.model_validate(row) if row is not None else None

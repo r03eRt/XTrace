@@ -350,9 +350,9 @@ def test_reset_stale_leases_keeps_fresh_running_jobs() -> None:
 def test_enqueue_dedupe_key_does_not_duplicate_active_jobs() -> None:
     """`dedupe_key` evita duplicar jobs activos con el mismo payload (tasks.md PR-026).
 
-    El dedupe aplica a jobs no terminales (pending/running/failed): re-encolar con
-    la misma clave devuelve el job existente; sin clave (o tras un estado terminal)
-    se inserta uno nuevo.
+    El dedupe aplica a jobs no terminales (`pending`/`running`; `failed` es
+    terminal, FR-008 · contracts §3): re-encolar con la misma clave devuelve el
+    job existente; sin clave (o tras un estado terminal) se inserta uno nuevo.
     """
 
     async def _scenario() -> None:
@@ -375,6 +375,38 @@ def test_enqueue_dedupe_key_does_not_duplicate_active_jobs() -> None:
         await repo.complete(claimed.id)
         d = await repo.enqueue(JobType.FETCH_METADATA, payload=payload, dedupe_key="v-123")
         assert d.id != a.id
+
+    _run(_scenario())
+
+
+def test_enqueue_dedupe_key_reenqueues_after_failed_job() -> None:
+    """Un `failed` definitivo es terminal: no bloquea un re-encolado con la misma clave.
+
+    (FR-008 · contracts §3 · tasks.md PR-026): `TERMINAL_STATUSES` incluye
+    `failed`, así que el dedupe de `enqueue` (solo jobs activos
+    `pending`/`running`) no debe devolver el job muerto: la misma `dedupe_key`
+    tras un `fail(terminal=True)` produce un job NUEVO pendiente y reclamable.
+    """
+
+    async def _scenario() -> None:
+        repo = JobsRepo()
+        payload = {"video_external_id": "v-456"}
+
+        a = await repo.enqueue(JobType.FETCH_METADATA, payload=payload, dedupe_key="v-456")
+        claimed = await repo.claim_next("worker-a")
+        assert claimed is not None and claimed.id == a.id
+        failed = await repo.fail(claimed.id, "blocked by robots.txt", terminal=True)
+        assert failed.status is JobStatus.FAILED  # terminal (FR-008 · contracts §3)
+
+        # el job muerto NO se devuelve: se inserta uno nuevo pendiente.
+        b = await repo.enqueue(JobType.FETCH_METADATA, payload=payload, dedupe_key="v-456")
+        assert b.id != a.id
+        assert b.status is JobStatus.PENDING
+        assert await _job_count() == 2
+
+        # el nuevo job es reclamable: la re-ejecución es posible.
+        again = await repo.claim_next("worker-b")
+        assert again is not None and again.id == b.id
 
     _run(_scenario())
 
