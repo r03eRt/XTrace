@@ -229,7 +229,7 @@ termina en un PR aislado).
 - **Paralelizable con**: PR-021, PR-026, PR-027, PR-028, PR-031
 
 ### PR-030 · Pipeline crawler → índice (reutiliza `xtrace_spike`)
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola D)
 - **Prioridad**: P1 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: medio
 - **Spec/Req**: FR-007, FR-010, FR-011, SC-002/003/004 · ADR-0011 · contracts §6
 - **Objetivo**: `pipeline.py`: `discover` (BACKFILL/INCREMENTAL con cursor y límite) →
