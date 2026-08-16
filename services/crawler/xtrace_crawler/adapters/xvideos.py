@@ -33,6 +33,18 @@ fixtures anonimizados en `tests/fixtures/xvideos/`):
   `discover()` devuelve los IDs y `next_cursor=None` (fin). `/best/1`
   **redirige** a `/best/2026-07`: el cursor se toma de la **URL FINAL de la
   respuesta** (`response.url`).
+  **PR-052 (7a validación real, 2026-08-16, hallazgo de la prueba del tag
+  `/tags/buttfucking`)**: los TAGS NO usan `a.dir.next` (que sí usan `/best` y
+  `/c`): su paginación es una LISTA NUMERADA
+  `<div class="pagination "><ul><li><a class="active" href="">1</a></li><li>
+  <a href="/tags/xxx/1">2</a></li>…</ul></div>` — ojo al esquema: la página 1
+  es la URL base (`/tags/xxx`) y la página N+1 es `/tags/xxx/N` (numeración
+  0-indexada en la URL). El cursor para avanzar es el href del **LI siguiente
+  al que contiene `a.active`**; el enlace "Next" (clases `no-page next-page`)
+  no es un número de página y se descarta: con el activo al final de la lista
+  no hay siguiente → `next_cursor=None`. `/best` también renderiza
+  `div.pagination`, pero con `<a>` planos (clase `current`, sin `ul/li`) y su
+  `a.dir.next` sigue mandando (prioridad: `dir.next` si existe; si no, lista).
   **PR-045 (3a validación real, 2026-08-16)**: el href real del listado es
   `/video.<id>/<num>/<num>/<slug-titulo>` y la página de vídeo reconstruida
   como `https://www.xvideos.com/video.<id>/` (SIN slug) devuelve **404 en
@@ -128,6 +140,13 @@ XV_VIDEO_URL_TEMPLATE = "https://www.xvideos.com/{external_id}/"
 # selector cubre los `a.thumb-link` (que también viven dentro de `div.thumb`).
 _LISTING_ITEM_SELECTOR = "div.thumb a[href^='/video.']"
 _LISTING_NEXT_SELECTOR = "a.dir.next[href]"
+# PR-052 (7a validación real, 2026-08-16, hallazgo de la prueba del tag
+# `/tags/buttfucking`): los TAGS pagan con una LISTA NUMERADA (`div.pagination
+# ul li`), sin `a.dir.next`; el cursor para avanzar es el href del LI siguiente
+# al que contiene `a.active` (los enlaces "Next" con clase `next-page` NO son
+# números de página y se descartan).
+_LISTING_ACTIVE_SELECTOR = "div.pagination ul li a.active"
+_LISTING_LIST_SELECTOR = "div.pagination ul li a[href]"
 _VIDEO_TITLE_SELECTOR = "h2.page-title"
 _OG_TITLE_SELECTOR = "meta[property='og:title']"
 _OG_URL_SELECTOR = "meta[property='og:url']"
@@ -181,6 +200,50 @@ def _cursor_from_href(href: str) -> str:
     if href.startswith("/"):
         return href
     return urlsplit(href).path or "/"
+
+
+def _list_pagination_cursor(tree: HTMLParser, *, current_path: str | None) -> str | None:
+    """Cursor de la paginación por LISTA NUMERADA de los tags (PR-052).
+
+    Estructura real (7a validación real, 2026-08-16 — hallazgo de la prueba del
+    tag `/tags/buttfucking`): los TAGS NO usan `a.dir.next` (que sí usan `/best`
+    y `/c`); su paginación es
+    `<div class="pagination "><ul><li><a class="active" href="">1</a></li>
+    <li><a href="/tags/xxx/1">2</a></li>…</ul></div>`. Ojo al esquema: la
+    página 1 es la URL base (`/tags/xxx`) y la página N+1 es `/tags/xxx/N`
+    (numeración 0-indexada en la URL).
+
+    El cursor para avanzar es el href del **LI siguiente al que contiene
+    `a.active`** (los enlaces numerados, sin clase); el enlace "Next" (clases
+    `no-page next-page`) NO es un número de página y se descarta — en la última
+    página el activo es el último LI numerado y no hay siguiente → `None`.
+    Igual que `a.dir.next`, un candidato que repite el path actual devuelve
+    `None` (anti-bucle, PR-043). Los hrefs se normalizan a path con
+    `_cursor_from_href`. Sin `a.active` en `ul.pagination` → `None`.
+    """
+    links = tree.css(_LISTING_LIST_SELECTOR)
+    active_index = next(
+        (
+            i
+            for i, node in enumerate(links)
+            if "active" in (node.attributes.get("class") or "").split()
+        ),
+        None,
+    )
+    if active_index is None:
+        return None
+    for node in links[active_index + 1 :]:
+        classes = (node.attributes.get("class") or "").split()
+        if "next-page" in classes or "no-page" in classes:
+            continue
+        href = node.attributes.get("href")
+        if not href:
+            continue
+        candidate = _cursor_from_href(href)
+        # Anti-bucle: un siguiente que apunta a la página actual es fin.
+        if current_path is None or candidate != current_path:
+            return candidate
+    return None
 
 
 def _resolve_listing_href(href: str) -> str | None:
@@ -250,6 +313,15 @@ def parse_listing_page(html: str, *, current_path: str | None = None) -> Discove
     path, la paginación se considera terminada (`next_cursor=None`) — parte de
     la protección anti-bucle (PR-043).
 
+    **PR-052 (7a validación real, 2026-08-16 — hallazgo de la prueba del tag
+    `/tags/buttfucking`)**: cuando NO hay `a.dir.next` (los TAGS no lo usan,
+    a diferencia de `/best` y `/c`), se busca la paginación por LISTA
+    NUMERADA en `div.pagination ul`: el cursor es el href del **LI siguiente
+    al que contiene `a.active`** (esquema: página 1 = URL base `/tags/xxx`,
+    página N+1 = `/tags/xxx/N`); con el activo al final de la lista →
+    `next_cursor=None` (última página). `a.dir.next`, si existe, manda
+    siempre (prioridad).
+
     Si la estructura cambia y no hay ítems, devuelve una página vacía sin
     crashear (aislamiento SC-008); los tests de regresión sobre los fixtures
     señalan el cambio de selector.
@@ -276,6 +348,14 @@ def parse_listing_page(html: str, *, current_path: str | None = None) -> Discove
             # Anti-bucle: un `dir.next` que apunta a la página actual es fin.
             if current_path is None or candidate != current_path:
                 next_cursor = candidate
+    if next_node is None:
+        # PR-052: los TAGS no usan `a.dir.next` — paginación por LISTA
+        # NUMERADA (`div.pagination ul`): el cursor es el href del LI siguiente
+        # al que contiene `a.active`; sin LI numerado siguiente (activo al
+        # final de la lista) → None (última página). `dir.next`, cuando
+        # existe, manda (prioridad) y su veredicto (incluido None por
+        # anti-bucle) no se sobreescribe.
+        next_cursor = _list_pagination_cursor(tree, current_path=current_path)
     return DiscoverPage(external_ids=external_ids, next_cursor=next_cursor, page_urls=page_urls)
 
 
@@ -496,6 +576,15 @@ class XvideosAdapter:
         sección solo fija el arranque). El cursor, la paginación (`a.dir.next`
         de la página de la sección) y el anti-bucle son idénticos a los de la
         home.
+
+        **PR-052 (paginación por LISTA numerada, 2026-08-16 · hallazgo de la
+        prueba del tag `/tags/buttfucking`)**: las páginas de TAGS no tienen
+        `a.dir.next`; `parse_listing_page` detecta entonces la paginación por
+        lista (`div.pagination ul` → href del LI siguiente al `a.active`) y el
+        cursor resultante (`/tags/xxx/N` = página N+1; `None` en la última) se
+        consume igual que el de `dir.next`: la URL siguiente sale del cursor,
+        y el anti-bucle (cursor repetido / 0 IDs nuevos) y `page_urls`
+        permanecen intactos.
 
         **Protección anti-bucle (hallazgo de la validación real, PR-033)**:
         - el cursor se toma de la URL **FINAL** de la respuesta

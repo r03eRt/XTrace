@@ -21,6 +21,14 @@ Trazabilidad (constitución §3): cada test marca el requisito que valida:
   la URL sale del cursor (la sección solo fija el arranque) y la paginación
   sigue a `a.dir.next` igual que siempre; una sección sin '/' inicial es error
   del llamador.
+- PR-052: los TAGS NO usan `a.dir.next` (hallazgo de la prueba del tag
+  `/tags/buttfucking`, 7a validación real, 2026-08-16): pagan con una LISTA
+  NUMERADA `<div class="pagination "><ul><li><a class="active" href="">1</a>
+  </li><li><a href="/tags/xxx/1">2</a></li>…</ul></div>` — la página 1 es la
+  URL base (`/tags/xxx`) y la página N+1 es `/tags/xxx/N` (numeración
+  0-indexada en la URL). El cursor es el href del LI siguiente al `a.active`
+  (el enlace "Next" `no-page next-page` no cuenta); activo al final →
+  `next_cursor=None`. `a.dir.next`, cuando existe, manda (prioridad).
 - FR-002 (soporte): `VideoSource` normalizado poblado desde el parseo
   (og:*, JSON-LD).
 - FR-005/SC-006: `get_visual_assets` devuelve la galería de thumbnails
@@ -147,6 +155,11 @@ def _fixture_handler() -> Callable[[httpx.Request], httpx.Response]:
     - `/best/2026-07/2` → `listing_page_3.html` (id 5, sin `dir.next` → fin)
     - `/best/2026-07/3` → `_LOOP_CURSOR_HTML` (dir.next = path actual)
     - `/best/2026-07/99` → `listing_page_1.html` de nuevo (0 IDs nuevos → fin)
+    - `/tags/xxx` → `listing_tag_page_1.html` (PR-052: lista numerada, activo
+      =1 → cursor `/tags/xxx/1`)
+    - `/tags/xxx/1` → `listing_tag_page_2.html` (activo=2 → `/tags/xxx/2`)
+    - `/tags/xxx/2` → `listing_tag_page_3.html` (activo=3 → `/tags/xxx/3`)
+    - `/tags/xxx/3` → `listing_tag_page_4.html` (activo=4, ÚLTIMO → fin)
     - cualquier otro path → 500 (error transitorio del sitio)
     """
 
@@ -181,6 +194,14 @@ def _fixture_handler() -> Callable[[httpx.Request], httpx.Response]:
             body = _LOOP_CURSOR_HTML.encode("utf-8")
         elif path == "/best/2026-07/99":
             body = _fixture("listing_page_1.html").encode("utf-8")
+        elif path == "/tags/xxx":
+            body = _fixture("listing_tag_page_1.html").encode("utf-8")
+        elif path == "/tags/xxx/1":
+            body = _fixture("listing_tag_page_2.html").encode("utf-8")
+        elif path == "/tags/xxx/2":
+            body = _fixture("listing_tag_page_3.html").encode("utf-8")
+        elif path == "/tags/xxx/3":
+            body = _fixture("listing_tag_page_4.html").encode("utf-8")
         else:
             return httpx.Response(500, content=b"boom", request=request)
         return httpx.Response(200, content=body, request=request)
@@ -458,6 +479,75 @@ def test_parse_listing_page_cursor_repite_path_actual_fin() -> None:
     assert page.next_cursor == "/best/2026-07"
 
 
+def test_parse_listing_page_tag_paginacion_por_lista_numerada() -> None:
+    """PR-052: los TAGS pagan con LISTA NUMERADA — el cursor es el LI siguiente
+    al `a.active` (esquema real: página 1 = URL base, página N+1 = /tags/xxx/N).
+
+    Hallazgo de la prueba del tag `/tags/buttfucking` (7a validación real,
+    2026-08-16): la página de tag NO tiene `a.dir.next`; el markup real es
+    `<div class="pagination "><ul><li><a class="active" href="">1</a></li>
+    <li><a href="/tags/xxx/1">2</a></li>…</ul></div>`. El cursor de la página 1
+    es el href del LI siguiente al activo: `/tags/xxx/1` (el enlace "Next"
+    `no-page next-page`, que va después, no se confunde con un número).
+    """
+    page = parse_listing_page(_fixture("listing_tag_page_1.html"), current_path="/tags/xxx")
+    assert page.external_ids == ["video.synth00014", "video.synth00015", "video.synth00016"]
+    assert page.next_cursor == "/tags/xxx/1"
+
+
+def test_parse_listing_page_tag_paginacion_activo_al_final_fin() -> None:
+    """PR-052: última página de un tag — el `a.active` es el último LI numerado
+    → `next_cursor=None` (el enlace "Next" no es un número de página)."""
+    page = parse_listing_page(_fixture("listing_tag_page_4.html"), current_path="/tags/xxx/3")
+    assert page.external_ids == ["video.synth00020"]
+    assert page.next_cursor is None
+
+
+def test_parse_listing_page_dir_next_prioritario_sobre_lista() -> None:
+    """PR-052: si existe `a.dir.next`, manda sobre la lista numerada (prioridad).
+
+    `/best` y `/c` también renderizan `div.pagination`, pero con `<a>` planos
+    (clase `current`, sin `ul/li`); su `dir.next` sigue siendo la única fuente
+    del cursor. Incluso en una página con AMBAS estructuras, `dir.next` gana.
+    """
+    html = (
+        "<html><body><div class='thumb'>"
+        "<a href='/video.synth00018/x'>v</a>"
+        "</div>"
+        "<a href='/best/2026-07/1' class='dir next'>Next</a>"
+        "<div class='pagination '><ul>"
+        "<li><a class='active' href=''>1</a></li>"
+        "<li><a href='/tags/xxx/1'>2</a></li>"
+        "</ul></div>"
+        "</body></html>"
+    )
+    page = parse_listing_page(html, current_path="/best/2026-07")
+    assert page.next_cursor == "/best/2026-07/1"
+
+
+def test_parse_listing_page_lista_cursor_repite_path_actual_fin() -> None:
+    """PR-052 anti-bucle: un LI siguiente cuyo href repite el path actual → fin.
+
+    La misma protección que para `a.dir.next` (PR-043) aplica al cursor de la
+    lista numerada: el candidato que apunta a la página actual no avanza.
+    """
+    html = (
+        "<html><body><div class='thumb'>"
+        "<a href='/video.synth00019/x'>v</a>"
+        "</div>"
+        "<div class='pagination '><ul>"
+        "<li><a class='active' href=''>1</a></li>"
+        "<li><a href='/tags/xxx'>2</a></li>"
+        "</ul></div>"
+        "</body></html>"
+    )
+    page = parse_listing_page(html, current_path="/tags/xxx")
+    assert page.next_cursor is None
+    # Control: con el path actual distinto, el cursor sí avanza.
+    page = parse_listing_page(html, current_path="/tags/xxx/1")
+    assert page.next_cursor == "/tags/xxx"
+
+
 def test_parse_listing_page_estructura_cambiada_devuelve_vacio() -> None:
     """Edge: si el listado cambia de estructura, discover devuelve vacío sin crashear.
 
@@ -610,6 +700,42 @@ def test_discover_cadena_de_paginacion_hasta_fin() -> None:
     assert pages[1].next_cursor == "/best/2026-07/2"
     assert pages[2].external_ids == ["video.synth00005"]
     assert pages[2].next_cursor is None
+
+
+def test_discover_tag_paginacion_por_lista_hasta_fin() -> None:
+    """PR-052: la cadena de un TAG avanza por la LISTA NUMERADA hasta el final.
+
+    Regresión end-to-end del hallazgo de la prueba del tag `/tags/buttfucking`
+    (7a validación real, 2026-08-16): antes de PR-052 el discover solo
+    indexaba la página 1 (27 vídeos) porque los tags no usan `a.dir.next`.
+    Ahora el cursor sale del LI siguiente al `a.active` de `ul.pagination`
+    (esquema: página 1 = `/tags/xxx`, página N+1 = `/tags/xxx/N`) y la cadena
+    recorre las 4 páginas del fixture; en la última (activo al final, el
+    enlace "Next" `no-page next-page` no cuenta) → `next_cursor=None`.
+    """
+    pages: list[DiscoverPage] = []
+
+    async def scenario() -> None:
+        nonlocal pages
+        adapter = _adapter()
+        pages.append(await adapter.discover(cursor=None, limit=100, section="/tags/xxx"))
+        pages.append(await adapter.discover(cursor=pages[0].next_cursor, limit=100))
+        pages.append(await adapter.discover(cursor=pages[1].next_cursor, limit=100))
+        pages.append(await adapter.discover(cursor=pages[2].next_cursor, limit=100))
+
+    _run(scenario)
+    assert pages[0].external_ids == [
+        "video.synth00014",
+        "video.synth00015",
+        "video.synth00016",
+    ]
+    assert pages[0].next_cursor == "/tags/xxx/1"
+    assert pages[1].external_ids == ["video.synth00017", "video.synth00018"]
+    assert pages[1].next_cursor == "/tags/xxx/2"
+    assert pages[2].external_ids == ["video.synth00019"]
+    assert pages[2].next_cursor == "/tags/xxx/3"
+    assert pages[3].external_ids == ["video.synth00020"]
+    assert pages[3].next_cursor is None
 
 
 def test_discover_redirect_canonico_cursor_desde_url_final() -> None:
