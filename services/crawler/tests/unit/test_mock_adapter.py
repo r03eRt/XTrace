@@ -7,6 +7,11 @@ Trazabilidad (constitución §3): los tests validan `adapters/mock.py` y
   completo **sin red**, de forma determinista (SC-001) — flujo offline completo,
   paginación por cursor, catálogo estable entre ejecuciones y fallos inyectados
   que se propagan como **errores tipados del adapter** (tasks.md PR-021).
+- PR-034: el método **opcional** del contrato `fetch_asset_bytes(url)` (hallazgo
+  del quickstart, PR-033) sirve los assets del catálogo **in-process, sin red**,
+  como bytes JPEG sintéticos deterministas (mismos bytes entre llamadas,
+  instancias y ejecuciones); `None` para `preview.mp4` y URLs ajenas; un adapter
+  sin el método se comporta como `None` (el pipeline cae a la descarga HTTP).
 - Soporte contractual: FR-001 (el mock satisface el protocolo `SourceAdapter`),
   FR-005/SC-006 (assets storyboard/thumbnail/preview, nunca `video`),
   FR-009 (manifest con rate limit declarado), FR-012 (estados de disponibilidad
@@ -22,9 +27,11 @@ dependencia transitiva de `httpx`, ya en el lockfile).
 from __future__ import annotations
 
 import asyncio
+import io
 from math import ceil
 
 import pytest
+from PIL import Image
 
 from tests.fixtures.catalog import FIXTURE_SEED, SAMPLE_ASSETS, SAMPLE_VIDEOS
 from tests.fixtures.harness import MockHarness
@@ -37,8 +44,14 @@ from xtrace_crawler.adapters.mock import (
     MockAdapterTimeoutError,
     MockAdapterTransientError,
     MockFaults,
+    synthetic_asset_bytes,
 )
-from xtrace_crawler.adapters.models import VideoAvailability, VideoSource, VisualAsset
+from xtrace_crawler.adapters.models import (
+    DiscoverPage,
+    VideoAvailability,
+    VideoSource,
+    VisualAsset,
+)
 
 # ---------------------------------------------------------------------------
 # FR-003 · Contrato y manifest (contracts §1)
@@ -487,3 +500,114 @@ async def test_harness_with_faults_builds_faulty_case() -> None:
 def test_harness_defaults_are_deterministic() -> None:
     """Dos harness por defecto producen el mismo catálogo (SC-001, NFR-003)."""
     assert MockHarness().catalog() == MockHarness().catalog()
+
+
+# ---------------------------------------------------------------------------
+# PR-034 · fetch_asset_bytes: assets in-process sin red (FR-003 · SC-001)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_fetch_asset_bytes_returns_stable_bytes_across_calls() -> None:
+    """PR-034: los bytes del asset son los mismos en cada llamada (SC-001, NFR-003)."""
+    adapter = MockAdapter(seed=42, catalog_size=10)
+    url = f"{MOCK_BASE_URL}/assets/mock-vid-0001/storyboard.jpg"
+    assert await adapter.fetch_asset_bytes(url) == await adapter.fetch_asset_bytes(url)
+
+
+@pytest.mark.anyio
+async def test_fetch_asset_bytes_stable_across_instances() -> None:
+    """PR-034: bytes deterministas entre instancias con el mismo catálogo.
+
+    Los bytes derivan solo de la URL (`zlib.crc32` + Pillow): dos instancias
+    del mismo seed producen exactamente los mismos bytes (SC-001, NFR-003).
+    """
+    a = MockAdapter(seed=7, catalog_size=5)
+    b = MockAdapter(seed=7, catalog_size=5)
+    for external_id in ("mock-vid-0001", "mock-vid-0004"):
+        url = f"{MOCK_BASE_URL}/assets/{external_id}/storyboard.jpg"
+        assert await a.fetch_asset_bytes(url) == await b.fetch_asset_bytes(url)
+
+
+@pytest.mark.anyio
+async def test_fetch_asset_bytes_returns_valid_jpeg_images() -> None:
+    """PR-034: los bytes de storyboard/thumbnail son imágenes JPEG válidas (FR-003).
+
+    Mismas dimensiones que los sprites de los tests de integración (PR-029):
+    sprite 2×2 de tiles 48×27 → 96×54; miniatura 48×27.
+    """
+    adapter = MockAdapter(seed=42, catalog_size=10)
+    video = adapter.get_catalog_video("mock-vid-0001")
+    assert video is not None
+    sizes: dict[str, tuple[int, int]] = {}
+    for asset in await adapter.get_visual_assets(video):
+        if asset.kind == "preview":
+            continue  # el mock no fabrica mp4 (None → descarga HTTP, contracts §1)
+        data = await adapter.fetch_asset_bytes(asset.url)
+        assert data is not None
+        assert data[:3] == b"\xff\xd8\xff"  # magic JPEG
+        with Image.open(io.BytesIO(data)) as image:
+            image.load()
+            sizes[asset.kind] = image.size
+    assert sizes["storyboard"] == (96, 54)
+    assert sizes["thumbnail"] == (48, 27)
+
+
+@pytest.mark.anyio
+async def test_fetch_asset_bytes_distinct_per_video() -> None:
+    """PR-034: vídeos distintos → bytes distintos (unicidad necesaria para SC-002)."""
+    adapter = MockAdapter(seed=42, catalog_size=10)
+    a = await adapter.fetch_asset_bytes(f"{MOCK_BASE_URL}/assets/mock-vid-0001/storyboard.jpg")
+    b = await adapter.fetch_asset_bytes(f"{MOCK_BASE_URL}/assets/mock-vid-0002/storyboard.jpg")
+    assert a is not None and b is not None
+    assert a != b
+
+
+@pytest.mark.anyio
+async def test_fetch_asset_bytes_preview_and_foreign_urls_return_none() -> None:
+    """PR-034: `preview.mp4` y URLs ajenas al catálogo → None (descarga HTTP)."""
+    adapter = MockAdapter(seed=42, catalog_size=10)
+    assert (
+        await adapter.fetch_asset_bytes(f"{MOCK_BASE_URL}/assets/mock-vid-0001/preview.mp4") is None
+    )
+    assert await adapter.fetch_asset_bytes("https://example.com/assets/x.jpg") is None
+    assert await adapter.fetch_asset_bytes(f"{MOCK_BASE_URL}/videos/mock-vid-0001") is None
+    assert (
+        await adapter.fetch_asset_bytes(f"{MOCK_BASE_URL}/assets/mock-vid-0001/thumb-x.jpg") is None
+    )
+
+
+def test_synthetic_asset_bytes_matches_adapter() -> None:
+    """PR-034: `synthetic_asset_bytes` es la implementación única de bytes (harness)."""
+    url = f"{MOCK_BASE_URL}/assets/mock-vid-0003/storyboard.jpg"
+    assert synthetic_asset_bytes(url) == synthetic_asset_bytes(url)
+
+
+def test_adapter_without_fetch_asset_bytes_defaults_to_none() -> None:
+    """PR-034: un adapter sin `fetch_asset_bytes` se comporta como `None`.
+
+    El método es **opcional** en el contrato (contracts §1): las fuentes reales
+    no lo implementan y el pipeline lo descubre con `getattr(..., None)`,
+    cayendo a la descarga HTTP (`AssetFetcher`/`SafeHTTPClient`) — regresión de
+    integración en `test_pipeline.py` (`test_adapter_without_fetch_asset_bytes_uses_http_path`).
+    """
+
+    class _ContractAdapter:
+        """Cumple estructuralmente `SourceAdapter` sin `fetch_asset_bytes`."""
+
+        manifest = MockAdapter().manifest
+
+        async def discover(self, *, cursor: str | None, limit: int) -> DiscoverPage:
+            return DiscoverPage(external_ids=[])
+
+        async def get_video(self, external_id: str) -> VideoSource | None:
+            return None
+
+        async def get_visual_assets(self, video: VideoSource) -> list[VisualAsset]:
+            return []
+
+        async def check_availability(self, video: VideoSource) -> VideoAvailability:
+            return VideoAvailability.AVAILABLE
+
+    adapter = _ContractAdapter()
+    assert getattr(adapter, "fetch_asset_bytes", None) is None
