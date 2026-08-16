@@ -4,7 +4,7 @@
 
 **Created**: 2026-08-16
 
-**Status**: DRAFT
+**Status**: READY_FOR_REVIEW
 
 **Input**: User description: "Fase 3 — MVP de búsqueda USABLE: API REST de búsqueda por
 imagen + frontend mínimo Next.js (subir imagen → ver resultados) contra el índice real
@@ -17,8 +17,9 @@ existente (vídeos locales del spike + vídeos web del crawler, p. ej. los 104 d
 > real: 104 vídeos `indexed` del tag `buttfucking` con embeddings SigLIP).
 >
 > Esta spec describe **qué** y **por qué**. Las decisiones técnicas concretas (framework
-> y empaquetado del API, mecanismo de subida, despliegue) se fijan en
-> `technical-planning` tras la **aprobación humana**. La reutilización del pipeline de
+> y empaquetado del API, mecanismo de subida) se fijan en `technical-planning` tras la
+> **aprobación humana**; el despliegue queda acotado por **D4** (frontend → Preview
+> automático de Vercel del PR; API → solo local). La reutilización del pipeline de
 > búsqueda del spike (`xtrace_spike`) se menciona como **dirección**, no como diseño.
 
 ## Objetivo
@@ -31,17 +32,20 @@ exponer nada públicamente.
 
 ## Alcance
 
-- **API REST de búsqueda por imagen**: endpoint de subida + búsqueda (una imagen →
-  resultados rankeados), endpoint de **health** y, opcionalmente, **stats** básicas del
-  índice.
+- **API REST de búsqueda por imagen** con 4 endpoints (D1): **`POST /search`** (subida de
+  una imagen → resultados rankeados), **`GET /health`**, **`GET /stats`** y **`GET
+  /videos/{id}`** (ficha del vídeo con metadatos, fuente y enlace original).
 - **Reutilización del pipeline de búsqueda del spike**: mismo comportamiento y **mismo
   contrato de resultados** que la CLI `search` del spike (paridad API-CLI).
-- **Frontend mínimo** (una página): subir imagen → ver resultados con título, fuente,
-  score y timestamp, con enlace al vídeo original en la fuente.
+- **Frontend mínimo** (una página, D2): subir imagen → ver resultados con título, fuente,
+  score y timestamp, con enlace al vídeo original en la fuente; **sin exploración del
+  corpus**.
 - **Validación de media de consulta** (MIME por firma y tamaño, en servidor) y **borrado
   inmediato** tras procesar la búsqueda (extiende FR-018 del spike).
 - **Logs de búsquedas**: registro analítico sin media, con TTL configurable.
-- **Solo local**: sin despliegue público ni auth en esta fase (ASSUMPTION-2).
+- **Solo local**: sin auth y sin despliegue público en esta fase (D3, ASSUMPTION-2); el
+  frontend se publica únicamente como **Preview automático de Vercel del PR** y la **API
+  no se despliega** (D4).
 
 ## Fuera de alcance
 
@@ -50,6 +54,8 @@ exponer nada públicamente.
 - **Autenticación, cuentas de usuario y panel de administración**.
 - **UI de takedowns/reports** (el mecanismo de exclusión del índice ya existe y la API lo
   respeta, pero no hay interfaz nueva para gestionarlo).
+- **Exploración del corpus en el frontend** (listar/navegar el índice; D2: solo upload +
+  resultados).
 - **Ranking nuevo** o cambios en la cadena de búsqueda (se reutiliza la del spike tal
   cual).
 - **Crawler nuevo** o reindexado del corpus (se consume el índice real existente).
@@ -73,7 +79,8 @@ exponer nada públicamente.
 
 El operador quiere lanzar una búsqueda por imagen vía HTTP (`curl`/Swagger) y recibir
 exactamente los mismos resultados que ya conoce de la CLI del spike, para integrar y
-automatizar sin sorpresas.
+automatizar sin sorpresas. La API expone los 4 endpoints fijados en **D1**: `POST
+/search`, `GET /health`, `GET /stats` y `GET /videos/{id}`.
 
 **Why this priority**: La API es el núcleo de la fase; sin paridad con la CLI validada, el
 resto (frontend, criterios) no es fiable.
@@ -116,21 +123,21 @@ verificar que su vídeo aparece en los resultados con el enlace a la fuente.
 
 ### User Story 3 - Operar la API (Priority: P2)
 
-El operador quiere comprobar que la API responde y conocer el estado básico del índice
-sin usar la CLI.
+El operador quiere comprobar que la API responde (**`GET /health`**) y conocer el estado
+básico del índice (**`GET /stats`**) sin usar la CLI.
 
 **Why this priority**: Hace la API autosuficiente para el operador (diagnóstico rápido),
 pero no es imprescindible para la búsqueda.
 
-**Independent Test**: Llamar a `health` y `stats` y verificar que devuelven estado y
-conteos coherentes con el índice real.
+**Independent Test**: Llamar a `GET /health` y `GET /stats` y verificar que devuelven
+estado y conteos coherentes con el índice real.
 
 **Acceptance Scenarios**:
 
-1. **Given** la API en marcha, **When** se consulta `health`, **Then** responde con el
-   estado del servicio.
-2. **Given** la API contra el índice real, **When** se consultan `stats`, **Then** devuelve
-   métricas básicas (vídeos, frames, vectores, backend, proveedor de embeddings)
+1. **Given** la API en marcha, **When** se consulta `GET /health`, **Then** responde con
+   el estado del servicio.
+2. **Given** la API contra el índice real, **When** se consulta `GET /stats`, **Then**
+   devuelve métricas básicas (vídeos, frames, vectores, backend, proveedor de embeddings)
    coherentes con las de la CLI `stats`.
 3. **Given** una petición malformada o media no soportada, **When** se envía, **Then** la
    API devuelve un error estructurado 4xx con mensaje claro en el idioma del frontend.
@@ -177,30 +184,34 @@ conteos coherentes con el índice real.
 - **FR-005**: La API MUST producir **los mismos resultados que la CLI** (mismos vídeos,
   mismo orden y mismos scores) para la misma imagen contra el mismo índice y configuración
   (paridad API-CLI).
-- **FR-006**: La API MUST exponer un endpoint de **health** que informe si el servicio
-  responde.
-- **FR-007**: La API MAY exponer un endpoint de **stats** con métricas básicas del índice
+- **FR-006**: La API MUST exponer **`GET /health`**, que informa si el servicio responde.
+- **FR-007**: La API MUST exponer **`GET /stats`** con métricas básicas del índice
   (vídeos, frames, vectores, backend, proveedor de embeddings), coherentes con la CLI
-  `stats`.
-- **FR-008**: El frontend MUST ofrecer una **página única** donde el operador sube una
-  imagen y ve los resultados (título, fuente, score y timestamp por resultado).
-- **FR-009**: Cada resultado MOSTRADO MUST incluir un **enlace a la URL original del vídeo
+  `stats` (D1).
+- **FR-008**: La API MUST exponer **`GET /videos/{id}`**, que devuelve la **ficha del
+  vídeo** con sus **metadatos** (título, `local_ref`), **fuente** y **enlace original**
+  (p. ej. `page_url` de los vídeos del crawler); responde **404** si el `id` no existe
+  (D1).
+- **FR-009**: El frontend MUST ofrecer una **página única** (D2) donde el operador sube
+  una imagen y ve los resultados (título, fuente, score y timestamp por resultado), sin
+  exploración del corpus.
+- **FR-010**: Cada resultado MOSTRADO MUST incluir un **enlace a la URL original del vídeo
   en la fuente** cuando esta exista (p. ej. `page_url` de los vídeos del crawler).
-- **FR-010**: La API MUST manejar los errores de forma clara y estructurada: **413** (media
+- **FR-011**: La API MUST manejar los errores de forma clara y estructurada: **413** (media
   > 10 MB), **415** (tipo de media no soportado), **400** (solicitud/media inválida),
   **404** (recurso inexistente) y **5xx** (fallo interno), con mensajes en el idioma del
   frontend.
-- **FR-011**: El sistema MUST registrar cada búsqueda como **analítica sin media** (tabla
+- **FR-012**: El sistema MUST registrar cada búsqueda como **analítica sin media** (tabla
   `searches` existente) con **TTL configurable**; la media de consulta nunca se guarda.
-- **FR-012**: La búsqueda MUST operar contra el **índice real existente** (dataset local
-  del spike + vídeos web del crawler) tal cual está, sin requerir reindexado previo en esta
-  fase.
+- **FR-013**: La búsqueda MUST operar contra el **índice real actual** (D5: dataset local
+  del spike, 43 vídeos + vídeos web del crawler, 104 `indexed` del tag `buttfucking`) tal
+  cual está, sin requerir reindexado previo en esta fase.
 
 ### Security Requirements
 
 - **SEC-001**: El MVP MUST ejecutarse **solo en local** y MUST NOT exponerse públicamente
-  (sin deploy público ni auth en esta fase; ASSUMPTION-2: la exposición pública espera a
-  cerrar compliance).
+  (sin deploy público ni auth en esta fase; D3 + ASSUMPTION-2: la exposición pública
+  espera a cerrar compliance; la API no se despliega, D4).
 - **SEC-002**: La validación de la media de consulta MUST hacerse **en servidor** (tamaño y
   firma MIME), no solo en la interfaz.
 - **SEC-003**: El borrado de la media de consulta MUST estar **garantizado incluso ante
@@ -221,8 +232,8 @@ conteos coherentes con el índice real.
   tabla nueva**.
 - **DATA-002**: El contrato de resultados deriva del **mismo índice y ranking del spike**
   (paridad de datos con la CLI); no se crea un corpus ni un ranking paralelo.
-- **DATA-003**: El corpus de la fase es el **índice real existente**: dataset local del
-  spike + vídeos web del crawler (p. ej. los 104 vídeos `indexed` del tag `buttfucking`
+- **DATA-003**: El corpus de la fase es el **índice real actual** (D5): dataset local del
+  spike (43 vídeos) + vídeos web del crawler (104 vídeos `indexed` del tag `buttfucking`
   con embeddings SigLIP reales), sin reindexar.
 
 ### Non-Functional Requirements
@@ -264,24 +275,28 @@ conteos coherentes con el índice real.
 - **SC-001**: **Paridad API-CLI**: para un conjunto representativo de consultas (≥ 5
   imágenes del corpus), la API devuelve **los mismos top-k vídeos, en el mismo orden y con
   los mismos scores** que la CLI `search` contra el mismo índice y configuración.
-- **SC-002**: Una **captura real de un vídeo del corpus** (p. ej. del tag `buttfucking`)
-  devuelve **su vídeo en el Top-5** vía API.
+- **SC-002**: Una **captura real de un vídeo del corpus real actual** (D5: 104 vídeos del
+  tag `buttfucking` + 43 del dataset local del spike) devuelve **su vídeo en el Top-5**
+  vía API.
 - **SC-003**: Tras cada búsqueda (con éxito o con error) la **media de consulta ya no
   existe** en el sistema (verificable: no queda fichero en disco ni temporales).
 - **SC-004**: La latencia de búsqueda vía API se **mide y reporta**: **p95 < 3 s**
   (objetivo, no garantía).
-- **SC-005**: El **E2E WebdriverIO** del frontend (subir captura → ver resultado con
-  enlace a la fuente) es **verde en CI**.
+- **SC-005**: El **E2E WebdriverIO** del frontend de una página (D2: subir captura → ver
+  resultado con enlace a la fuente) es **verde en CI**.
 - **SC-006**: La validación **rechaza con 4xx** la media inválida (no imagen, > 10 MB,
   corrupta) **sin ejecutar búsqueda**.
 
 ## Assumptions
 
-- El MVP se ejecuta **solo en local** (ASSUMPTION-2 confirmada): sin exposición pública ni
-  auth en esta fase; la compliance (18+, privacidad, ToS, takedown) sigue siendo puerta
-  previa a cualquier acceso público.
-- El **corpus es el índice real existente** (Fases 1-2): no se reindexa ni se crawlea
-  contenido nuevo en esta fase.
+- **D3 (confirmado por el humano responsable, 2026-08-16)**: el MVP se ejecuta **solo en
+  local**, **sin auth** (tampoco para el frontend) y **nunca se publica** hasta cerrar
+  compliance (ASSUMPTION-2 confirmada); la compliance (18+, privacidad, ToS, takedown)
+  sigue siendo puerta previa a cualquier acceso público.
+- **D5 (confirmado por el humano responsable, 2026-08-16)**: el **corpus es el índice real
+  actual** (Fases 1-2): **104 vídeos** `indexed` del tag `buttfucking` (web) + **43
+  vídeos** del dataset local del spike; no se reindexa ni se crawlea contenido nuevo en
+  esta fase.
 - La media de consulta se **borra inmediatamente** tras procesar (ASSUMPTION-6
   confirmada).
 - Los registros analíticos de búsqueda son **temporales con TTL configurable**
@@ -301,8 +316,8 @@ conteos coherentes con el índice real.
   tabla `searches`, `IMPLEMENTED`.
 - `specs/002-source-sdk-crawler` — vídeos web con `title`/`page_url` y corpus real,
   `IMPLEMENTED`.
-- Índice real operativo en Supabase local (Docker): tag `buttfucking` (104 vídeos
-  `indexed`) + dataset local del spike.
+- Índice real operativo en Supabase local (Docker): corpus de la fase (D5) — tag
+  `buttfucking` (104 vídeos `indexed`) + dataset local del spike (43 vídeos).
 - WebdriverIO ya configurado en el repo (`wdio.conf.ts`) para el E2E de SC-005.
 
 ## Risks
@@ -324,29 +339,44 @@ conteos coherentes con el índice real.
 
 ## Open Questions
 
-_Para la ronda de clarificación (`spec-clarification`), máx. 5 preguntas._
+_Ronda 1 resuelta por el humano responsable el 2026-08-16 (decisiones D1..D5). No quedan
+preguntas abiertas capaces de cambiar la implementación._
 
-1. **Endpoints mínimos exactos**: ¿`search` + `health` + `stats` es suficiente, o hace
-   falta también una ficha/detalle de vídeo en esta fase?
-2. **Frontend**: ¿solo upload + resultados, o también listar/explorar el corpus (p. ej.
-   ver qué hay indexado)?
-3. **Auth y local**: ¿se confirma que esta fase va **sin auth** y **solo local**, incluso
-   para el frontend?
-4. **Deploy**: ¿solo ejecución local, o también un Preview de Vercel del frontend
-   (apuntando a un backend local o acotado)?
-5. **Corpus de prueba**: ¿el tag `buttfucking` (104 vídeos) + dataset local es suficiente
-   como corpus de validación de la fase?
+1. **Endpoints mínimos exactos** → **D1**: `POST /search` (subida de imagen → resultados)
+   + `GET /health` + `GET /stats` + `GET /videos/{id}` (ficha con metadatos, fuente y
+   enlace original).
+2. **Frontend** → **D2**: una sola página (upload + resultados: título, fuente, score,
+   timestamp y enlace al vídeo original); **sin exploración del corpus**.
+3. **Auth y local** → **D3**: **sin auth** y **solo local** (también el frontend); nunca
+   se publica hasta cerrar compliance (ASSUMPTION-2).
+4. **Deploy** → **D4**: el frontend usa el **Preview automático de Vercel del PR**; la
+   **API solo local** (no se despliega).
+5. **Corpus de prueba** → **D5**: índice real actual — **104 vídeos** del tag
+   `buttfucking` (web) + **43 vídeos** del dataset local del spike.
 
 ## Approval
 
-**Estado**: `DRAFT` — borrador inicial de la Fase 3, pendiente de ronda de clarificación
-(`spec-clarification`) y **aprobación humana** antes de pasar a `technical-planning`.
+**Estado**: `READY_FOR_REVIEW` — clarificación resuelta (D1..D5, 2026-08-16) sin
+preguntas abiertas; pendiente de **revisión y aprobación humana** (frase exacta:
+`Especificación aprobada`) antes de pasar a `technical-planning`.
 
 ## Historial de decisiones
 
-- **2026-08-16 · Borrador inicial (D1)**: decisión de alcance del operador: la Fase 3 es el
+- **2026-08-16 · Borrador inicial**: decisión de alcance del operador: la Fase 3 es el
   **MVP de búsqueda usable** — **API REST de búsqueda por imagen + frontend mínimo
   Next.js** (subir imagen → ver resultados) contra el **índice real existente** (dataset
   local del spike + vídeos web del crawler); **solo local** (sin exposición pública,
   ASSUMPTION-2) y **sin auth** en esta fase. Quedan fuera: búsqueda por clip/URL,
   admin/takedowns UI, ranking nuevo y crawler nuevo.
+- **2026-08-16 · Ronda de clarificación 1 — Decision del humano responsable**:
+  - **D1 — Endpoints**: la API expone `POST /search` (subida de imagen → resultados
+    rankeados), `GET /health`, `GET /stats` y `GET /videos/{id}` (ficha con metadatos,
+    fuente y enlace original).
+  - **D2 — Frontend**: una única página de upload + resultados (título, fuente, score,
+    timestamp y enlace al vídeo original); sin exploración del corpus.
+  - **D3 — Auth y exposición**: sin auth; solo local (frontend incluido); nunca se publica
+    hasta cerrar compliance (ASSUMPTION-2).
+  - **D4 — Deploy**: el frontend usa el Preview automático de Vercel del PR; la API solo
+    local (no se despliega).
+  - **D5 — Corpus de prueba**: índice real actual — 104 vídeos del tag `buttfucking`
+    (web) + 43 vídeos del dataset local del spike.
