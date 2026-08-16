@@ -276,22 +276,38 @@ def test_discover_segunda_pagina_fin_de_paginacion() -> None:
     assert page.next_cursor is None
 
 
-def test_discover_respeta_limit_sin_perder_ids() -> None:
-    """FR-004: `limit` acota los IDs devueltos; si se trunca, el cursor se repite.
+def test_discover_limit_menor_que_tamano_de_pagina_lanza_error() -> None:
+    """FR-004: página con más IDs que `limit` → `XvideosParseError`, sin truncar.
 
-    Contrato documentado: el llamador repite la petición con el mismo cursor
-    mientras reciba exactamente `limit` IDs (la página aún tiene más), y avanza
-    con el cursor nuevo cuando recibe menos de `limit`.
+    Truncar no está soportado: en vez de repetir el cursor recibido (bucle de
+    paginación, en la primera página indistinguible de fin) o descartar IDs en
+    silencio (páginas posteriores inalcanzables), `discover` falla con mensaje
+    que informa de los tamaños reales para que el llamador ajuste `limit`.
+    """
+
+    async def scenario() -> None:
+        with pytest.raises(XvideosParseError, match="3 IDs con limit=2"):
+            await _adapter().discover(cursor=None, limit=2)
+
+    _run(scenario)
+
+
+def test_discover_limit_igual_al_tamano_de_pagina_devuelve_todo() -> None:
+    """FR-004: borde del contrato — `limit` == tamaño de página no lanza error.
+
+    Con `limit` igual al número de IDs deduplicados de la página, `discover`
+    devuelve todos los IDs y el **cursor real** (`/best/2`), sin repetir el
+    recibido (`None`): el llamador avanza de página con normalidad.
     """
     page: DiscoverPage
 
     async def scenario() -> None:
         nonlocal page
-        page = await _adapter().discover(cursor=None, limit=2)
+        page = await _adapter().discover(cursor=None, limit=3)
 
     _run(scenario)
-    assert page.external_ids == ["10000001", "10000002"]
-    assert page.next_cursor is None  # mismo cursor que el recibido: repetir
+    assert page.external_ids == ["10000001", "10000002", "10000003"]
+    assert page.next_cursor == "/best/2"
 
 
 def test_discover_error_http_se_propaga() -> None:

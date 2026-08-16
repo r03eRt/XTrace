@@ -74,12 +74,14 @@ _FLASHVARS_RE = re.compile(r"flashvars\s*=\s*(\{.*?\})\s*;", re.DOTALL)
 
 
 class XvideosParseError(ValueError):
-    """La estructura HTML de la página no coincide con la esperada.
+    """Error de parseo/contrato del adapter xvideos.
 
-    Se lanza solo cuando no se puede identificar siquiera el patrón de vídeo
-    (canonical o `/video<id>/`): es la señal de "el HTML cambió" para que el
-    job quede `failed` con un error legible (edge case de la spec). Los campos
-    opcionales ausentes no lanzan error (degradación).
+    Se lanza cuando no se puede identificar siquiera el patrón de vídeo
+    (canonical o `/video<id>/`) — la señal de "el HTML cambió" para que el job
+    quede `failed` con un error legible (edge case de la spec) — o cuando
+    `discover()` recibe una página con más IDs que `limit` (truncación no
+    soportada: el llamador debe ajustar su lote, nunca se pierden IDs en
+    silencio). Los campos opcionales ausentes no lanzan error (degradación).
     """
 
 
@@ -274,20 +276,23 @@ class XvideosAdapter:
         """Descubre IDs externos de una página de listado (FR-004).
 
         `cursor` es el path de la página siguiente (None → primera página).
-        `limit` acota los IDs devueltos; si la página contiene más, `next_cursor`
-        repite el cursor recibido para que el llamador pueda pedir el resto sin
-        perder IDs (contrato documentado: repetir mientras se reciban
-        exactamente `limit` IDs; avanzar con el cursor nuevo al recibir menos).
+        `limit` debe ser >= tamaño de página: **la truncación no está
+        soportada**. Si la página trae más IDs que `limit`, se lanza
+        `XvideosParseError` indicando los tamaños reales para que el llamador
+        ajuste su lote — nunca se repite el cursor recibido (bucle de
+        paginación) ni se descartan IDs en silencio (páginas posteriores
+        inalcanzables).
         """
         url = f"{XV_BASE_URL}/" if cursor is None else f"{XV_BASE_URL}{cursor}"
         response = await self._client.get(url)
         response.raise_for_status()
         page = parse_listing_page(response.text)
-        truncated = len(page.external_ids) > limit
-        return DiscoverPage(
-            external_ids=page.external_ids[:limit],
-            next_cursor=page.next_cursor if not truncated else cursor,
-        )
+        if len(page.external_ids) > limit:
+            raise XvideosParseError(
+                f"la página trae {len(page.external_ids)} IDs con limit={limit}; "
+                "limit debe ser >= tamaño de página (truncación no soportada)"
+            )
+        return page
 
     # -- FR-004 · get_video ---------------------------------------------------
 
