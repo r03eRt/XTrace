@@ -44,12 +44,21 @@ class VideoAvailability(StrEnum):
 
 
 class DiscoverPage(BaseModel):
-    """Página de `discover()`: IDs externos descubiertos + cursor de paginación (FR-001)."""
+    """Página de `discover()`: IDs externos descubiertos + cursor de paginación (FR-001).
+
+    **PR-045 (enmienda del contrato, 3a validación real 2026-08-16)**:
+    `page_urls` (opcional, dict vacío por defecto → retrocompatible) mapea
+    external_id → **href completo del listado** (p. ej.
+    `/video.<encoded>/<num>/<num>/<slug-titulo>`), para fuentes cuyo URL
+    canónico exige el slug del listado (`None` en `get_video` → la fuente
+    reconstruye su URL como antes; ver `adapters/base.py`).
+    """
 
     model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     external_ids: list[str]
     next_cursor: str | None = None
+    page_urls: dict[str, str] = Field(default_factory=dict)
 
 
 class VideoSource(BaseModel):
