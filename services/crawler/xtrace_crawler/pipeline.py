@@ -16,13 +16,18 @@ discover → get_video → get_visual_assets → frames → pHash + embedding �
 `xtrace_spike.embeddings`, `xtrace_spike.indexing.pipeline.frame_id_for`,
 `xtrace_spike.vectorstore`; el spike permanece intocado):
 
-- **DISCOVER** (FR-007 · SC-003): una página de `adapter.discover(cursor, limit)`
-  → `CrawlerRepo.upsert_web_video` (estado `discovered`, FR-012) → encola
-  `FETCH_METADATA` por vídeo y el siguiente `DISCOVER` (paginación por cursor).
-  Modos **BACKFILL** e **INCREMENTAL** (payload `mode`): INCREMENTAL solo procesa
-  **IDs nuevos** (los ya existentes se omiten) y el dedupe por `dedupe_key` del
-  repo de jobs evita duplicar jobs activos — SC-003: no se duplican vídeos ni
-  frames.
+- **DISCOVER** (FR-007 · SC-003): una página de
+  `adapter.discover(cursor, limit, section)` → `CrawlerRepo.upsert_web_video`
+  (estado `discovered`, FR-012) → encola `FETCH_METADATA` por vídeo y el
+  siguiente `DISCOVER` (paginación por cursor). Modos **BACKFILL** e
+  **INCREMENTAL** (payload `mode`): INCREMENTAL solo procesa **IDs nuevos**
+  (los ya existentes se omiten) y el dedupe por `dedupe_key` del repo de jobs
+  evita duplicar jobs activos — SC-003: no se duplican vídeos ni frames.
+  **PR-049 (discover acotado por sección · FR-007 · pruebas del operador)**:
+  el payload `section` (ruta de categoría/tag, p. ej. `/tags/xxx`; null sin
+  sección) se reenvía al adapter en cada página — la fuente arranca su
+  discover en esa sección en vez de la home — y fluye por la cadena de
+  paginación (payload y dedupe del siguiente DISCOVER).
 - **FETCH_METADATA**: `adapter.get_video(external_id)` → `upsert_web_video`
   (actualiza **solo metadatos**: title/duration/tags/published_at/urls; el
   estado del vídeo no se toca, decisión PR-028) → encola `INDEX_VIDEO`. Un vídeo
@@ -77,7 +82,9 @@ discover → get_video → get_visual_assets → frames → pHash + embedding �
 Payloads de jobs (contrato interno; PR-032 los encola desde el CLI):
 - DISCOVER: `{"source": str, "cursor": str|null, "limit": int,
   "mode": "backfill"|"incremental", "max_videos": int|null (PR-036),
-  "videos_counted": int (PR-036; acumulado de páginas previas)}`
+  "section": str|null (PR-049; ruta de sección categoría/tag, p. ej.
+  /tags/xxx, null sin sección), "videos_counted": int (PR-036; acumulado de
+  páginas previas)}`
 - FETCH_METADATA / INDEX_VIDEO / CHECK_AVAILABILITY: `{"source": str, "external_id": str}`
 
 El módulo depende solo de contratos (protocols locales + `SourceAdapter` y
@@ -422,6 +429,13 @@ class CrawlerPipeline:
         **nuevos** (los ya existentes en BD se omiten). El siguiente `DISCOVER`
         (cursor) se encola con `dedupe_key` para no duplicar cadenas activas.
 
+        **PR-049 (discover acotado por sección · FR-007)**: el payload opcional
+        `section` (ruta de categoría/tag, p. ej. `/tags/xxx`, SIEMPRE con '/'
+        inicial — validado aquí igual que cursor/limit) se reenvía a
+        `adapter.discover` en CADA página y fluye por la cadena: el siguiente
+        DISCOVER conserva `section` en su payload y su `dedupe_key` (dos
+        secciones con el mismo cursor no colisionan).
+
         **Cota global `max_videos` (PR-036 · analyze hallazgo 2 · SC-002)**: el
         payload opcional `max_videos` (>= 1) corta la cadena de paginación al
         alcanzar la cota, **acumulando vídeos ya conocidos y nuevos**
@@ -473,11 +487,21 @@ class CrawlerPipeline:
         if counted_so_far < 0:
             raise ValueError(f"payload['videos_counted'] debe ser >= 0; recibido {counted_so_far}")
 
+        # PR-049 (discover acotado por sección · FR-007): la sección (ruta de
+        # categoría/tag, p. ej. /tags/xxx) viaja en el payload y se reenvía al
+        # adapter en CADA página; el CLI la valida (empieza por '/') y aquí se
+        # defiende el payload igual que cursor/limit (null sin sección).
+        section = job.payload.get("section")
+        if section is not None and (not isinstance(section, str) or not section.startswith("/")):
+            raise ValueError(
+                f"payload['section'] debe ser str empezando por '/' o null; recibido {section!r}"
+            )
+
         adapter = self._adapter_for(job)
         source_record = await self.sync_source(adapter)
         await self._acquire(adapter)
         started = time.perf_counter()
-        page = await adapter.discover(cursor=cursor, limit=limit)
+        page = await adapter.discover(cursor=cursor, limit=limit, section=section)
         logger.info(
             "etapa=discover source=%s job=%s duration_ms=%.1f ids=%d",
             source,
@@ -543,15 +567,22 @@ class CrawlerPipeline:
                 "cursor": page.next_cursor,
                 "limit": limit,
                 "mode": mode,
+                "section": section,  # PR-049: la sección fluye por la cadena
                 "videos_counted": counted,
             }
             if max_videos is not None:
                 next_payload["max_videos"] = max_videos
+            # PR-049: el dedupe de la cadena incluye la sección cuando se da
+            # (dos cadenas de secciones distintas con el mismo cursor no
+            # colisionan); sin sección, la clave de siempre (retrocompatible).
+            next_dedupe_key = f"discover:{source}:{page.next_cursor}:{mode}"
+            if section is not None:
+                next_dedupe_key = f"{next_dedupe_key}:{section}"
             await self._jobs.enqueue(
                 JobType.DISCOVER,
                 source_id=parse_uuid(source_record.id, "source_id"),
                 payload=next_payload,
-                dedupe_key=f"discover:{source}:{page.next_cursor}:{mode}",
+                dedupe_key=next_dedupe_key,
             )
 
     async def _fetch_metadata(self, job: Job) -> None:

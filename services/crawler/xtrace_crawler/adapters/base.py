@@ -33,6 +33,17 @@ canónica cuando esta exige el slug del listado (sin él → 404 en xvideos).
 `page_url` **sí** se declara en el cuerpo del protocolo: es un kwarg con
 default, así que las implementaciones actualizadas (xvideos, mock) lo aceptan
 y el pipeline (PR-045) lo reenvía durante DISCOVER con tipado estricto.
+
+**Enmienda PR-049 (discover acotado por sección, 2026-08-16 · FR-007 ·
+pruebas del operador)**: `discover` gana el kwarg **opcional**
+`section: str | None = None` — la **ruta de sección** del sitio (categoría/
+tag, p. ej. `/tags/xxx`; SIEMPRE empieza por '/', validado por el CLI) que la
+fuente usa como **URL INICIAL** del discover (`https://www.xvideos.com<section>`)
+en vez de la home. `None` → home (retrocompatible). El cursor, la paginación y
+el anti-bucle son idénticos sobre la sección (`a.dir.next` de la página de la
+sección); con cursor, la URL sale del cursor. El `MockAdapter` acepta el kwarg
+y lo ignora (catálogo sintético plano, sin secciones); el pipeline (PR-049) lo
+lee del payload del DISCOVER y lo reenvía en cada página.
 """
 
 from __future__ import annotations
@@ -138,7 +149,15 @@ class SourceAdapter(Protocol):
 
     manifest: AdapterManifest
 
-    async def discover(self, *, cursor: str | None, limit: int) -> DiscoverPage: ...
+    # PR-049 (enmienda del contrato, 2026-08-16 · FR-007): `section` es
+    # OPCIONAL (kwarg, default None) — ruta de sección del sitio (categoría/
+    # tag, p. ej. `/tags/xxx`, SIEMPRE con '/' inicial): la fuente la usa como
+    # URL INICIAL del discover (`https://www.xvideos.com<section>`) en vez de
+    # la home; con cursor, la URL sale del cursor. None → home
+    # (retrocompatible; el MockAdapter acepta el kwarg y lo ignora).
+    async def discover(
+        self, *, cursor: str | None, limit: int, section: str | None = None
+    ) -> DiscoverPage: ...
 
     # PR-045 (enmienda del contrato, 3a validación real 2026-08-16): `page_url`
     # es OPCIONAL (kwarg, default None): el **href completo del listado**

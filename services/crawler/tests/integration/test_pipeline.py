@@ -25,6 +25,10 @@ Cubren los handlers concretos de `xtrace_crawler/pipeline.py` con el MockAdapter
   ciegas — lee `videos.page_url` persistido por DISCOVER y lo reenvía a
   `get_video(..., page_url=...)`; sin fila previa (o con `page_url` vacío)
   sigue llamando sin él (retrocompatible).
+- **PR-049 (discover acotado por sección)**: el pipeline reenvía `section`
+  del payload a `adapter.discover` en CADA página y lo propaga al siguiente
+  DISCOVER (la cadena sigue acotada a la sección; el mock la acepta y la
+  ignora — retrocompatible).
 - **FR-013**: CHECK_AVAILABILITY `unavailable`/`removed` → estado del vídeo +
   exclusión del índice (frames eliminados y ocultos en `ann_search`).
 - **Nota revisión Ola B** (tasks.md PR-030): `sync_source` conserva
@@ -382,8 +386,10 @@ class _PageUrlsRecordingAdapter(MockAdapter):
         super().__init__(**kwargs)
         self.get_video_calls: list[tuple[str, str | None]] = []
 
-    async def discover(self, *, cursor: str | None, limit: int) -> DiscoverPage:
-        page = await super().discover(cursor=cursor, limit=limit)
+    async def discover(
+        self, *, cursor: str | None, limit: int, section: str | None = None
+    ) -> DiscoverPage:
+        page = await super().discover(cursor=cursor, limit=limit, section=section)
         return page.model_copy(
             update={"page_urls": {vid: f"/videos/{vid}/1/2/slug" for vid in page.external_ids}}
         )
@@ -490,6 +496,75 @@ def test_fetch_metadata_reenvia_page_url_persistido_o_retrocompatible(
     videos = {video["external_id"]: video for video in _videos()}
     assert set(videos) == {"mock-vid-0000", "mock-vid-0001", "mock-vid-0002"}
     assert all(video["status"] == "indexed" for video in videos.values())
+    assert all(job["status"] == JobStatus.DONE.value for job in _jobs())
+    assert _leftover_asset_dirs() == []
+
+
+# ---------------------------------------------------------------------------
+# PR-049 · Discover acotado por sección (FR-007 · pruebas del operador)
+# ---------------------------------------------------------------------------
+
+
+class _SectionRecordingAdapter(MockAdapter):
+    """MockAdapter que registra `(cursor, section)` de cada discover (PR-049).
+
+    Solo registra y delega en el catálogo sintético: la sección se **acepta y
+    se ignora** (retrocompatible) — el flujo del pipeline es idéntico.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.discover_calls: list[tuple[str | None, str | None]] = []
+
+    async def discover(
+        self, *, cursor: str | None, limit: int, section: str | None = None
+    ) -> DiscoverPage:
+        self.discover_calls.append((cursor, section))
+        return await super().discover(cursor=cursor, limit=limit, section=section)
+
+
+def test_discover_propaga_section_al_adapter_y_a_la_siguiente_pagina(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR-049: `section` del payload llega a `discover` y al siguiente DISCOVER.
+
+    El pipeline reenvía la sección al adapter en CADA página de la cadena y el
+    siguiente DISCOVER (cursor) la conserva en su payload: el discover queda
+    acotado a la sección de principio a fin. El mock la ignora
+    (retrocompatible) y el flujo completa igual (mismo nº de jobs y vídeos
+    que el BACKFILL estándar, sin duplicados).
+    """
+    _fast_rate(monkeypatch)
+    adapter = _SectionRecordingAdapter(seed=42, catalog_size=3)
+    pipeline, worker, jobs = _build(adapter, client=_client(), worker_id="it-pipeline-pr049")
+
+    async def _scenario() -> int:
+        await jobs.enqueue(
+            JobType.DISCOVER,
+            payload={
+                "source": "mock",
+                "cursor": None,
+                "limit": 2,
+                "mode": "backfill",
+                "section": "/tags/xxx",
+            },
+        )
+        return await worker.run_once()
+
+    assert _run(_scenario()) == 8  # 2 DISCOVER + 3 FETCH_METADATA + 3 INDEX_VIDEO
+
+    # Cada página recibió la sección (primera: cursor None; segunda: cursor "2").
+    assert adapter.discover_calls == [(None, "/tags/xxx"), ("2", "/tags/xxx")]
+
+    discovers = [job for job in _jobs() if job["job_type"] == JobType.DISCOVER.value]
+    assert len(discovers) == 2
+    assert discovers[0]["payload"]["section"] == "/tags/xxx"  # el encolado inicial
+    assert discovers[1]["payload"]["cursor"] == "2"
+    assert discovers[1]["payload"]["section"] == "/tags/xxx"  # propagada a la siguiente página
+
+    videos = _videos()
+    assert len(videos) == 3
+    assert all(video["status"] == "indexed" for video in videos)
     assert all(job["status"] == JobStatus.DONE.value for job in _jobs())
     assert _leftover_asset_dirs() == []
 

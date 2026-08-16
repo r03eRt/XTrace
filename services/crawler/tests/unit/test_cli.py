@@ -10,7 +10,11 @@ Cobertura por comando:
 - `backfill`: valida la fuente (registry + BD + gate SEC-002) y encola el job
   DISCOVER con el payload del contrato de PR-030 (FR-006/FR-007); errores de
   usuario (fuente desconocida / no habilitada / límite inválido) con mensaje
-  claro y exit code != 0.
+  claro y exit code != 0. PR-049: `--section <path>` (obligatoriamente con
+  '/' inicial; si no, error de uso) acota el discover a la sección del sitio
+  (categoría/tag, p. ej. `/tags/xxx`): el payload lleva `section` (null sin
+  flag), el dedupe distingue la cadena y el JSON de salida incluye `section`
+  cuando se da.
 - `run-worker`: `--once` procesa una pasada (FR-006): con worker inyectado
   (jobs fake) y sin inyección (cablea pipeline PR-030 + registry, todo fake).
 - `stats`: estadísticas coherentes (FR-014) y JSON estable.
@@ -39,7 +43,7 @@ from typer.testing import CliRunner
 
 from xtrace_crawler.adapters.base import AdapterManifest
 from xtrace_crawler.adapters.mock import MockAdapter
-from xtrace_crawler.adapters.models import VisualAsset
+from xtrace_crawler.adapters.models import DiscoverPage, VisualAsset
 from xtrace_crawler.adapters.registry import AdapterRegistry
 from xtrace_crawler.adapters.xvideos import XvideosAdapter
 from xtrace_crawler.cli import CliContext, app
@@ -461,6 +465,7 @@ def test_backfill_enqueues_discover_with_contract_payload() -> None:
 
     El mock está exento del gate (FR-003): no exige `enabled=true` en BD.
     PR-036: el payload incluye la cota global `max_videos` (default de config).
+    PR-049: el payload incluye `section` (null sin `--section`).
     """
     repo = FakeRepo(sources=[_mock_source_record(enabled=False)])
     jobs = FakeJobs()
@@ -482,6 +487,7 @@ def test_backfill_enqueues_discover_with_contract_payload() -> None:
         "limit": 5,
         "mode": "backfill",
         "max_videos": 100,
+        "section": None,  # PR-049: null sin --section
         "dedupe_key": "discover:mock:None:backfill",
     }
     assert job.source_id is not None and str(job.source_id) == SOURCE_ID
@@ -584,6 +590,52 @@ def test_backfill_invalid_limit_is_usage_error() -> None:
     assert _invoke(["backfill", "--source", "mock", "--limit", "abc"], context).exit_code == 2
 
 
+def test_backfill_section_sin_barra_inicial_es_error_de_uso() -> None:
+    """PR-049: `--section` sin '/' inicial (o vacío) es error de uso (exit 2).
+
+    El contrato exige que la sección sea una ruta absoluta del sitio
+    (categoría/tag, p. ej. `/tags/xxx`): sin la barra inicial el comando
+    termina con error de uso (exit code 2, contracts §5) y stdout vacío.
+    """
+    repo = FakeRepo(sources=[_mock_source_record()])
+    context = _base_context(repo=repo)
+    result = _invoke(["backfill", "--source", "mock", "--section", "tags/x"], context)
+    assert result.exit_code == 2
+    assert "section" in result.stderr
+    assert result.stdout == ""
+    assert (
+        _invoke(["backfill", "--source", "mock", "--section", ""], context).exit_code == 2
+    )  # vacía también es inválida
+
+
+def test_backfill_section_en_payload_json_y_dedupe() -> None:
+    """PR-049: `--section /ruta` viaja en el payload del DISCOVER, en el JSON de
+    salida y distingue la cadena en el dedupe; sin flag, el payload lleva
+    `section: null` y el JSON NO incluye la clave.
+    """
+    repo = FakeRepo(sources=[_mock_source_record()])
+    jobs = FakeJobs()
+    data = _stdout_json(
+        _invoke(
+            ["backfill", "--source", "mock", "--section", "/tags/xxx"],
+            _base_context(repo=repo, jobs=jobs),
+        )
+    )
+    assert data["section"] == "/tags/xxx"
+    job = jobs.enqueued[0]
+    assert job.job_type is JobType.DISCOVER
+    assert job.payload["section"] == "/tags/xxx"
+    assert job.payload["dedupe_key"] == "discover:mock:None:backfill:/tags/xxx"
+
+    jobs2 = FakeJobs()
+    data2 = _stdout_json(
+        _invoke(["backfill", "--source", "mock"], _base_context(repo=repo, jobs=jobs2))
+    )
+    assert "section" not in data2  # JSON sin section cuando no se da
+    assert jobs2.enqueued[0].payload["section"] is None
+    assert jobs2.enqueued[0].payload["dedupe_key"] == "discover:mock:None:backfill"
+
+
 # ---------------------------------------------------------------------------
 # run-worker (FR-006 · contracts §5)
 # ---------------------------------------------------------------------------
@@ -664,6 +716,65 @@ def test_run_worker_invalid_concurrency_is_usage_error() -> None:
     """`--concurrency 0` es error de uso (exit code 2)."""
     result = _invoke(["run-worker", "--concurrency", "0"], _base_context())
     assert result.exit_code == 2
+
+
+class _SectionRecordingAdapter(MockAdapter):
+    """MockAdapter que registra `(cursor, section)` de cada discover (PR-049).
+
+    Solo registra y delega en el catálogo sintético: la sección se **acepta y
+    se ignora** (retrocompatible) — el flujo del pipeline es idéntico.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.discover_calls: list[tuple[str | None, str | None]] = []
+
+    async def discover(
+        self, *, cursor: str | None, limit: int, section: str | None = None
+    ) -> DiscoverPage:
+        self.discover_calls.append((cursor, section))
+        return await super().discover(cursor=cursor, limit=limit, section=section)
+
+
+def test_run_worker_pasa_section_al_discover_y_el_mock_la_ignora(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR-049: el pipeline reenvía `section` del payload a `discover` del adapter.
+
+    El `MockAdapter` la **acepta y la ignora** (retrocompatible): con una
+    sección en el payload del DISCOVER, la pasada completa igual que sin ella
+    (catálogo sintético plano, sin secciones), el adapter registra la sección
+    recibida en su única llamada a discover y todos los vídeos se indexan.
+    """
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MIN_INTERVAL_MS", "0")
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MAX_RPS", "1000")
+    repo = FakeRepo(sources=[_mock_source_record(enabled=True)])
+    jobs = FakeJobs(
+        jobs=[
+            _make_job(
+                JobType.DISCOVER,
+                payload={
+                    "source": "mock",
+                    "cursor": None,
+                    "limit": 5,
+                    "mode": "backfill",
+                    "section": "/tags/xxx",
+                },
+            )
+        ]
+    )
+    adapter = _SectionRecordingAdapter(catalog_size=5)
+    registry = AdapterRegistry()
+    registry.register(adapter, real=False)
+    store = FakeVectorStore()
+    result = _invoke(
+        ["run-worker", "--once"],
+        _base_context(repo=repo, jobs=jobs, registry=registry, settings=Settings(), store=store),
+    )
+    assert _stdout_json(result) == {"processed": 11}  # 1 DISCOVER + 5 FETCH + 5 INDEX
+    assert adapter.discover_calls == [(None, "/tags/xxx")]
+    assert all(record.status == "indexed" for record in repo.videos.values())
+    assert jobs.failed == []
 
 
 # ---------------------------------------------------------------------------
