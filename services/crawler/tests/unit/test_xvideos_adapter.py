@@ -129,6 +129,24 @@ def test_adapter_satisface_protocolo_source_adapter() -> None:
     assert isinstance(protocol_adapter, SourceAdapter)
 
 
+def test_asset_hosts_provisionales_no_vacios_y_solo_hosts() -> None:
+    """PR-040 · SEC-001 · contracts §1: `asset_hosts` no vacío y solo hosts.
+
+    La allowlist de assets es **PROVISIONAL** — validar contra la estructura
+    real en PR-033 tras la revisión legal humana (SEC-002). No vacía (sin
+    allowlist el pipeline no descargaría nada, fail-closed) y con **solo
+    hosts**: sin esquemas, rutas, query ni fragmentos — el `SafeHTTPClient`
+    (PR-036) hace match exacto de host y nunca recibe URLs completas.
+    """
+    hosts = XvideosAdapter.asset_hosts
+    assert hosts  # PROVISIONAL — no vacía
+    for host in hosts:
+        assert "://" not in host, f"esquema en asset_host: {host!r}"
+        assert "/" not in host, f"ruta en asset_host: {host!r}"
+        assert "?" not in host and "#" not in host, f"query/fragmento en asset_host: {host!r}"
+        assert host.strip() == host, f"espacios en asset_host: {host!r}"
+
+
 # ---------------------------------------------------------------------------
 # FR-002/FR-004 · Parseo de la página de vídeo (selectolax)
 # ---------------------------------------------------------------------------

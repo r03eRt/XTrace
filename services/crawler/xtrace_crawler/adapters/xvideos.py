@@ -55,6 +55,25 @@ from xtrace_crawler.crawling.http import SafeHTTPClient
 # su subdominio www (los redirects entre ambos están permitidos).
 XV_VIDEO_HOSTS = frozenset({"xvideos.com", "www.xvideos.com"})
 
+#: Allowlist de hosts de assets de xvideos (PR-040 · SEC-001 · contracts §1).
+#: **PROVISIONAL** — validar contra la estructura real en PR-033 tras la
+#: revisión legal humana (SEC-002). Hosts conocidos de la estructura asumida
+#: (`tests/fixtures/xvideos/README.md`): dominios de página + CDNs de
+#: imágenes/vídeo — patrones `th-NN`/`vd-NN` de `thumb_url`/`thumb_sprite`/
+#: `preview_video` (flashvars) y los CDNs citados en el handoff PR-036
+#: (`thumbs2.xvideos.com`, `cdn77.io`). El `SafeHTTPClient` del pipeline hace
+#: match EXACTO de host (sin wildcards): si la captura real trae otros hosts,
+#: se amplía aquí en PR-033 y los assets fuera de la lista degradan sin red
+#: (fail-closed).
+XV_ASSET_HOSTS: list[str] = [
+    "xvideos.com",
+    "www.xvideos.com",
+    "thumbs2.xvideos.com",  # CDN de thumbnails/sprites (PR-036)
+    "th-01.xvideos.com",  # patrón th-NN de thumb_url/thumb_sprite (estructura asumida)
+    "vd-01.xvideos.com",  # patrón vd-NN de preview_video (estructura asumida)
+    "cdn77.io",  # CDN de vídeo/previews (PR-036)
+]
+
 XV_BASE_URL = "https://www.xvideos.com"
 XV_VIDEO_URL_TEMPLATE = "https://www.xvideos.com/video{external_id}/"
 
@@ -249,6 +268,11 @@ class XvideosAdapter:
     diseño** (SEC-002): sin revisión legal no es habilitable. Sin red en tests:
     se inyecta un `httpx.MockTransport` y toda petición pasa por el cliente
     HTTP seguro con allowlist (SEC-001).
+
+    **PR-040 · SEC-001**: declara `asset_hosts` (**PROVISIONAL**, ver
+    `XV_ASSET_HOSTS`): allowlist de hosts de sus assets que el pipeline
+    (PR-036) usa para la descarga por HTTP — validar contra la estructura real
+    en PR-033 tras la revisión legal humana (SEC-002).
     """
 
     manifest = AdapterManifest(
@@ -260,6 +284,12 @@ class XvideosAdapter:
         rate_limit=RateLimitSpec(min_interval_ms=2_000, max_rps=0.5),  # conservador (D5)
         review_date=None,
     )
+
+    # PR-040 · SEC-001 · contracts §1: allowlist de hosts de assets
+    # (PROVISIONAL — validar en PR-033 tras la revisión legal humana, SEC-002);
+    # el pipeline la usa como allowlist del cliente de assets, nunca derivada
+    # de las URLs parseadas (fail-closed).
+    asset_hosts: list[str] = XV_ASSET_HOSTS
 
     def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
         """Crea el adapter con su cliente HTTP seguro (allowlist de hosts).

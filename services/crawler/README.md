@@ -54,6 +54,39 @@ docker build -f services/crawler/Dockerfile -t xtrace-crawler .
 docker run --rm xtrace-crawler --help
 ```
 
+## Seguridad
+
+Hardening de la ruta de descarga de assets (PR-036 · SEC-001 · contracts §1/§7):
+
+- **Anti-SSRF — allowlist por fuente, fail-closed**: el pipeline **no** deriva
+  los hosts permitidos de las URLs parseadas de la fuente; cada adapter declara
+  `asset_hosts` (dominio canónico + CDNs de imágenes/vídeo revisados) como
+  parte del contrato `SourceAdapter` (PR-040) y el cliente de assets
+  (`SafeHTTPClient`) rechaza cualquier host fuera de esa allowlist
+  (`HostNotAllowedError`, degradación por asset, sin red). Un adapter con
+  `asset_hosts` vacío (o sin declararlo) **no descarga assets por HTTP**
+  (`NoAssetHostsError`); el mock lo declara vacío a propósito porque sirve sus
+  assets in-process (`fetch_asset_bytes`, PR-034).
+- **Anti-DNS-rebinding**: en la ruta de assets se valida la **IP resuelta** de
+  cada host en cada petición —incluidos los redirects— y se rechazan rangos
+  privados/link-local/loopback/metadata (RFC1918, `169.254.0.0/16` —incluida
+  `169.254.169.254`—, `127.0.0.0/8`, `::1`, `fc00::/7`, `fe80::/10`) con
+  `PrivateIPError`, antes de emitir la petición.
+- **Decompression bomb**: toda imagen descargada se abre con un límite estricto
+  de píxeles (`XTRACE_CRAWLER_MAX_IMAGE_PIXELS`, default 50 MP), verificado por
+  header **antes** de decodificar (`ImageTooManyPixelsError`, degradación por
+  asset).
+- **Residual TOCTOU de DNS**: la validación resuelve con `socket.getaddrinfo`
+  en el momento de la petición; la conexión real la abre httpx, así que existe
+  una ventana entre validación y conexión (mitigación prevista en plan §Risks:
+  pinning de IP con transporte propio).
+- **Hosts de assets de xvideos PROVISIONAL**: la allowlist del adapter xvideos
+  es provisional (estructura asumida; ver `tests/fixtures/xvideos/README.md` y
+  `adapters/xvideos.py`) — se valida contra la estructura real en PR-033 tras
+  la revisión legal humana (SEC-002). Mientras tanto el adapter permanece
+  **deshabilitado** (gate SEC-002): sin allowlist revisada no hay descarga
+  (fail-closed).
+
 ## Referencias
 
 - Spec: `specs/002-source-sdk-crawler/spec.md` (APPROVED) · Plan: `plan.md` · Tareas: `tasks.md`

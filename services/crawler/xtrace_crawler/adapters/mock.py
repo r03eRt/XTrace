@@ -274,6 +274,12 @@ class MockAdapter:
 
     manifest: AdapterManifest
 
+    # PR-040 · SEC-001 · contracts §1: lista VACÍA a propósito — el mock sirve
+    # sus assets in-process (`fetch_asset_bytes`, PR-034) y no descarga por
+    # HTTP: el pipeline rechaza la ruta HTTP con `NoAssetHostsError`
+    # (fail-closed) y el preview sin representación degrada (0 superficie de red).
+    asset_hosts: list[str] = []
+
     def __init__(
         self,
         *,
