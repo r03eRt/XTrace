@@ -38,7 +38,8 @@ uso del CLI).
 **Inyección de dependencias (tests sin red y sin BD, NFR-003)**: cada comando
 lee su `CliContext` de `ctx.obj`. El callback construye el contexto por defecto
 (repos reales + registry con `MockAdapter` —exento del gate, FR-003— y
-`XvideosAdapter` —real, bloqueado por SEC-002 hasta revisión legal—); los tests
+`XvideosAdapter` —real, manifest **revisado** 2026-08-16 (SEC-002, PR-042):
+la habilitación efectiva vive en `sources.enabled=true` en BD—); los tests
 inyectan un contexto con fakes vía `CliRunner.invoke(..., obj=...)`. El worker
 del `run-worker` también es inyectable (`CliContext.worker`) para probar la
 pasada sin cablear el pipeline.
@@ -612,9 +613,10 @@ def _counts_human(counts: dict[str, int]) -> str:
 def _default_registry() -> AdapterRegistry:
     """Registry por defecto del CLI: mock (exento del gate, FR-003) + xvideos (real).
 
-    `XvideosAdapter` queda registrado pero **no habilitable** hasta la revisión
-    legal humana (SEC-002): `backfill --source xvideos` falla con el detalle del
-    gate en vez de "fuente desconocida".
+    `XvideosAdapter` tiene el manifest **revisado** (2026-08-16, SEC-002 ·
+    PR-042): la habilitación **efectiva** sigue exigiendo `sources.enabled=true`
+    en BD (gate del registry, PR-028) — `backfill --source xvideos` falla con
+    el detalle del gate en vez de "fuente desconocida".
 
     SC-007 (PR-031): ningún módulo del core importa **estáticamente** el adapter
     xvideos (test AST `test_core_no_importa_el_adapter_xvideos`); la composición
