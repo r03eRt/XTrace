@@ -4,7 +4,7 @@
 
 **Created**: 2026-08-16
 
-**Status**: READY_FOR_REVIEW
+**Status**: APPROVED
 
 **Input**: User description: "Fase 3 — MVP de búsqueda USABLE: API REST de búsqueda por
 imagen + frontend mínimo Next.js (subir imagen → ver resultados) contra el índice real
@@ -356,12 +356,13 @@ preguntas abiertas capaces de cambiar la implementación._
 
 ## Approval
 
-**Estado**: `READY_FOR_REVIEW` — clarificación resuelta (D1..D5, 2026-08-16) sin
-preguntas abiertas; pendiente de **revisión y aprobación humana** (frase exacta:
-`Especificación aprobada`) antes de pasar a `technical-planning`.
+**Estado**: `APPROVED` — aprobada por el humano responsable el 2026-08-16 (frase exacta
+"Especificación aprobada"). Habilitado el paso a `technical-planning`.
 
 ## Historial de decisiones
 
+- **2026-08-16 · Aprobación**: spec **`APPROVED`** por el humano responsable (frase
+  exacta "Especificación aprobada"). Se habilita `technical-planning`.
 - **2026-08-16 · Borrador inicial**: decisión de alcance del operador: la Fase 3 es el
   **MVP de búsqueda usable** — **API REST de búsqueda por imagen + frontend mínimo
   Next.js** (subir imagen → ver resultados) contra el **índice real existente** (dataset
