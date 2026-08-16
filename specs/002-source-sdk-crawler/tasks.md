@@ -283,7 +283,7 @@ termina en un PR aislado).
 ## Fase 4 — Operación y cierre
 
 ### PR-032 · CLI completa: sources/backfill/run-worker/stats/check-availability
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola E)
 - **Prioridad**: P1 · **Complejidad**: S · **Rol**: implementer · **Riesgo**: bajo
 - **Spec/Req**: FR-006, FR-007, FR-014, NFR-004 · contracts §5 · D2/D4/D5
 - **Objetivo**: `cli.py` (Typer): `sources`, `backfill [--incremental] [--limit]`,
