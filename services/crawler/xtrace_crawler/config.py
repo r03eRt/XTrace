@@ -8,6 +8,11 @@ rate limit (`RateLimitSpec`, en código) y overrides por env
 `XTRACE_CRAWLER_RATE_<SOURCE>_MIN_INTERVAL_MS` / `XTRACE_CRAWLER_RATE_<SOURCE>_MAX_RPS`,
 leídos por `_RateLimitEnvSource` (pydantic-settings). La estructura base de PR-019
 no cambia; las secciones retries/DB llegan en PR-026.
+
+Sección worker/operación (PR-032, contracts §5): concurrencia y lease timeout del
+`run-worker` y límites por defecto de `backfill`/`check-availability`, todos
+overrideables por env con prefijo `XTRACE_CRAWLER_` (la base PR-019/022 no se rompe:
+nuevos campos con defaults y validación).
 """
 
 from __future__ import annotations
@@ -89,6 +94,17 @@ class Settings(BaseSettings):
     # Rate limits por fuente (PR-022 · FR-009 · D5 · contracts §4): defaults en el
     # spec de rate limit y overrides por env (leídos por `_RateLimitEnvSource`).
     rate_limits: dict[str, RateLimitOverride] = Field(default_factory=dict)
+
+    # Worker (PR-032 · contracts §5): concurrencia y lease timeout del `run-worker`
+    # (paridad con `jobs/worker.py` PR-027: DEFAULT_CONCURRENCY/DEFAULT_LEASE_TIMEOUT_SECONDS).
+    worker_concurrency: int = Field(default=4, ge=1)
+    job_lease_timeout_seconds: float = Field(default=300.0, gt=0)
+
+    # Límites por defecto de los comandos operativos (PR-032 · contracts §5):
+    # `backfill --limit` (paridad con `DEFAULT_DISCOVER_LIMIT`) y
+    # `check-availability --limit` cuando no se pasa el flag.
+    backfill_default_limit: int = Field(default=50, ge=1)
+    check_availability_default_limit: int = Field(default=100, ge=1)
 
     @classmethod
     def settings_customise_sources(
