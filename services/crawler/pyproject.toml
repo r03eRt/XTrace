@@ -22,6 +22,17 @@ dependencies = [
     "xtrace-spike",
 ]
 
+# Extra opcional `siglip` (PR-051 · FR-011 · contracts §6): dependencias para
+# las validaciones reales del operador con `XTRACE_CRAWLER_EMBEDDINGS=siglip`
+# (`SiglipLocalProvider` de xtrace_spike necesita open-clip-torch + torch).
+# Mismo patrón que el extra del spike; se instala SOLO donde se necesite
+# (`uv sync --extra siglip`), no en el grupo dev (CI sin torch, NFR-003).
+[project.optional-dependencies]
+siglip = [
+    "open-clip-torch<3",
+    "torch<2.3",
+]
+
 [dependency-groups]
 dev = [
     "mypy>=1.14,<2",

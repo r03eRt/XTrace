@@ -21,6 +21,12 @@ Cobertura por comando:
 - `check-availability`: encola CHECK_AVAILABILITY por vídeo de la fuente
   (FR-013).
 - `config.py`: defaults de worker/lease/límites y overrides por env (PR-032).
+- PR-050/051 (FR-011 · contracts §6): proveedor de embeddings por env —
+  default `fake` intacto; con `siglip`, el contexto por defecto construye el
+  `SiglipLocalProvider` real (monkeypatch del import/constructor, sin torch);
+  y si el extra `siglip` NO está instalado (o el import del módulo falla),
+  el CLI falla en el arranque con error claro y accionable
+  (`uv sync --extra siglip`), sin fallback silencioso a fake (PR-051).
 
 Trazabilidad (constitución §3): cada test indica el requisito que valida.
 """
@@ -29,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import importlib.util
 import io
 import json
 import logging
@@ -1338,7 +1345,7 @@ def test_settings_invalid_concurrency_is_rejected(monkeypatch: pytest.MonkeyPatc
 
 
 # ---------------------------------------------------------------------------
-# PR-050 · Proveedor de embeddings por env (FR-011 · ADR-0011 · contracts §6)
+# PR-050/051 · Proveedor de embeddings por env (FR-011 · ADR-0011 · contracts §6)
 # ---------------------------------------------------------------------------
 
 
@@ -1380,10 +1387,19 @@ def test_default_context_siglip_builds_real_provider(monkeypatch: pytest.MonkeyP
     `xtrace_spike.embeddings.siglip_local` e instancia `SiglipLocalProvider()`
     sin argumentos (paridad con el spike: PR-005 · `resolve_embedding_provider`
     del CLI del spike instancia la clase sin args; model_id/dimension L2).
+    PR-051: además se stubbea `find_spec` (extra `siglip` instalado) porque el
+    contexto por defecto exige el extra en el arranque (fail-fast).
     """
     monkeypatch.setenv("XTRACE_CRAWLER_EMBEDDINGS", "siglip")
     imported: list[str] = []
     instantiated: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    def _find_spec_installed(name: str) -> Any:
+        if name in ("open_clip", "torch"):
+            return object()  # extra siglip instalado (stub)
+        return importlib.util.find_spec(name)
+
+    monkeypatch.setattr("xtrace_crawler.cli.find_spec", _find_spec_installed)
 
     class _FakeSiglipProvider:
         """Contrato `EmbeddingProvider` del spike (model_id/dimension L2)."""
@@ -1413,6 +1429,74 @@ def test_default_context_siglip_builds_real_provider(monkeypatch: pytest.MonkeyP
     assert imported == ["xtrace_spike.embeddings.siglip_local"]
     assert isinstance(context.embeddings, _FakeSiglipProvider)
     assert instantiated == [((), {})]  # SiglipLocalProvider() sin argumentos (PR-005)
+
+
+def test_default_context_siglip_sin_extra_error_claro(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PR-051 · FR-011 · contracts §6: con `XTRACE_CRAWLER_EMBEDDINGS=siglip` y el
+    extra `siglip` NO instalado, el CLI falla en el arranque con error claro.
+
+    Regresión del hallazgo de la 1a ejecución real con SigLIP (2026-08-16):
+    el proveedor del spike importa torch/open_clip de forma LAZY (`_ensure_loaded`,
+    PR-005) y el `run-worker` fallaba job a job con `ModuleNotFoundError: No
+    module named 'open_clip'` — opaco y tardío. Ahora el contexto por defecto
+    **exige el extra al arrancar** (`_require_siglip_extra`, fail-fast): el
+    CLI termina con **exit 1** (contracts §5) y un mensaje que menciona el
+    extra `siglip` y el comando de instalación (`uv sync --extra siglip` en
+    services/crawler o equivalente) — **sin fallback silencioso a fake** (un
+    backfill con fake cuando se pidió SigLIP corrompería la validación). El
+    default `fake` sigue intacto (cubierto por
+    `test_default_context_embeddings_fake_by_default`).
+    """
+    monkeypatch.setenv("XTRACE_CRAWLER_EMBEDDINGS", "siglip")
+
+    def _find_spec_missing(name: str) -> Any:
+        if name in ("open_clip", "torch"):
+            return None  # extra siglip NO instalado
+        return importlib.util.find_spec(name)
+
+    monkeypatch.setattr("xtrace_crawler.cli.find_spec", _find_spec_missing)
+    result = runner.invoke(app, ["sources"])  # obj=None → contexto por defecto real
+    assert result.exit_code == 1  # error claro, no salida JSON con fake
+    assert "siglip" in result.stderr
+    assert "uv sync --extra siglip" in result.stderr
+    assert "services/crawler" in result.stderr
+    assert "open_clip" in result.stderr  # detalla qué falta
+    assert "fake" in result.stderr  # menciona explícitamente que no hay fallback
+
+
+def test_default_context_siglip_import_module_fallido_error_claro(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR-051: si el import del módulo del spike falla (con el extra presente),
+    el mensaje sigue siendo claro y accionable (except ModuleNotFoundError).
+
+    Camino defensivo del helper: `_require_siglip_extra` ya verifica el extra
+    (aquí stubbeado como instalado), pero el import/instancia de
+    `xtrace_spike.embeddings.siglip_local` puede fallar igualmente (módulo
+    roto/renombrado) y NO debe propagar un traceback opaco: `CliUserError`
+    con el comando de instalación y sin fallback a fake (exit 1).
+    """
+    monkeypatch.setenv("XTRACE_CRAWLER_EMBEDDINGS", "siglip")
+
+    def _find_spec_installed(name: str) -> Any:
+        if name in ("open_clip", "torch"):
+            return object()  # extra siglip instalado (stub)
+        return importlib.util.find_spec(name)
+
+    monkeypatch.setattr("xtrace_crawler.cli.find_spec", _find_spec_installed)
+    real_import_module = importlib.import_module
+
+    def _import_fail(name: str) -> Any:
+        if name == "xtrace_spike.embeddings.siglip_local":
+            raise ModuleNotFoundError("No module named 'open_clip'")
+        return real_import_module(name)
+
+    monkeypatch.setattr(importlib, "import_module", _import_fail)
+    result = runner.invoke(app, ["sources"])  # obj=None → contexto por defecto real
+    assert result.exit_code == 1
+    assert "siglip" in result.stderr
+    assert "uv sync --extra siglip" in result.stderr
+    assert "fake" in result.stderr  # sin fallback silencioso a fake
 
 
 def test_run_worker_uses_injected_embeddings_provider(
