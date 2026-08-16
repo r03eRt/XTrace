@@ -22,6 +22,10 @@
 - **Lease reset periódico** (ADR-0010, crash de worker): los `running` con
   lease vencido vuelven a `pending` — cada `lease_reset_interval_seconds` en
   `run_forever`, y al inicio de cada `run_once`.
+- **Logs estructurados (PR-035 · plan §Observability)**: por job — intento
+  actual/máximo (`intento N/M`), delay de backoff aplicado (`delay_ms`, leído
+  del `not_before` programado por el repo: una sola fuente de verdad para la
+  política de reintentos) y duración total del job (`duracion_ms`).
 - **Handlers base genéricos** de `DISCOVER` y `CHECK_AVAILABILITY`
   (`discover_handler`, `check_availability_handler`): factories con
   dependencias inyectadas (resolución del adapter y callbacks de resultado),
@@ -38,8 +42,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Protocol
 
 from xtrace_crawler.adapters.base import SourceAdapter
@@ -284,14 +290,28 @@ class JobWorker:
         if handler is None:
             await self._missing_handler(job)
             return
+        started = time.perf_counter()
+        logger.info(
+            "worker %s: job %s (%s): intento %d/%d",
+            self._worker_id,
+            job.id,
+            job.job_type.value,
+            job.attempts + 1,
+            job.max_attempts,
+        )
         try:
             await handler(job)
         except Exception as exc:
             await self._handle_failure(job, exc)
         else:
+            duration_ms = (time.perf_counter() - started) * 1000.0
             await self._repo.complete(job.id)
             logger.info(
-                "worker %s: job %s (%s) completado", self._worker_id, job.id, job.job_type.value
+                "worker %s: job %s (%s) completado (duracion_ms=%.1f)",
+                self._worker_id,
+                job.id,
+                job.job_type.value,
+                duration_ms,
             )
 
     async def _missing_handler(self, job: Job) -> None:
@@ -325,14 +345,18 @@ class JobWorker:
             )
             await self._repo.unavailable(job.id, error)
         else:
+            updated = await self._repo.fail(job.id, error)
             logger.warning(
-                "worker %s: job %s (%s): fallo transitorio %r → fail con backoff",
+                "worker %s: job %s (%s): fallo transitorio %r → fail con backoff "
+                "(delay_ms=%.0f, intento %d/%d)",
                 self._worker_id,
                 job.id,
                 job.job_type.value,
                 error,
+                _backoff_delay_ms(updated),
+                updated.attempts,
+                updated.max_attempts,
             )
-            await self._repo.fail(job.id, error)
 
     async def _sleep_until(self, stop: asyncio.Event, seconds: float) -> None:
         """Duerme `seconds` o hasta que `stop` se marque (espera interrumpible)."""
@@ -346,6 +370,17 @@ def _describe_error(exc: BaseException) -> str:
     """Mensaje para la columna `error` del job: clase + detalle (observabilidad FR-014)."""
     text = str(exc).strip()
     return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+def _backoff_delay_ms(job: Job) -> float:
+    """Delay de backoff APLICADO por `repo.fail` (ms) — `not_before` programado − ahora.
+
+    El `not_before` lo fija el repo (jobs/repo.py PR-026/023) con la política
+    `next_attempt_delay` (o el `delay_fn` inyectado en tests): leerlo del job
+    devuelto evita duplicar la política de reintentos en el worker (una sola
+    fuente de verdad — PR-035 · plan §Observability).
+    """
+    return max(0.0, (job.not_before - datetime.now(UTC)).total_seconds() * 1000.0)
 
 
 # -- Handlers base genéricos (tasks.md PR-027; la lógica concreta la cierra PR-030) ----

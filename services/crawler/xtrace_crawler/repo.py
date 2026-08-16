@@ -9,7 +9,10 @@ Capa de datos sobre psycopg (async) para las tablas de la migración PR-025
   (DATA-003); transiciones de estado FR-012 (incl. `unavailable`/`removed`);
   `exclude` (FR-013, paridad de semántica con `xtrace_spike.repo.PgRepo.exclude`).
 - **stats** (FR-014): jobs por estado/fuente, vídeos por estado, errores recientes
-  con causa.
+  con causa y — desde PR-035 — la contabilidad del `RateLimiter` por fuente
+  (`rate_limits`, SC-005 · NFR-004 · plan §Observability): el pipeline la
+  agrega y `stats(rate_limits=...)` la incrusta como sección nueva sin tocar
+  las existentes (compatibilidad de JSON).
 
 Acceso con credenciales de servidor (SEC-003): `service_role`/superuser local vía DSN
 (`SUPABASE_DB_URL`, mismo convenio que el spike); RLS deny-by-default en BD y sin
@@ -29,10 +32,11 @@ from typing import Any, Literal
 
 import psycopg
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from xtrace_crawler.adapters.base import AdapterManifest
 from xtrace_crawler.adapters.models import VideoSource
+from xtrace_crawler.crawling.ratelimit import RateLimitStats
 
 #: Variable de entorno del DSN (mismo convenio que `xtrace_spike.repo` y quickstart.md).
 DATABASE_URL_ENV = "SUPABASE_DB_URL"
@@ -149,13 +153,47 @@ class JobErrorRecord(BaseModel):
     updated_at: datetime
 
 
+class RateLimitStatsRecord(BaseModel):
+    """Contabilidad del `RateLimiter` de una fuente para `stats` (PR-035 · SC-005 · NFR-004).
+
+    Vista JSON estable de `RateLimitStats` (crawling/ratelimit.py): requests
+    totales a la fuente, esperas impuestas por el rate limit y tiempo total
+    esperado en ms — el respeto de límites declarados es medible por fuente
+    (plan §Observability · FR-014).
+    """
+
+    requests: int
+    rate_limit_waits: int
+    total_wait_ms: int
+
+
+def rate_limit_stats_record(stats: RateLimitStats) -> RateLimitStatsRecord:
+    """Convierte la contabilidad del limiter a la vista de `stats` (PR-035).
+
+    `total_wait_seconds` → `total_wait_ms` (redondeado): el contrato del JSON
+    usa ms como unidad (`total_wait_ms`).
+    """
+    return RateLimitStatsRecord(
+        requests=stats.requests,
+        rate_limit_waits=stats.waits,
+        total_wait_ms=round(stats.total_wait_seconds * 1000),
+    )
+
+
 class CrawlerStats(BaseModel):
-    """Estadísticas básicas del crawler (FR-014 · plan §Observability)."""
+    """Estadísticas básicas del crawler (FR-014 · plan §Observability).
+
+    `rate_limits` (PR-035 · SC-005 · NFR-004): contabilidad del `RateLimiter`
+    por fuente que agrega el pipeline (`CrawlerPipeline.rate_limit_stats`) y
+    que `stats()` incrusta — sección NUEVA; las anteriores no cambian
+    (compatibilidad de JSON, contracts §5).
+    """
 
     jobs_by_status: dict[str, int]
     jobs_by_source: dict[str | None, int]
     videos_by_status: dict[str, int]
     recent_errors: list[JobErrorRecord]
+    rate_limits: dict[str, RateLimitStatsRecord] = Field(default_factory=dict)
 
 
 class CrawlerRepo:
@@ -383,7 +421,10 @@ class CrawlerRepo:
     # ------------------------------------------------------------------
 
     async def stats(
-        self, *, recent_errors_limit: int = DEFAULT_RECENT_ERRORS_LIMIT
+        self,
+        *,
+        recent_errors_limit: int = DEFAULT_RECENT_ERRORS_LIMIT,
+        rate_limits: dict[str, RateLimitStatsRecord] | None = None,
     ) -> CrawlerStats:
         """Estadísticas básicas del crawler (FR-014 · plan §Observability).
 
@@ -392,6 +433,9 @@ class CrawlerRepo:
         - `videos_by_status`: vídeos por estado (descubiertos/indexados/fallidos/…).
         - `recent_errors`: últimos `recent_errors_limit` jobs `failed`/`unavailable`
           con causa (`error`), más recientes primero.
+        - `rate_limits` (PR-035 · SC-005 · NFR-004): contabilidad del
+          `RateLimiter` por fuente agregada por el pipeline; se incrusta como
+          sección nueva de `CrawlerStats` (campos existentes intactos).
         """
         async with await self.connect() as conn:
             async with conn.cursor() as cur:
@@ -430,4 +474,5 @@ class CrawlerRepo:
             jobs_by_source=jobs_by_source,
             videos_by_status=videos_by_status,
             recent_errors=recent_errors,
+            rate_limits=rate_limits or {},
         )

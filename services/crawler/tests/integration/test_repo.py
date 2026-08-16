@@ -27,7 +27,7 @@ import pytest
 
 from xtrace_crawler.adapters.base import AdapterManifest, RateLimitSpec
 from xtrace_crawler.adapters.models import VideoSource
-from xtrace_crawler.repo import CrawlerRepo, resolve_dsn
+from xtrace_crawler.repo import CrawlerRepo, RateLimitStatsRecord, resolve_dsn
 
 
 def _db_available() -> bool:
@@ -424,3 +424,23 @@ def test_stats_empty_database() -> None:
     assert stats.jobs_by_source == {}
     assert stats.videos_by_status == {}
     assert stats.recent_errors == []
+
+
+def test_stats_embeds_rate_limits_section() -> None:
+    """PR-035 · SC-005/NFR-004: `stats(rate_limits=...)` incrusta la contabilidad del limiter.
+
+    El pipeline agrega las métricas del `RateLimiter` por fuente y `repo.stats`
+    las expone como sección `rate_limits` (nueva, requests/rate_limit_waits/
+    total_wait_ms) sin tocar las secciones existentes de FR-014 (compatibilidad
+    de JSON).
+    """
+    source = _upsert_source("fuente-a")
+    _insert_job(status="done", source_id=source.id)
+    record = RateLimitStatsRecord(requests=7, rate_limit_waits=6, total_wait_ms=300)
+    stats = _run(_repo().stats(rate_limits={"fuente-a": record}))
+    assert stats.rate_limits == {"fuente-a": record}
+    assert stats.jobs_by_status == {"done": 1}  # secciones previas intactas (FR-014)
+    assert stats.jobs_by_source == {"fuente-a": 1}
+    assert stats.recent_errors == []
+    # Sin `rate_limits` → sección vacía (llamadas previas intactas, FR-014).
+    assert _run(_repo().stats()).rate_limits == {}

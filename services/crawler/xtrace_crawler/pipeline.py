@@ -75,6 +75,7 @@ import io
 import logging
 import shutil
 import tempfile
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -114,7 +115,14 @@ from xtrace_crawler.crawling.http import (
 from xtrace_crawler.crawling.ratelimit import RateLimiter
 from xtrace_crawler.jobs.types import Job, JobType
 from xtrace_crawler.jobs.worker import DEFAULT_DISCOVER_LIMIT, JobHandler, JobWorker
-from xtrace_crawler.repo import SourceRecord, VideoRecord, VideoStatus, parse_uuid
+from xtrace_crawler.repo import (
+    RateLimitStatsRecord,
+    SourceRecord,
+    VideoRecord,
+    VideoStatus,
+    parse_uuid,
+    rate_limit_stats_record,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -396,7 +404,15 @@ class CrawlerPipeline:
         adapter = self._adapter_for(job)
         source_record = await self.sync_source(adapter)
         await self._acquire(adapter)
+        started = time.perf_counter()
         page = await adapter.discover(cursor=cursor, limit=limit)
+        logger.info(
+            "etapa=discover source=%s job=%s duration_ms=%.1f ids=%d",
+            source,
+            job.id,
+            (time.perf_counter() - started) * 1000.0,
+            len(page.external_ids),
+        )
 
         for external_id in page.external_ids:
             if mode == "incremental":
@@ -447,7 +463,15 @@ class CrawlerPipeline:
         external_id = self._external_id(job)
         adapter = self._adapter_for(job)
         await self._acquire(adapter)
+        started = time.perf_counter()
         video = await adapter.get_video(external_id)
+        logger.info(
+            "etapa=metadata source=%s external_id=%s job=%s duration_ms=%.1f",
+            source,
+            external_id,
+            job.id,
+            (time.perf_counter() - started) * 1000.0,
+        )
         if video is None:
             await self._mark_unavailable(source, external_id)
             raise VideoUnavailableError(
@@ -486,18 +510,37 @@ class CrawlerPipeline:
         video = video_source_from_record(record, source=source)
         adapter = self._adapter_for(job)
         await self._acquire(adapter)
+        started = time.perf_counter()
         assets = await adapter.get_visual_assets(video)
         await self._repo.set_video_status(record.id, "indexing")
 
         frames = await self._collect_frames(assets, video, adapter)
+        logger.info(
+            "etapa=assets source=%s external_id=%s job=%s duration_ms=%.1f assets=%d frames=%d",
+            source,
+            external_id,
+            job.id,
+            (time.perf_counter() - started) * 1000.0,
+            len(assets),
+            len(frames),
+        )
         try:
             if not frames:
                 raise ValueError(
                     f"no se obtuvieron frames de ningún asset de {external_id!r} "
                     "(todos degradados o lista vacía)"
                 )
+            embed_started = time.perf_counter()
             records = self._embed_frames(video_id=record.id, frames=frames)
             await self._store.upsert_frames(records)
+            logger.info(
+                "etapa=embed source=%s external_id=%s job=%s duration_ms=%.1f frames=%d",
+                source,
+                external_id,
+                job.id,
+                (time.perf_counter() - embed_started) * 1000.0,
+                len(records),
+            )
             await self._repo.set_video_status(record.id, "indexed")
             logger.info(
                 "INDEX_VIDEO: vídeo indexado source=%s external_id=%s frames=%d",
@@ -777,6 +820,19 @@ class CrawlerPipeline:
                 limiter = RateLimiter(spec, source=name)
             self._limiters[name] = limiter
         return limiter
+
+    def rate_limit_stats(self) -> dict[str, RateLimitStatsRecord]:
+        """Contabilidad del rate limiter por fuente (PR-035 · SC-005 · NFR-004).
+
+        Expone las métricas acumuladas de los limiters cacheados por fuente
+        (requests/waits/tiempo total esperado) para que `stats` las incruste
+        (`repo.stats(rate_limits=...)`) como sección `rate_limits` — sección
+        nueva del JSON, sin tocar las existentes (FR-014 · contracts §5).
+        """
+        return {
+            name: rate_limit_stats_record(limiter.stats)
+            for name, limiter in sorted(self._limiters.items())
+        }
 
     # -- Helpers ------------------------------------------------------------------
 
