@@ -14,6 +14,10 @@ Cubren los handlers concretos de `xtrace_crawler/pipeline.py` con el MockAdapter
   FR-015).
 - **FR-009/SC-005**: cada llamada al adapter pasa por el rate limiter de la
   fuente (limiter con reloj/sleeper fakes: nº de requests y esperas exactos).
+- **PR-036 · cota global `--max_videos`** (analyze hallazgo 2 · SC-002): el
+  payload del DISCOVER lleva `max_videos` y el pipeline corta la cadena de
+  paginación al alcanzarla, acumulando vídeos conocidos y nuevos
+  (`videos_counted`), sin perder trazabilidad.
 - **FR-013**: CHECK_AVAILABILITY `unavailable`/`removed` → estado del vídeo +
   exclusión del índice (frames eliminados y ocultos en `ann_search`).
 - **Nota revisión Ola B** (tasks.md PR-030): `sync_source` conserva
@@ -481,6 +485,103 @@ def test_terminal_removed_fault_marks_job_unavailable_without_retries(
     by_external_id = {video["external_id"]: video for video in _videos()}
     assert by_external_id["mock-vid-0002"]["status"] == "discovered"  # falló antes de indexing
     assert by_external_id["mock-vid-0000"]["status"] == "indexed"  # el resto sigue
+    assert _leftover_asset_dirs() == []
+
+
+# ---------------------------------------------------------------------------
+# PR-036 · Cota global --max-videos (analyze hallazgo 2 · SC-002)
+# ---------------------------------------------------------------------------
+
+
+def test_backfill_max_videos_stops_discover_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR-036: `max_videos` corta la cadena de DISCOVER al alcanzar la cota.
+
+    Catálogo de 5 con página `limit=2` y cota 3: la 1ª página procesa 2 vídeos
+    y encola el siguiente DISCOVER con `videos_counted=2`; la 2ª procesa el 3er
+    vídeo y NO encola más DISCOVER (el catálogo queda a medias, sin jobs
+    colgados ni temporales). Trazabilidad: 3 vídeos únicos `indexed`, jobs
+    `done` con payload `source`/`external_id`.
+    """
+    _fast_rate(monkeypatch)
+    harness = MockHarness(seed=42, catalog_size=5)
+    pipeline, worker, jobs = _build(
+        harness.adapter, client=_client(), worker_id="it-pipeline-maxvideos"
+    )
+
+    async def _scenario() -> int:
+        await jobs.enqueue(
+            JobType.DISCOVER,
+            payload={
+                "source": "mock",
+                "cursor": None,
+                "limit": 2,
+                "mode": "backfill",
+                "max_videos": 3,
+            },
+        )
+        return await worker.run_once()
+
+    assert _run(_scenario()) == 8  # 2 DISCOVER + 3 FETCH_METADATA + 3 INDEX_VIDEO
+
+    videos = _videos()
+    assert len(videos) == 3  # la cota cortó el catálogo de 5
+    assert sorted(video["external_id"] for video in videos) == [
+        "mock-vid-0000",
+        "mock-vid-0001",
+        "mock-vid-0002",
+    ]
+    assert all(video["status"] == "indexed" for video in videos)
+
+    jobs_rows = _jobs()
+    assert all(job["status"] == JobStatus.DONE.value for job in jobs_rows)  # nada colgado
+    discovers = [job for job in jobs_rows if job["job_type"] == JobType.DISCOVER.value]
+    assert len(discovers) == 2  # el DISCOVER tras la cota NO se encoló
+    next_discover = discovers[1]
+    assert next_discover["payload"]["cursor"] == "2"
+    assert next_discover["payload"]["videos_counted"] == 2
+    assert next_discover["payload"]["max_videos"] == 3
+    assert _leftover_asset_dirs() == []
+
+
+def test_incremental_max_videos_counts_known_videos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR-036: en INCREMENTAL los vídeos YA CONOCIDOS también cuentan para la cota.
+
+    Tras un backfill completo (3 vídeos), un INCREMENTAL con `max_videos=2` y
+    página `limit=2` examina 2 vídeos conocidos (los omite, SC-003) y alcanza
+    la cota: no encola el siguiente DISCOVER. Sin duplicados ni jobs nuevos.
+    """
+    _fast_rate(monkeypatch)
+    harness = MockHarness(seed=42, catalog_size=3)
+    pipeline, worker, jobs = _build(
+        harness.adapter, client=_client(), worker_id="it-pipeline-maxvideos-incr"
+    )
+    _run_backfill(pipeline, worker, jobs, limit=2)
+    assert len(_videos()) == 3
+
+    async def _scenario() -> int:
+        await jobs.enqueue(
+            JobType.DISCOVER,
+            payload={
+                "source": "mock",
+                "cursor": None,
+                "limit": 2,
+                "mode": "incremental",
+                "max_videos": 2,
+            },
+        )
+        return await worker.run_once()
+
+    assert _run(_scenario()) == 1  # solo el DISCOVER (todos conocidos, cota alcanzada)
+
+    assert len(_videos()) == 3  # sin vídeos nuevos
+    assert all(video["status"] == "indexed" for video in _videos())
+    discovers = [job for job in _jobs() if job["job_type"] == JobType.DISCOVER.value]
+    assert len(discovers) == 3  # 2 del backfill + 1 del incremental: la cota cortó la cadena
+    assert all(job["status"] != JobStatus.PENDING.value for job in _jobs())
     assert _leftover_asset_dirs() == []
 
 

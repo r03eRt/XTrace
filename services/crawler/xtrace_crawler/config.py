@@ -30,6 +30,7 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from xtrace_crawler.assets.fetch import DEFAULT_MAX_IMAGE_PIXELS
 from xtrace_crawler.crawling.ratelimit import RateLimitSpec
 
 # Patrón de env del contrato (contracts §4): XTRACE_CRAWLER_RATE_<SOURCE>_{MIN_INTERVAL_MS,MAX_RPS}
@@ -105,6 +106,14 @@ class Settings(BaseSettings):
     # `check-availability --limit` cuando no se pasa el flag.
     backfill_default_limit: int = Field(default=50, ge=1)
     check_availability_default_limit: int = Field(default=100, ge=1)
+
+    # PR-036 · seguridad y cota global (contracts §5 · analyze hallazgo 2):
+    # - `max_image_pixels`: límite estricto de píxeles al abrir imágenes
+    #   descargadas (decompression bomb, además de max_bytes); default ~50 MP.
+    # - `backfill_max_videos`: cota global del backfill (`--max-videos`);
+    #   obligatoria para el backfill real de xvideos (SC-002: backfill acotado).
+    max_image_pixels: int = Field(default=DEFAULT_MAX_IMAGE_PIXELS, ge=1)
+    backfill_max_videos: int = Field(default=100, ge=1)
 
     @classmethod
     def settings_customise_sources(

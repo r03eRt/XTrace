@@ -23,6 +23,8 @@ Trazabilidad (constitución §3): cada test indica el requisito que valida.
 
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 import logging
 import uuid
@@ -31,17 +33,20 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from PIL import Image
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
 from xtrace_crawler.adapters.base import AdapterManifest
 from xtrace_crawler.adapters.mock import MockAdapter
+from xtrace_crawler.adapters.models import VisualAsset
 from xtrace_crawler.adapters.registry import AdapterRegistry
 from xtrace_crawler.adapters.xvideos import XvideosAdapter
 from xtrace_crawler.cli import CliContext, app
 from xtrace_crawler.config import Settings
 from xtrace_crawler.jobs.types import Job, JobStatus, JobType
 from xtrace_crawler.jobs.worker import JobWorker
+from xtrace_crawler.pipeline import CrawlerPipeline
 from xtrace_crawler.repo import (
     DEFAULT_RECENT_ERRORS_LIMIT,
     CrawlerStats,
@@ -454,6 +459,7 @@ def test_backfill_enqueues_discover_with_contract_payload() -> None:
     """`backfill --source mock` encola DISCOVER con el payload del contrato PR-030.
 
     El mock está exento del gate (FR-003): no exige `enabled=true` en BD.
+    PR-036: el payload incluye la cota global `max_videos` (default de config).
     """
     repo = FakeRepo(sources=[_mock_source_record(enabled=False)])
     jobs = FakeJobs()
@@ -464,6 +470,7 @@ def test_backfill_enqueues_discover_with_contract_payload() -> None:
         "job_id": str(jobs.enqueued[0].id),
         "source": "mock",
         "mode": "backfill",
+        "max_videos": 100,
     }
     assert len(jobs.enqueued) == 1
     job = jobs.enqueued[0]
@@ -473,9 +480,44 @@ def test_backfill_enqueues_discover_with_contract_payload() -> None:
         "cursor": None,
         "limit": 5,
         "mode": "backfill",
+        "max_videos": 100,
         "dedupe_key": "discover:mock:None:backfill",
     }
     assert job.source_id is not None and str(job.source_id) == SOURCE_ID
+
+
+def test_backfill_max_videos_flag_and_default_from_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR-036: `--max-videos N` fija la cota global del backfill (analyze hallazgo 2).
+
+    El flag gana al default; sin flag se usa `XTRACE_CRAWLER_BACKFILL_MAX_VIDEOS`
+    (config). El payload del DISCOVER lo incluye y el JSON de salida lo muestra.
+    """
+    monkeypatch.setenv("XTRACE_CRAWLER_BACKFILL_MAX_VIDEOS", "7")
+    repo = FakeRepo(sources=[_mock_source_record()])
+    jobs = FakeJobs()
+    result = _invoke(
+        ["backfill", "--source", "mock"],
+        _base_context(repo=repo, jobs=jobs, settings=Settings()),
+    )
+    data = _stdout_json(result)
+    assert data["max_videos"] == 7
+    assert jobs.enqueued[0].payload["max_videos"] == 7
+
+    jobs2 = FakeJobs()
+    _invoke(
+        ["backfill", "--source", "mock", "--max-videos", "3"],
+        _base_context(repo=repo, jobs=jobs2, settings=Settings()),
+    )
+    assert jobs2.enqueued[0].payload["max_videos"] == 3  # el flag gana al env
+    assert (
+        _invoke(
+            ["backfill", "--source", "mock", "--max-videos", "0"],
+            _base_context(repo=repo, jobs=FakeJobs()),
+        ).exit_code
+        == 2
+    )  # cota inválida → error de uso
 
 
 def test_backfill_incremental_mode_and_default_limit_from_settings(
@@ -493,9 +535,11 @@ def test_backfill_incremental_mode_and_default_limit_from_settings(
         "job_id": str(jobs.enqueued[0].id),
         "source": "mock",
         "mode": "incremental",
+        "max_videos": 100,  # PR-036: cota global por defecto (config)
     }
     assert jobs.enqueued[0].payload["mode"] == "incremental"
     assert jobs.enqueued[0].payload["limit"] == 7
+    assert jobs.enqueued[0].payload["max_videos"] == 100
 
 
 def test_backfill_unknown_source_fails_clearly() -> None:
@@ -853,6 +897,8 @@ def test_settings_worker_and_limit_defaults(monkeypatch: pytest.MonkeyPatch) -> 
         "XTRACE_CRAWLER_JOB_LEASE_TIMEOUT_SECONDS",
         "XTRACE_CRAWLER_BACKFILL_DEFAULT_LIMIT",
         "XTRACE_CRAWLER_CHECK_AVAILABILITY_DEFAULT_LIMIT",
+        "XTRACE_CRAWLER_BACKFILL_MAX_VIDEOS",
+        "XTRACE_CRAWLER_MAX_IMAGE_PIXELS",
     ):
         monkeypatch.delenv(key, raising=False)
     settings = Settings()
@@ -860,6 +906,9 @@ def test_settings_worker_and_limit_defaults(monkeypatch: pytest.MonkeyPatch) -> 
     assert settings.job_lease_timeout_seconds == 300.0
     assert settings.backfill_default_limit == 50
     assert settings.check_availability_default_limit == 100
+    # PR-036: cota global de backfill y límite de píxeles de imágenes.
+    assert settings.backfill_max_videos == 100
+    assert settings.max_image_pixels == 50_000_000
 
 
 def test_settings_worker_and_limit_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -868,11 +917,301 @@ def test_settings_worker_and_limit_env_overrides(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("XTRACE_CRAWLER_JOB_LEASE_TIMEOUT_SECONDS", "120")
     monkeypatch.setenv("XTRACE_CRAWLER_BACKFILL_DEFAULT_LIMIT", "25")
     monkeypatch.setenv("XTRACE_CRAWLER_CHECK_AVAILABILITY_DEFAULT_LIMIT", "10")
+    monkeypatch.setenv("XTRACE_CRAWLER_BACKFILL_MAX_VIDEOS", "250")
+    monkeypatch.setenv("XTRACE_CRAWLER_MAX_IMAGE_PIXELS", "1000000")
     settings = Settings()
     assert settings.worker_concurrency == 8
     assert settings.job_lease_timeout_seconds == 120.0
     assert settings.backfill_default_limit == 25
     assert settings.check_availability_default_limit == 10
+    assert settings.backfill_max_videos == 250
+    assert settings.max_image_pixels == 1_000_000
+
+
+def test_settings_invalid_new_limits_are_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PR-036: cotas inválidas por env (0) fallan al construir `Settings`."""
+    monkeypatch.setenv("XTRACE_CRAWLER_BACKFILL_MAX_VIDEOS", "0")
+    with pytest.raises(ValidationError):
+        Settings()
+    monkeypatch.delenv("XTRACE_CRAWLER_BACKFILL_MAX_VIDEOS")
+    monkeypatch.setenv("XTRACE_CRAWLER_MAX_IMAGE_PIXELS", "0")
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+# ---------------------------------------------------------------------------
+# PR-036 · Cota global --max-videos en el pipeline (analyze hallazgo 2)
+# ---------------------------------------------------------------------------
+
+
+def test_run_worker_max_videos_caps_discover_with_traceability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR-036 (analyze hallazgo 2 · SC-002): `max_videos` corta el discover SIN
+    perder trazabilidad.
+
+    Catálogo de 5 con página `limit=2` y cota 3: la 1ª página procesa 2 vídeos
+    y encola el siguiente DISCOVER (`videos_counted=2`); la 2ª página procesa
+    el 3er vídeo, alcanza la cota y NO encola más DISCOVER (el resto del
+    catálogo queda fuera). Quedan 3 vídeos únicos `indexed`, 3 FETCH_METADATA
+    y 3 INDEX_VIDEO con payload `source`/`external_id` y `dedupe_key`
+    (trazabilidad FR-007), 0 fallos.
+    """
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MIN_INTERVAL_MS", "0")
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MAX_RPS", "1000")
+    repo = FakeRepo(sources=[_mock_source_record(enabled=True)])
+    jobs = FakeJobs(
+        jobs=[
+            _make_job(
+                JobType.DISCOVER,
+                payload={
+                    "source": "mock",
+                    "cursor": None,
+                    "limit": 2,
+                    "mode": "backfill",
+                    "max_videos": 3,
+                },
+            )
+        ]
+    )
+    registry = _registry_with_mock(catalog_size=5)
+    store = FakeVectorStore()
+    result = _invoke(
+        ["run-worker", "--once"],
+        _base_context(repo=repo, jobs=jobs, registry=registry, settings=Settings(), store=store),
+    )
+    assert _stdout_json(result) == {"processed": 8}  # 2 DISCOVER + 3 FETCH + 3 INDEX
+
+    # La cota cortó el catálogo: solo 3 vídeos, todos indexados (FR-007 · SC-003).
+    assert sorted(repo.videos) == ["mock-vid-0000", "mock-vid-0001", "mock-vid-0002"]
+    assert all(record.status == "indexed" for record in repo.videos.values())
+
+    # Sin más DISCOVER tras la cota: el único encolado lleva el cursor y el
+    # contador acumulado (trazabilidad de la cadena de paginación).
+    discovers = [job for job in jobs.enqueued if job.job_type is JobType.DISCOVER]
+    assert len(discovers) == 1
+    assert discovers[0].payload["cursor"] == "2"
+    assert discovers[0].payload["videos_counted"] == 2
+    assert discovers[0].payload["max_videos"] == 3
+
+    # Trazabilidad de los vídeos procesados: jobs con source/external_id y dedupe_key.
+    fetch_jobs = [job for job in jobs.enqueued if job.job_type is JobType.FETCH_METADATA]
+    index_jobs = [job for job in jobs.enqueued if job.job_type is JobType.INDEX_VIDEO]
+    assert len(fetch_jobs) == 3 and len(index_jobs) == 3
+    assert all(job.payload["external_id"] in repo.videos for job in fetch_jobs)
+    assert all(
+        str(job.payload.get("dedupe_key", "")).startswith("fetch_metadata:mock:")
+        for job in fetch_jobs
+    )
+    assert jobs.failed == []
+    assert all(job.status is not JobStatus.RUNNING for job in jobs.jobs.values())
+
+
+# ---------------------------------------------------------------------------
+# PR-036 · SSRF: allowlist por fuente en el pipeline (SEC-001)
+# ---------------------------------------------------------------------------
+
+
+class _HttpOnlyAssetsAdapter(MockAdapter):
+    """MockAdapter SIN `fetch_asset_bytes` (PR-034): todo asset va por HTTP."""
+
+    fetch_asset_bytes: Callable[[str], Any] | None = None
+
+
+class _ForeignHostAssetsAdapter(_HttpOnlyAssetsAdapter):
+    """Adapter cuyos assets viven en un host ajeno a la allowlist DECLARADA.
+
+    `asset_hosts` (PR-036) declara `allowed.example.com`; el asset parseado
+    apunta a `parsed.example.com` — la allowlist NO se deriva de las URLs.
+    """
+
+    asset_hosts: frozenset[str] = frozenset({"allowed.example.com"})
+
+    async def get_visual_assets(self, video: Any) -> list[VisualAsset]:
+        return [VisualAsset(kind="thumbnail", url="https://parsed.example.com/thumb.jpg")]
+
+
+class _BigInProcessAssetsAdapter(MockAdapter):
+    """MockAdapter que sirve imágenes IN-PROCESS sobre el límite de píxeles (PR-036)."""
+
+    asset_hosts: frozenset[str] = frozenset()  # no aplica: todo in-process
+
+    async def fetch_asset_bytes(self, url: str) -> bytes | None:
+        buffer = io.BytesIO()
+        Image.new("RGB", (200, 200), (1, 2, 3)).save(buffer, format="JPEG")
+        return buffer.getvalue()
+
+
+def _pipeline_with_adapter(
+    adapter: Any,
+    *,
+    repo: FakeRepo | None = None,
+    jobs: FakeJobs | None = None,
+    max_image_pixels: int | None = None,
+) -> tuple[CrawlerPipeline, JobWorker, FakeJobs, FakeRepo]:
+    """Pipeline + worker directos sobre fakes (sin CLI), para tests de handlers."""
+    repo = repo if repo is not None else FakeRepo(sources=[_mock_source_record()])
+    jobs = jobs if jobs is not None else FakeJobs()
+    pipeline = CrawlerPipeline(
+        repo=repo,
+        jobs=jobs,
+        adapter_for=lambda _job: adapter,
+        store=FakeVectorStore(),
+        max_image_pixels=max_image_pixels,
+    )
+    worker = JobWorker(jobs, concurrency=1)
+    pipeline.register_handlers(worker)
+    return pipeline, worker, jobs, repo
+
+
+def _seed_and_index(
+    pipeline: CrawlerPipeline,
+    worker: JobWorker,
+    jobs: FakeJobs,
+    repo: FakeRepo,
+    adapter: Any,
+    *,
+    external_id: str,
+) -> int:
+    """Siembra el vídeo del catálogo y procesa un INDEX_VIDEO (pasada única)."""
+
+    async def scenario() -> int:
+        video = adapter.catalog_snapshot()[external_id]
+        await repo.upsert_web_video(SOURCE_ID, video)
+        await jobs.enqueue(
+            JobType.INDEX_VIDEO,
+            payload={"source": "mock", "external_id": external_id},
+        )
+        return await worker.run_once()
+
+    return asyncio.run(scenario())
+
+
+def test_asset_host_outside_source_allowlist_rejected(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """PR-036 · SEC-001: la allowlist por fuente NO se deriva de las URLs parseadas.
+
+    El adapter declara `asset_hosts={"allowed.example.com"}` pero el asset
+    apunta a `parsed.example.com` (URL bien formada y parseable): el host
+    parseado NO concede acceso — `HostNotAllowedError` antes de tocar la red y
+    el asset degrada (el vídeo reintenta, sin fallo silencioso).
+    """
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MIN_INTERVAL_MS", "0")
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MAX_RPS", "1000")
+    adapter = _ForeignHostAssetsAdapter(seed=42, catalog_size=1)
+    pipeline, worker, jobs, repo = _pipeline_with_adapter(adapter)
+
+    with caplog.at_level(logging.INFO):
+        processed = _seed_and_index(
+            pipeline, worker, jobs, repo, adapter, external_id="mock-vid-0000"
+        )
+
+    assert processed == 1
+    assert "omitido por degradación" in caplog.text
+    assert "host 'parsed.example.com' no está en la allowlist" in caplog.text
+    # Sin frames → el vídeo no se indexa; el job queda pendiente (transitorio).
+    assert repo.videos["mock-vid-0000"].status == "indexing"
+    job = next(iter(jobs.jobs.values()))
+    assert job.status is JobStatus.PENDING
+    assert "no se obtuvieron frames" in (job.error or "")
+
+
+def test_adapter_without_asset_allowlist_blocks_http_download(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """PR-036 · SEC-001: un adapter real SIN allowlist declarada NO descarga assets.
+
+    Sin `asset_hosts` en el adapter, el pipeline rehúsa construir el cliente
+    HTTP con `NoAssetHostsError` (error tipado): los assets degradan con
+    warning y nunca se abre un socket (fail-closed).
+    """
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MIN_INTERVAL_MS", "0")
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MAX_RPS", "1000")
+    adapter = _HttpOnlyAssetsAdapter(seed=42, catalog_size=1)
+    pipeline, worker, jobs, repo = _pipeline_with_adapter(adapter)
+
+    with caplog.at_level(logging.INFO):
+        processed = _seed_and_index(
+            pipeline, worker, jobs, repo, adapter, external_id="mock-vid-0000"
+        )
+
+    assert processed == 1
+    assert "omitido por degradación" in caplog.text
+    assert "asset_hosts" in caplog.text  # NoAssetHostsError: allowlist no declarada
+    job = next(iter(jobs.jobs.values()))
+    assert job.status is JobStatus.PENDING
+
+
+def test_in_process_asset_over_pixel_limit_degrades(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """PR-036 · decompression bomb: una imagen in-process sobre el límite de
+    píxeles se rechaza con error tipado y degrada por asset.
+
+    El límite del pipeline (aquí 10 000 px; default 50 MP vía config) aplica
+    también a los bytes servidos in-process por el adapter (PR-034).
+    """
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MIN_INTERVAL_MS", "0")
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MAX_RPS", "1000")
+    adapter = _BigInProcessAssetsAdapter(seed=42, catalog_size=1)
+    pipeline, worker, jobs, repo = _pipeline_with_adapter(adapter, max_image_pixels=10_000)
+
+    with caplog.at_level(logging.INFO):
+        processed = _seed_and_index(
+            pipeline, worker, jobs, repo, adapter, external_id="mock-vid-0000"
+        )
+
+    assert processed == 1
+    assert "omitido por degradación" in caplog.text
+    assert "supera el límite de píxeles" in caplog.text
+    assert repo.videos["mock-vid-0000"].status == "indexing"  # sin frames indexados
+    job = next(iter(jobs.jobs.values()))
+    assert job.status is JobStatus.PENDING
+
+
+def test_mock_offline_still_indexes_without_asset_hosts(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """PR-034 (regresión) + PR-036: el mock indexa OFFLINE sin allowlist de hosts.
+
+    El mock sirve storyboard/thumbnails in-process; el `preview.mp4` (sin
+    representación in-process) cae a la ruta HTTP y, como el mock no declara
+    `asset_hosts`, se degrada con `NoAssetHostsError` — el vídeo se indexa
+    igual con 0 superficie de red (FR-003 · SC-001 · NFR-003).
+    """
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MIN_INTERVAL_MS", "0")
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MAX_RPS", "1000")
+    repo = FakeRepo(sources=[_mock_source_record(enabled=True)])
+    jobs = FakeJobs(
+        jobs=[
+            _make_job(
+                JobType.DISCOVER,
+                payload={
+                    "source": "mock",
+                    "cursor": None,
+                    "limit": 1,
+                    "mode": "backfill",
+                    "max_videos": 10,
+                },
+            )
+        ]
+    )
+    registry = _registry_with_mock(catalog_size=1)
+    store = FakeVectorStore()
+    with caplog.at_level(logging.INFO):
+        result = _invoke(
+            ["run-worker", "--once"],
+            _base_context(
+                repo=repo, jobs=jobs, registry=registry, settings=Settings(), store=store
+            ),
+        )
+    assert _stdout_json(result) == {"processed": 3}  # DISCOVER + FETCH + INDEX
+    assert all(record.status == "indexed" for record in repo.videos.values())
+    assert store.frames  # frames indexados sin red (PR-034)
+    assert "omitido por degradación" in caplog.text
+    assert "asset_hosts" in caplog.text  # el preview degrada con NoAssetHostsError
+    assert jobs.failed == []
 
 
 def test_settings_invalid_concurrency_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:

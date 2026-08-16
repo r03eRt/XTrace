@@ -5,11 +5,14 @@ Comandos Typer (`xtrace-crawler`):
 
 - `sources [--json]` — lista las fuentes registradas en BD (`sources`, DATA-001)
   con su manifest de compliance y `enabled` (lectura vía `CrawlerRepo`).
-- `backfill --source <name> [--limit N] [--incremental]` — valida que la fuente
-  exista (registry + BD) y esté habilitada (gate SEC-002) y **encola el job
-  DISCOVER inicial** con el payload del contrato de PR-030
-  (`{"source", "cursor": None, "limit", "mode": "backfill"|"incremental"}`) vía
-  `JobsRepo.enqueue` (FR-006/FR-007). Salida JSON `{job_id, source, mode}`.
+- `backfill --source <name> [--limit N] [--max-videos N] [--incremental]` — valida
+  que la fuente exista (registry + BD) y esté habilitada (gate SEC-002) y **encola
+  el job DISCOVER inicial** con el payload del contrato de PR-030 + cota global
+  PR-036 (`{"source", "cursor": None, "limit", "mode", "max_videos"}`) vía
+  `JobsRepo.enqueue` (FR-006/FR-007). Salida JSON `{job_id, source, mode, max_videos}`.
+  `--max-videos` es la cota GLOBAL del backfill (SC-002, analyze hallazgo 2):
+  el pipeline corta la cadena de paginación al alcanzarla; es **obligatoria** para
+  el backfill real de xvideos (default: `XTRACE_CRAWLER_BACKFILL_MAX_VIDEOS`).
 - `run-worker [--concurrency N] [--once]` — arranca el `JobWorker` (PR-027) con
   los **handlers del pipeline** (PR-030) y el registry (SEC-002: cada job resuelve
   su adapter con el gate y el `enabled` de BD); `--once` procesa una pasada de
@@ -226,6 +229,18 @@ def backfill_cmd(
             help="Vídeos por página de DISCOVER (default: XTRACE_CRAWLER_BACKFILL_DEFAULT_LIMIT)",
         ),
     ] = None,
+    max_videos: Annotated[
+        int | None,
+        typer.Option(
+            "--max-videos",
+            min=1,
+            help=(
+                "Cota global de vídeos del backfill (PR-036 · SC-002); el DISCOVER "
+                "se detiene al alcanzarla. Default: XTRACE_CRAWLER_BACKFILL_MAX_VIDEOS; "
+                "OBLIGATORIA para el backfill real de xvideos (contracts §5)"
+            ),
+        ),
+    ] = None,
     incremental: Annotated[
         bool,
         typer.Option("--incremental", help="Modo INCREMENTAL: solo IDs nuevos (FR-007 · SC-003)"),
@@ -234,7 +249,15 @@ def backfill_cmd(
     """Valida la fuente (registry + BD + SEC-002) y encola el job DISCOVER inicial (FR-006/007)."""
     deps = _deps(ctx)
     try:
-        result = asyncio.run(_backfill(deps, source=source, limit=limit, incremental=incremental))
+        result = asyncio.run(
+            _backfill(
+                deps,
+                source=source,
+                limit=limit,
+                max_videos=max_videos,
+                incremental=incremental,
+            )
+        )
     except CliUserError as error:
         raise _fail(error) from None
     typer.echo(json.dumps(result, sort_keys=True, ensure_ascii=False))
@@ -308,25 +331,49 @@ def check_availability_cmd(
 
 
 async def _backfill(
-    deps: CliContext, *, source: str, limit: int | None, incremental: bool
+    deps: CliContext, *, source: str, limit: int | None, max_videos: int | None, incremental: bool
 ) -> dict[str, Any]:
     """Encola el job DISCOVER inicial tras validar la fuente (FR-006/FR-007 · SEC-002).
 
-    Payload del contrato de PR-030: `{"source", "cursor": None, "limit", "mode"}`;
-    el `dedupe_key` (`discover:<source>:None:<mode>`) evita duplicar el DISCOVER
-    inicial mientras esté activo (JobsRepo PR-026).
+    Payload del contrato de PR-030 + cota global PR-036:
+    `{"source", "cursor": None, "limit", "mode", "max_videos"}`; el `dedupe_key`
+    (`discover:<source>:None:<mode>`) evita duplicar el DISCOVER inicial
+    mientras esté activo (JobsRepo PR-026). La cota `--max-videos` (o el
+    default de config) es la cota GLOBAL del backfill: el pipeline corta la
+    cadena de paginación al alcanzarla (analyze hallazgo 2 · SC-002); es
+    **obligatoria** para el backfill real de xvideos (contracts §5).
     """
     record = await _validate_source(deps, source)
     mode = "incremental" if incremental else "backfill"
     effective_limit = limit if limit is not None else deps.settings.backfill_default_limit
+    effective_max_videos = (
+        max_videos if max_videos is not None else deps.settings.backfill_max_videos
+    )
     job = await deps.jobs.enqueue(
         JobType.DISCOVER,
         source_id=parse_uuid(record.id, "source_id"),
-        payload={"source": source, "cursor": None, "limit": effective_limit, "mode": mode},
+        payload={
+            "source": source,
+            "cursor": None,
+            "limit": effective_limit,
+            "mode": mode,
+            "max_videos": effective_max_videos,
+        },
         dedupe_key=f"discover:{source}:None:{mode}",
     )
-    logger.info("backfill %s encolado: job %s (limit=%d)", mode, job.id, effective_limit)
-    return {"job_id": str(job.id), "source": source, "mode": mode}
+    logger.info(
+        "backfill %s encolado: job %s (limit=%d, max_videos=%d)",
+        mode,
+        job.id,
+        effective_limit,
+        effective_max_videos,
+    )
+    return {
+        "job_id": str(job.id),
+        "source": source,
+        "mode": mode,
+        "max_videos": effective_max_videos,
+    }
 
 
 async def _check_availability(
