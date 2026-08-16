@@ -104,11 +104,33 @@ def classify_error(error: BaseException | int | str) -> ErrorClass:
 
     Default fail-safe: todo lo no reconocido como terminal se trata como
     `TRANSIENT` (se reintenta, acotado por `max_attempts` — FR-008).
+
+    Para excepciones (`BaseException`) se inspeccionan, en orden:
+
+    1. la respuesta HTTP envuelta (`.response.status_code`, p. ej. errores de
+       httpx): 404/410 → terminal, el resto transitorio;
+    2. el atributo `terminal` (convención del worker para errores tipados de
+       adapters: `error.terminal is True` → terminal sin reintento);
+    3. el mensaje (`str(error)`), con los marcadores de `TERMINAL_MARKERS`
+       ("removed", 404, robots/ToS).
+
+    Coordinación con el MockAdapter (nota de la revisión PR-021, tasks.md
+    PR-027): `MockAdapterRemovedError` (PR-021) ya incluye "removed" en su
+    mensaje, de modo que el worker lo clasifica terminal → `unavailable` sin
+    depender del tipo concreto del adapter.
     """
     if isinstance(error, int):
         return classify_http_status(error)
     if isinstance(error, str):
         return ErrorClass.TERMINAL if is_terminal_message(error) else ErrorClass.TRANSIENT
+    if isinstance(error, BaseException):
+        response = getattr(error, "response", None)
+        status = getattr(response, "status_code", None)
+        if isinstance(status, int):
+            return classify_http_status(status)
+        if getattr(error, "terminal", False) is True:
+            return ErrorClass.TERMINAL
+        return ErrorClass.TERMINAL if is_terminal_message(str(error)) else ErrorClass.TRANSIENT
     return ErrorClass.TRANSIENT
 
 
