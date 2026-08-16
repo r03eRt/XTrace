@@ -1,13 +1,17 @@
-"""Tests del adapter xvideos + fixtures sintéticos
-(PR-031 · FR-004 · SEC-001/002/004 · SC-006/007 · ADR-0009).
+"""Tests del adapter xvideos + fixtures sintéticos de la estructura OBSERVADA
+(PR-031/PR-043 · FR-004 · SEC-001/002/004 · SC-006/007 · ADR-0009).
 
 Trazabilidad (constitución §3): cada test marca el requisito que valida:
 
 - FR-004: método de acceso "html" documentado en el manifest; `discover()` con
-  cursor de paginación y `get_video()` sobre HTML de xvideos.
-- FR-002 (soporte): `VideoSource` normalizado poblado desde el parseo.
-- FR-005/SC-006: `get_visual_assets` solo storyboard/thumbnail (nunca el vídeo
-  completo); el manifest declara exactamente `["storyboard", "thumbnail"]`.
+  cursor de paginación y **protección anti-bucle** (hallazgo de la validación
+  real PR-033: 0 IDs nuevos → fin; cursor repetido → fin; cursor desde la URL
+  FINAL de la respuesta tras redirects) y `get_video()` sobre HTML de xvideos.
+- FR-002 (soporte): `VideoSource` normalizado poblado desde el parseo
+  (og:*, JSON-LD).
+- FR-005/SC-006: `get_visual_assets` devuelve la galería de thumbnails
+  `xv_<N>_t.jpg` (nunca el vídeo completo); el manifest declara exactamente
+  `["thumbnail"]` (sin sprite real detectado).
 - SEC-001: el adapter solo usa el cliente HTTP seguro (allowlist
   xvideos.com/www.xvideos.com); ningún test toca la red (`httpx.MockTransport`).
 - SEC-002: el manifest está **revisado por el operador** (`robots_reviewed=True`,
@@ -15,18 +19,21 @@ Trazabilidad (constitución §3): cada test marca el requisito que valida:
   PR-042) — la habilitación **efectiva** sigue exigiendo el gate del registry
   (PR-028): manifest conforme Y `sources.enabled=true` en BD (SEC-002).
 - SEC-004: los fixtures son sintéticos (dominio `xvideos.invalid`, títulos
-  anonimizados; ningún `xvideos.com` real en los fixtures).
+  anonimizados "Titulo de ejemplo N", IDs `video.synth000NN`; ningún
+  `xvideos.com` real en los fixtures).
 - SC-007: el core no importa el adapter (añadir esta fuente no toca el core).
 
-Estructura HTML asumida: ver `tests/fixtures/xvideos/README.md`. La captura real
-la hará el operador en PR-033; los fixtures congelan la estructura asumida y los
-tests fallan con mensaje claro si un selector clave cambia (regresión).
+Estructura HTML observada: ver `tests/fixtures/xvideos/README.md` (validación
+real 2026-08-16; la estructura asumida de PR-031 quedó descartada). Los
+fixtures congelan la estructura observada y los tests fallan con mensaje claro
+si un selector clave cambia (regresión).
 """
 
 from __future__ import annotations
 
 import ast
 import asyncio
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -52,6 +59,34 @@ from xtrace_crawler.adapters.xvideos import (
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "xvideos"
 
+#: Thumb CDN sintético de los fixtures (estructura real → host .invalid, SEC-004).
+FIXTURE_THUMB_BASE = "https://thumb-cdn77.xvideos.invalid/11111111-2222-4333-8444-555555555555/3"
+
+#: Página de vídeo con `og:image` que NO sigue el patrón de galería
+#: (`mozaique_listing.jpg`, nombre observado en la captura real — no es un
+#: `xv_<N>_t.jpg`): el adapter degrada a la miniatura única (jerarquía de
+#: assets, FR-005).
+_FALLBACK_VIDEO_HTML = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta property="og:title" content="Titulo de ejemplo 7" />
+  <meta property="og:url"
+        content="https://www.xvideos.invalid/video.synth00007/titulo-de-ejemplo-7" />
+  <meta property="og:image" content="{FIXTURE_THUMB_BASE}/mozaique_listing.jpg" />
+</head>
+<body>
+  <h2 class="page-title">Titulo de ejemplo 7</h2>
+</body>
+</html>"""
+
+#: Página de listado cuyo `a.dir.next` apunta a su propio path (anti-bucle).
+_LOOP_CURSOR_HTML = (
+    "<html><body>"
+    "<a class='thumb-link' href='/video.synth00006/titulo-de-ejemplo-6'>v</a>"
+    "<a href='/best/2026-07/3' class='dir next'>Next</a>"
+    "</body></html>"
+)
+
 
 def _fixture(name: str) -> str:
     """Lee un fixture sintético de `tests/fixtures/xvideos/` (SEC-004)."""
@@ -66,29 +101,48 @@ def _run(coro: Callable[[], object]) -> None:
 def _fixture_handler() -> Callable[[httpx.Request], httpx.Response]:
     """Transporte mock: sirve los fixtures por path, sin red (NFR-003).
 
-    - `/video10000001/...` → `video_page_full.html`
-    - `/video10000002/...` → `video_page_minimal.html`
-    - `/video50000000/...` → 200 con HTML sin estructura de vídeo (estructura cambiada)
-    - `/video99999999/...` → 404 (vídeo retirado)
-    - `/` → `listing_page_1.html`; `/best/2` → `listing_page_2.html`
+    - `/video.synth00001/...` → `video_page_full.html` (galería xv_1..xv_6)
+    - `/video.synth00002/...` → `video_page_minimal.html` (opcionales None)
+    - `/video.synth00007/...` → `_FALLBACK_VIDEO_HTML` (og:image sin galería)
+    - `/video.synth50000/...` → 200 con HTML sin estructura de vídeo (estructura cambiada)
+    - `/video.synth99999/...` → 404 (vídeo retirado)
+    - `/` → `listing_page_1.html` (ids 1..3, `dir.next` → `/best/2026-07/1`)
+    - `/best/1` → 302 → `/best/2026-07` (redirect canónico del cursor)
+    - `/best/2026-07` → `listing_page_1.html` (URL FINAL tras el redirect)
+    - `/best/2026-07/1` → `listing_page_2.html` (id 4, `dir.next` → `/best/2026-07/2`)
+    - `/best/2026-07/2` → `listing_page_3.html` (id 5, sin `dir.next` → fin)
+    - `/best/2026-07/3` → `_LOOP_CURSOR_HTML` (dir.next = path actual)
+    - `/best/2026-07/99` → `listing_page_1.html` de nuevo (0 IDs nuevos → fin)
     - cualquier otro path → 500 (error transitorio del sitio)
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         body: bytes
-        if path.startswith("/video10000001"):
+        if path.startswith("/video.synth00001"):
             body = _fixture("video_page_full.html").encode("utf-8")
-        elif path.startswith("/video10000002"):
+        elif path.startswith("/video.synth00002"):
             body = _fixture("video_page_minimal.html").encode("utf-8")
-        elif path.startswith("/video50000000"):
+        elif path.startswith("/video.synth00007"):
+            body = _FALLBACK_VIDEO_HTML.encode("utf-8")
+        elif path.startswith("/video.synth50000"):
             body = b"<html><body>captcha o estructura totalmente distinta</body></html>"
-        elif path.startswith("/video99999999"):
+        elif path.startswith("/video.synth99999"):
             return httpx.Response(404, content=b"", request=request)
         elif path == "/":
             body = _fixture("listing_page_1.html").encode("utf-8")
-        elif path == "/best/2":
+        elif path == "/best/1":
+            return httpx.Response(302, headers={"location": "/best/2026-07"}, request=request)
+        elif path == "/best/2026-07":
+            body = _fixture("listing_page_1.html").encode("utf-8")
+        elif path == "/best/2026-07/1":
             body = _fixture("listing_page_2.html").encode("utf-8")
+        elif path == "/best/2026-07/2":
+            body = _fixture("listing_page_3.html").encode("utf-8")
+        elif path == "/best/2026-07/3":
+            body = _LOOP_CURSOR_HTML.encode("utf-8")
+        elif path == "/best/2026-07/99":
+            body = _fixture("listing_page_1.html").encode("utf-8")
         else:
             return httpx.Response(500, content=b"boom", request=request)
         return httpx.Response(200, content=body, request=request)
@@ -120,7 +174,7 @@ def test_manifest_revisado_por_el_operador_y_gate_del_registry() -> None:
     manifest = XvideosAdapter.manifest
     assert manifest.source == "xvideos"
     assert manifest.access_method == "html"  # FR-004: jerarquía documentada
-    assert manifest.assets_accessed == ["storyboard", "thumbnail"]  # SC-006
+    assert manifest.assets_accessed == ["thumbnail"]  # SC-006/PR-043: sin sprite real
     assert manifest.robots_reviewed is True
     assert manifest.terms_reviewed is True
     assert manifest.review_date == "2026-08-16"
@@ -145,17 +199,29 @@ def test_adapter_satisface_protocolo_source_adapter() -> None:
     assert isinstance(protocol_adapter, SourceAdapter)
 
 
-def test_asset_hosts_provisionales_no_vacios_y_solo_hosts() -> None:
-    """PR-040 · SEC-001 · contracts §1: `asset_hosts` no vacío y solo hosts.
+def test_asset_hosts_observados_y_sin_hosts_inventados() -> None:
+    """PR-043 · SEC-001 · contracts §1: `asset_hosts` = hosts OBSERVADOS, solo hosts.
 
-    La allowlist de assets es **PROVISIONAL** — validar contra la estructura
-    real en PR-033 (captura real del operador). No vacía (sin allowlist el
-    pipeline no descargaría nada, fail-closed) y con **solo hosts**: sin
-    esquemas, rutas, query ni fragmentos — el `SafeHTTPClient` (PR-036) hace
-    match exacto de host y nunca recibe URLs completas.
+    La allowlist se actualizó a los hosts de la validación real de 2026-08-16
+    (PR-033): `thumb-cdn77.xvideos-cdn.com` (CDN de thumbnails/galería) y
+    `assets-cdn77.xvideos-cdn.com` (CDN de assets del reproductor), además de
+    los dominios de página. Los hosts inventados de la estructura asumida de
+    PR-031 quedaron **fuera** (`thumbs2.xvideos.com`, `cdn77.io`, patrones
+    `th-01`/`vd-01`). Sigue marcada **PROVISIONAL** (validar en backfills
+    reales). Solo hosts: sin esquemas, rutas, query ni fragmentos.
     """
     hosts = XvideosAdapter.asset_hosts
     assert hosts  # PROVISIONAL — no vacía
+    assert "thumb-cdn77.xvideos-cdn.com" in hosts  # observado (PR-033)
+    assert "assets-cdn77.xvideos-cdn.com" in hosts  # observado (PR-033)
+    assert "www.xvideos.com" in hosts
+    for invented in (
+        "thumbs2.xvideos.com",
+        "cdn77.io",
+        "th-01.xvideos.com",
+        "vd-01.xvideos.com",
+    ):
+        assert invented not in hosts, f"host inventado en asset_hosts: {invented!r}"
     for host in hosts:
         assert "://" not in host, f"esquema en asset_host: {host!r}"
         assert "/" not in host, f"ruta en asset_host: {host!r}"
@@ -164,107 +230,184 @@ def test_asset_hosts_provisionales_no_vacios_y_solo_hosts() -> None:
 
 
 # ---------------------------------------------------------------------------
-# FR-002/FR-004 · Parseo de la página de vídeo (selectolax)
+# FR-002/FR-004 · Parseo de la página de vídeo (estructura real: og:* + JSON-LD)
 # ---------------------------------------------------------------------------
 
 
 def test_parse_video_page_full_fixture_metadatos_completos() -> None:
     """FR-004/FR-002: el fixture completo produce VideoSource con todos los campos.
 
-    title, duration_ms, thumbnail_url, preview_url, storyboard_urls y
-    published_at derivados del canonical, `h2.page-title` y `flashvars`;
-    tags de `div.video-tags-list a`; page_url = canonical.
+    title/duration_ms/thumbnail_url de og:*; published_at (tz-aware) y tags
+    del JSON-LD; page_url = og:url; **preview_url=None** (mp4 completo
+    prohibido, SC-006) y **storyboard_urls=[]** (sin sprite real, PR-043).
     """
     video = parse_video_page(
-        _fixture("video_page_full.html"), page_url="https://www.xvideos.com/video10000001/"
+        _fixture("video_page_full.html"),
+        page_url="https://www.xvideos.invalid/video.synth00001/",
     )
     assert video.source == "xvideos"
-    assert video.external_id == "10000001"
-    assert video.title == "Fixture video sample 0001"
-    assert video.duration_ms == 337_000  # "337" segundos en flashvars → ms
-    assert video.thumbnail_url == "https://th-01.xvideos.invalid/thumbs/10000001.jpg"
-    assert video.preview_url == "https://vd-01.xvideos.invalid/previews/10000001.mp4"
-    assert video.storyboard_urls == ["https://th-01.xvideos.invalid/sprites/10000001.jpg"]
-    assert video.tags == ["fixture tag one", "fixture tag two"]
-    assert video.published_at == datetime.fromtimestamp(1_755_200_000, tz=UTC)
-    assert video.page_url == "https://www.xvideos.invalid/video10000001/fixture-video-sample-0001"
+    assert video.external_id == "video.synth00001"
+    assert video.title == "Titulo de ejemplo 1"
+    assert video.duration_ms == 881_000  # og:duration "881" segundos → ms
+    assert video.thumbnail_url == f"{FIXTURE_THUMB_BASE}/xv_1_t.jpg"
+    assert video.preview_url is None  # SC-006: setVideoUrlLow presente pero PROHIBIDO
+    assert video.storyboard_urls == []  # sin sprite real detectado (PR-043)
+    assert video.tags == ["tag de ejemplo uno", "tag de ejemplo dos"]
+    assert video.published_at == datetime(2026, 6, 15, 12, 30, tzinfo=UTC)
+    assert video.page_url == "https://www.xvideos.invalid/video.synth00001/titulo-de-ejemplo-1"
 
 
 def test_parse_video_page_minimal_fixture_opcionales_none() -> None:
-    """Spec edge case: sin flashvars ni tags, los campos opcionales son None/[].
+    """Spec edge case: sin JSON-LD ni duración, los campos opcionales son None/[].
 
     El vídeo sigue procesándose (metadatos incompletos no bloquean).
     """
     video = parse_video_page(
-        _fixture("video_page_minimal.html"), page_url="https://www.xvideos.com/video10000002/"
+        _fixture("video_page_minimal.html"),
+        page_url="https://www.xvideos.invalid/video.synth00002/",
     )
-    assert video.external_id == "10000002"
-    assert video.title == "Fixture video sample 0002"
+    assert video.external_id == "video.synth00002"
+    assert video.title == "Titulo de ejemplo 2"
     assert video.duration_ms is None
     assert video.thumbnail_url is None
     assert video.preview_url is None
     assert video.storyboard_urls == []
     assert video.tags == []
     assert video.published_at is None
-    assert video.page_url == "https://www.xvideos.invalid/video10000002/fixture-video-sample-0002"
+    assert video.page_url == "https://www.xvideos.invalid/video.synth00002/titulo-de-ejemplo-2"
 
 
 def test_parse_video_page_sin_patron_de_video_error_claro() -> None:
-    """Regresión de estructura: sin canonical ni patrón `/video<id>/` → error claro.
+    """Regresión de estructura: sin og:url ni patrón `/video.<encoded>/` → error claro.
 
-    Si xvideos cambia un selector clave (p. ej. el canonical), el parseo falla
-    con mensaje que identifica el patrón esperado en lugar de devolver datos
-    basura (edge case "HTML cambia sin aviso" de la spec).
+    Si xvideos cambia un selector clave, el parseo falla con mensaje que
+    identifica el patrón esperado en lugar de devolver datos basura (edge
+    case "HTML cambia sin aviso" de la spec).
     """
     html = "<html><body><h2 class='page-title'>Algo</h2></body></html>"
     with pytest.raises(XvideosParseError, match="patrón de vídeo"):
-        parse_video_page(html, page_url="https://www.xvideos.com/random")
+        parse_video_page(html, page_url="https://www.xvideos.invalid/random")
 
 
-def test_parse_video_page_flashvars_invalidos_no_revientan() -> None:
-    """Edge: `flashvars` presente pero con JSON inválido → opcionales None (sin crash)."""
+def test_parse_video_page_sin_senales_de_video_error_claro() -> None:
+    """SEC-001: página sin og:* ni h2 (p. ej. captcha/anti-bot) → error claro."""
+    html = "<html><body><div>otra estructura</div></body></html>"
+    with pytest.raises(XvideosParseError, match="señales de vídeo"):
+        parse_video_page(html, page_url="https://www.xvideos.invalid/video.synth00003/")
+
+
+def test_parse_video_page_jsonld_invalido_no_revientan() -> None:
+    """Edge: JSON-LD presente pero inválido (o duración no numérica) → opcionales None."""
     html = (
-        "<html><head><link rel='canonical' href='https://www.xvideos.invalid/video10000003/x'>"
-        "</head><body><h2 class='page-title'>X</h2>"
-        "<script>var flashvars = {not: valid json};</script></body></html>"
+        "<html><head>"
+        "<meta property='og:title' content='X' />"
+        "<meta property='og:url' content='https://www.xvideos.invalid/video.synth00003/x' />"
+        "<meta property='og:duration' content='not-a-number' />"
+        "</head><body>"
+        "<script type='application/ld+json'>{not: valid json}</script>"
+        "</body></html>"
     )
-    video = parse_video_page(html, page_url="https://www.xvideos.com/video10000003/")
-    assert video.external_id == "10000003"
+    video = parse_video_page(html, page_url="https://www.xvideos.invalid/video.synth00003/")
+    assert video.external_id == "video.synth00003"
     assert video.duration_ms is None
     assert video.thumbnail_url is None
-    assert video.storyboard_urls == []
+    assert video.tags == []
     assert video.published_at is None
 
 
+def test_parse_video_page_uploaddate_sin_offset_se_asume_utc() -> None:
+    """PR-043: `uploadDate` ISO sin offset → `published_at` tz-aware (UTC)."""
+    html = (
+        "<html><head>"
+        "<meta property='og:title' content='X' />"
+        "<meta property='og:url' content='https://www.xvideos.invalid/video.synth00004/x' />"
+        "</head><body>"
+        "<script type='application/ld+json'>"
+        '{"@type":"VideoObject","uploadDate":"2026-01-02T03:04:05"}'
+        "</script></body></html>"
+    )
+    video = parse_video_page(html, page_url="https://www.xvideos.invalid/video.synth00004/")
+    assert video.published_at == datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+
+def test_parse_video_page_keywords_mas_de_20_se_recortan() -> None:
+    """PR-043: `keywords` del JSON-LD → tags, con tope de 20 (máx. ~20)."""
+    keywords = [f"tag-{index:02d}" for index in range(22)]
+    jsonld = json.dumps({"@type": "VideoObject", "keywords": keywords})
+    html = (
+        "<html><head>"
+        "<meta property='og:title' content='X' />"
+        "<meta property='og:url' content='https://www.xvideos.invalid/video.synth00005/x' />"
+        "</head><body>"
+        f"<script type='application/ld+json'>{jsonld}</script>"
+        "</body></html>"
+    )
+    video = parse_video_page(html, page_url="https://www.xvideos.invalid/video.synth00005/")
+    assert video.tags == keywords[:20]
+    assert len(video.tags) == 20
+
+
+def test_parse_video_page_titulo_fallback_h2_sin_span_duracion() -> None:
+    """FR-002: sin og:title, el título cae al `h2.page-title` sin el span.duration.
+
+    En la estructura real el h2 incluye `<span class="duration">14 min</span>`
+    (paridad con el fixture completo); el fallback debe descartarlo.
+    """
+    html = (
+        "<html><head>"
+        "<meta property='og:url' content='https://www.xvideos.invalid/video.synth00006/x' />"
+        "</head><body>"
+        "<h2 class='page-title'>Titulo de ejemplo 6 <span class='duration'>14 min</span></h2>"
+        "</body></html>"
+    )
+    video = parse_video_page(html, page_url="https://www.xvideos.invalid/video.synth00006/")
+    assert video.title == "Titulo de ejemplo 6"
+
+
 # ---------------------------------------------------------------------------
-# FR-004 · Parseo de la página de listado (discover: IDs + cursor)
+# FR-004 · Parseo de la página de listado (discover: IDs + cursor + anti-bucle)
 # ---------------------------------------------------------------------------
 
 
 def test_parse_listing_page_ids_y_cursor_con_dedup() -> None:
     """FR-004: el listado produce IDs únicos (dedup) y el cursor de paginación."""
     page = parse_listing_page(_fixture("listing_page_1.html"))
-    # El thumb 10000001 tiene dos enlaces (imagen + overlay): se deduplica.
-    assert page.external_ids == ["10000001", "10000002", "10000003"]
-    assert page.next_cursor == "/best/2"
+    # El thumb synth00001 tiene dos `a.thumb-link` (imagen + overlay): se deduplica.
+    assert page.external_ids == ["video.synth00001", "video.synth00002", "video.synth00003"]
+    assert page.next_cursor == "/best/2026-07/1"
 
 
 def test_parse_listing_page_fin_de_paginacion() -> None:
-    """FR-004: sin enlace `next-page`, el cursor es None (última página)."""
-    page = parse_listing_page(_fixture("listing_page_2.html"))
-    assert page.external_ids == ["10000004"]
+    """FR-004: sin enlace `dir.next`, el cursor es None (última página)."""
+    page = parse_listing_page(_fixture("listing_page_3.html"))
+    assert page.external_ids == ["video.synth00005"]
     assert page.next_cursor is None
 
 
 def test_parse_listing_page_href_absoluto_normalizado_a_path() -> None:
-    """FR-004: el enlace `next-page` absoluto se normaliza a path como cursor."""
+    """FR-004: el enlace `dir.next` absoluto se normaliza a path como cursor."""
     html = (
-        "<html><body><div class='thumb'><a href='/video10000009/x'>v</a></div>"
-        "<div class='pagination'><a class='next-page' "
-        "href='https://www.xvideos.com/best/3'>Next</a></div></body></html>"
+        "<html><body><a class='thumb-link' href='/video.synth00009/x'>v</a>"
+        "<a class='dir next' href='https://www.xvideos.invalid/best/3'>Next</a>"
+        "</body></html>"
     )
     page = parse_listing_page(html)
     assert page.next_cursor == "/best/3"
+
+
+def test_parse_listing_page_cursor_repite_path_actual_fin() -> None:
+    """PR-043 anti-bucle: `dir.next` == path actual de la respuesta → fin (None)."""
+    html = (
+        "<html><body><a class='thumb-link' href='/video.synth00006/x'>v</a>"
+        "<a href='/best/2026-07' class='dir next'>Next</a>"
+        "</body></html>"
+    )
+    page = parse_listing_page(html, current_path="/best/2026-07")
+    assert page.external_ids == ["video.synth00006"]
+    assert page.next_cursor is None
+    # Control: con el path actual distinto, el cursor sí avanza.
+    page = parse_listing_page(html, current_path="/best/2026-07/1")
+    assert page.next_cursor == "/best/2026-07"
 
 
 def test_parse_listing_page_estructura_cambiada_devuelve_vacio() -> None:
@@ -280,7 +423,7 @@ def test_parse_listing_page_estructura_cambiada_devuelve_vacio() -> None:
 
 
 # ---------------------------------------------------------------------------
-# FR-004 · discover() con transporte mock (sin red)
+# FR-004 · discover() con transporte mock (sin red) + protección anti-bucle
 # ---------------------------------------------------------------------------
 
 
@@ -293,20 +436,88 @@ def test_discover_primera_pagina_ids_y_cursor() -> None:
         page = await _adapter().discover(cursor=None, limit=100)
 
     _run(scenario)
-    assert page.external_ids == ["10000001", "10000002", "10000003"]
-    assert page.next_cursor == "/best/2"
+    assert page.external_ids == ["video.synth00001", "video.synth00002", "video.synth00003"]
+    assert page.next_cursor == "/best/2026-07/1"
 
 
-def test_discover_segunda_pagina_fin_de_paginacion() -> None:
-    """FR-004: discover con cursor avanza a la página siguiente (sin más páginas)."""
+def test_discover_cadena_de_paginacion_hasta_fin() -> None:
+    """FR-004: la cadena avanza página a página hasta `dir.next` ausente (fin)."""
+    pages: list[DiscoverPage] = []
+
+    async def scenario() -> None:
+        nonlocal pages
+        adapter = _adapter()
+        pages.append(await adapter.discover(cursor=None, limit=100))
+        pages.append(await adapter.discover(cursor=pages[0].next_cursor, limit=100))
+        pages.append(await adapter.discover(cursor=pages[1].next_cursor, limit=100))
+
+    _run(scenario)
+    assert pages[0].external_ids == [
+        "video.synth00001",
+        "video.synth00002",
+        "video.synth00003",
+    ]
+    assert pages[0].next_cursor == "/best/2026-07/1"
+    assert pages[1].external_ids == ["video.synth00004"]
+    assert pages[1].next_cursor == "/best/2026-07/2"
+    assert pages[2].external_ids == ["video.synth00005"]
+    assert pages[2].next_cursor is None
+
+
+def test_discover_redirect_canonico_cursor_desde_url_final() -> None:
+    """PR-043: `/best/1` redirige a `/best/2026-07`; el cursor sale de la URL FINAL.
+
+    Hallazgo de la validación real: el cursor debe tomarse de la página final
+    (`response.url`), no del path pedido — aquí el `dir.next` de la página
+    final es `/best/2026-07/1`, que difiere del path actual `/best/2026-07`.
+    """
     page: DiscoverPage
 
     async def scenario() -> None:
         nonlocal page
-        page = await _adapter().discover(cursor="/best/2", limit=100)
+        page = await _adapter().discover(cursor="/best/1", limit=100)
 
     _run(scenario)
-    assert page.external_ids == ["10000004"]
+    assert page.external_ids == ["video.synth00001", "video.synth00002", "video.synth00003"]
+    assert page.next_cursor == "/best/2026-07/1"
+
+
+def test_discover_cero_ids_nuevos_anti_bucle_fin() -> None:
+    """PR-043 anti-bucle: página con 0 IDs NUEVOS (no vistos) → `next_cursor=None`.
+
+    La protección que faltó en el backfill real (192 jobs DISCOVER en bucle):
+    una página que solo repite IDs ya vistos por esta instancia termina la
+    cadena de paginación (sin encolar la siguiente página).
+    """
+    first: DiscoverPage
+    repeated: DiscoverPage
+
+    async def scenario() -> None:
+        nonlocal first, repeated
+        adapter = _adapter()
+        first = await adapter.discover(cursor=None, limit=100)
+        repeated = await adapter.discover(cursor="/best/2026-07/99", limit=100)
+
+    _run(scenario)
+    assert first.external_ids == [
+        "video.synth00001",
+        "video.synth00002",
+        "video.synth00003",
+    ]
+    assert repeated.external_ids == first.external_ids  # la página se devuelve…
+    assert repeated.next_cursor is None  # …pero la cadena termina (0 nuevos)
+
+
+def test_discover_cursor_repite_path_actual_fin() -> None:
+    """PR-043 anti-bucle: `dir.next` == path actual → `next_cursor=None` (fin)."""
+    page: DiscoverPage
+
+    async def scenario() -> None:
+        nonlocal page
+        page = await _adapter().discover(cursor="/best/2026-07/3", limit=100)
+
+    _run(scenario)
+    assert page.external_ids == ["video.synth00006"]
     assert page.next_cursor is None
 
 
@@ -330,8 +541,8 @@ def test_discover_limit_igual_al_tamano_de_pagina_devuelve_todo() -> None:
     """FR-004: borde del contrato — `limit` == tamaño de página no lanza error.
 
     Con `limit` igual al número de IDs deduplicados de la página, `discover`
-    devuelve todos los IDs y el **cursor real** (`/best/2`), sin repetir el
-    recibido (`None`): el llamador avanza de página con normalidad.
+    devuelve todos los IDs y el **cursor real** (`/best/2026-07/1`), sin
+    repetir el recibido (`None`): el llamador avanza de página con normalidad.
     """
     page: DiscoverPage
 
@@ -340,8 +551,8 @@ def test_discover_limit_igual_al_tamano_de_pagina_devuelve_todo() -> None:
         page = await _adapter().discover(cursor=None, limit=3)
 
     _run(scenario)
-    assert page.external_ids == ["10000001", "10000002", "10000003"]
-    assert page.next_cursor == "/best/2"
+    assert page.external_ids == ["video.synth00001", "video.synth00002", "video.synth00003"]
+    assert page.next_cursor == "/best/2026-07/1"
 
 
 def test_discover_error_http_se_propaga() -> None:
@@ -360,18 +571,23 @@ def test_discover_error_http_se_propaga() -> None:
 
 
 def test_get_video_metadatos_completos() -> None:
-    """FR-004: get_video devuelve el VideoSource normalizado del fixture completo."""
+    """FR-004: get_video devuelve el VideoSource normalizado del fixture completo.
+
+    Además verifica SC-006: el mp4 completo existe en la página del fixture
+    (`setVideoUrlLow`) pero `preview_url` queda `None` (prohibido exponerlo).
+    """
     video: VideoSource | None = None
 
     async def scenario() -> None:
         nonlocal video
-        video = await _adapter().get_video("10000001")
+        video = await _adapter().get_video("video.synth00001")
 
     _run(scenario)
     assert video is not None
-    assert video.external_id == "10000001"
-    assert video.title == "Fixture video sample 0001"
-    assert video.duration_ms == 337_000
+    assert video.external_id == "video.synth00001"
+    assert video.title == "Titulo de ejemplo 1"
+    assert video.duration_ms == 881_000
+    assert video.preview_url is None  # SC-006: mp4 completo nunca expuesto
 
 
 def test_get_video_404_devuelve_none() -> None:
@@ -380,7 +596,7 @@ def test_get_video_404_devuelve_none() -> None:
 
     async def scenario() -> None:
         nonlocal video
-        video = await _adapter().get_video("99999999")
+        video = await _adapter().get_video("video.synth99999")
 
     _run(scenario)
     assert video is None
@@ -391,47 +607,83 @@ def test_get_video_estructura_cambiada_levanta_error() -> None:
 
     async def scenario() -> None:
         with pytest.raises(XvideosParseError):
-            await _adapter().get_video("50000000")
+            await _adapter().get_video("video.synth50000")
 
     _run(scenario)
 
 
 # ---------------------------------------------------------------------------
-# FR-005/SC-006 · get_visual_assets (nunca el vídeo completo)
+# FR-005/SC-006 · get_visual_assets (galería xv_N_t.jpg; nunca el vídeo completo)
 # ---------------------------------------------------------------------------
 
 
 def _full_video() -> VideoSource:
     return parse_video_page(
-        _fixture("video_page_full.html"), page_url="https://www.xvideos.com/video10000001/"
+        _fixture("video_page_full.html"),
+        page_url="https://www.xvideos.invalid/video.synth00001/",
     )
 
 
-def test_get_visual_assets_storyboard_y_thumbnail_en_jerarquia() -> None:
-    """FR-005: assets en orden de jerarquía (storyboard → thumbnail); nunca video (SC-006).
+def test_get_visual_assets_galeria_thumbnails_con_timestamps() -> None:
+    """FR-005/PR-043: galería `xv_1..xv_6_t.jpg` con position y timestamp aproximado.
 
-    El preview está parseado en el VideoSource pero NO se ofrece como asset:
-    el manifest declara `assets_accessed=["storyboard","thumbnail"]` (SC-006;
-    la revisión del operador de 2026-08-16 mantuvo el alcance — ampliarlo en
-    el manifest bastaría).
+    Los thumbs de la galería (JSON-escapados en el script del reproductor) se
+    parsean del mismo path CDN que `og:image`; `kind="thumbnail"`,
+    `position=N` y `timestamp_ms = round(N/(total+1)*duration_ms)`. Nunca un
+    mp4 completo (SC-006) ni storyboard (sin sprite real, PR-043).
     """
     assets: list[VisualAsset] = []
 
     async def scenario() -> None:
         nonlocal assets
-        assets = await _adapter().get_visual_assets(_full_video())
+        adapter = _adapter()
+        video = await adapter.get_video("video.synth00001")
+        assert video is not None
+        assets = await adapter.get_visual_assets(video)
 
     _run(scenario)
-    assert [a.kind for a in assets] == ["storyboard", "thumbnail"]
-    assert assets[0].url == "https://th-01.xvideos.invalid/sprites/10000001.jpg"
-    assert assets[1].url == "https://th-01.xvideos.invalid/thumbs/10000001.jpg"
-    assert all(a.kind in {"storyboard", "thumbnail", "preview"} for a in assets)
+    assert len(assets) == 6
+    assert [a.kind for a in assets] == ["thumbnail"] * 6
+    assert [a.position for a in assets] == [1, 2, 3, 4, 5, 6]
+    assert [a.timestamp_ms for a in assets] == [
+        125_857,  # round(1/7 * 881_000)
+        251_714,  # round(2/7 * 881_000)
+        377_571,  # round(3/7 * 881_000)
+        503_429,  # round(4/7 * 881_000)
+        629_286,  # round(5/7 * 881_000)
+        755_143,  # round(6/7 * 881_000)
+    ]
+    assert assets[0].url == f"{FIXTURE_THUMB_BASE}/xv_1_t.jpg"
+    assert assets[-1].url == f"{FIXTURE_THUMB_BASE}/xv_6_t.jpg"
+
+
+def test_get_visual_assets_degrada_a_miniatura_unica() -> None:
+    """FR-005: sin galería en el reproductor → degrada a la miniatura única.
+
+    El `thumbnail_url` (og:image) se mantiene como asset `thumbnail` sin
+    posición ni timestamp (jerarquía de assets: no se pierde el vídeo).
+    """
+    assets: list[VisualAsset] = []
+
+    async def scenario() -> None:
+        nonlocal assets
+        adapter = _adapter()
+        video = await adapter.get_video("video.synth00007")
+        assert video is not None
+        assert video.thumbnail_url is not None
+        assets = await adapter.get_visual_assets(video)
+
+    _run(scenario)
+    assert assets == [
+        VisualAsset(kind="thumbnail", url=f"{FIXTURE_THUMB_BASE}/mozaique_listing.jpg")
+    ]
 
 
 def test_get_visual_assets_video_sin_assets_devuelve_vacio() -> None:
-    """Spec edge case: vídeo sin storyboard/thumbnail → lista vacía, sin fallar."""
+    """Spec edge case: vídeo sin thumbnail ni galería → lista vacía, sin fallar."""
     video = parse_video_page(
-        _fixture("video_page_minimal.html"), page_url="https://www.xvideos.com/video10000002/"
+        _fixture("video_page_minimal.html"),
+        page_url="https://www.xvideos.invalid/video.synth00002/",
     )
     assets: list[VisualAsset] = []
 
@@ -462,7 +714,7 @@ def test_check_availability_available() -> None:
 
 def test_check_availability_404_removed() -> None:
     """Spec edge case: 404 → removed (estado terminal, sin reintentos)."""
-    removed = _full_video().model_copy(update={"external_id": "99999999"})
+    removed = _full_video().model_copy(update={"external_id": "video.synth99999"})
     availability: VideoAvailability
 
     async def scenario() -> None:
@@ -475,7 +727,7 @@ def test_check_availability_404_removed() -> None:
 
 def test_check_availability_estructura_cambiada_unavailable() -> None:
     """Edge: no se puede confirmar la disponibilidad → unavailable (sin crashear)."""
-    changed = _full_video().model_copy(update={"external_id": "50000000"})
+    changed = _full_video().model_copy(update={"external_id": "video.synth50000"})
     availability: VideoAvailability
 
     async def scenario() -> None:
