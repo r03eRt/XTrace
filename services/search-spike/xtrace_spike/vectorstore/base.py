@@ -11,7 +11,7 @@ se persiste en el índice junto a video_id, timestamp y embedding.
 """
 
 from collections.abc import Sequence
-from typing import Protocol, TypedDict
+from typing import Protocol, TypedDict, runtime_checkable
 
 
 class FrameHit(TypedDict):
@@ -51,10 +51,36 @@ class VectorStoreStats(TypedDict):
     vectors: int
 
 
+class VideoIndexMetadata(TypedDict):
+    """Committed metadata needed to hydrate an external video-state store."""
+
+    frame_count: int
+    duration_ms: int | None
+
+
+@runtime_checkable
+class VideoIndexMetadataProvider(Protocol):
+    """Optional public capability for stores that expose committed metadata.
+
+    PostgreSQL keeps the metadata and frames in the same transaction and does
+    not implement this read-back capability; the local in-memory pipeline uses
+    it when a fresh state store is paired with an existing vector store.
+    """
+
+    async def get_video_index_metadata(self, video_id: str) -> VideoIndexMetadata | None: ...
+
+
 class VectorStore(Protocol):
     """Índice vectorial consultable por similitud (FR-006, ADR-0004/0007)."""
 
     async def upsert_frames(self, frames: Sequence[FrameRecord]) -> int: ...
+    async def replace_video_index(
+        self,
+        video_id: str,
+        frames: Sequence[FrameRecord],
+        *,
+        duration_ms: int | None,
+    ) -> None: ...
     async def ann_search(
         self, embedding: Sequence[float], k: int, exclude_videos: bool = True
     ) -> list[FrameHit]: ...

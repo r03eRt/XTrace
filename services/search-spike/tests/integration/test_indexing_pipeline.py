@@ -278,6 +278,136 @@ def test_reindex_does_not_duplicate_frames(tmp_path: Path) -> None:
         assert _run(states.status(video_id_for(video.local_ref))) == "indexed"
 
 
+def test_adaptive_reindex_replaces_legacy_frames_atomically(tmp_path: Path) -> None:
+    """FR-001/002/003/010: adaptativo elimina frames legacy sobrantes."""
+    _require_ffmpeg()
+    video = scan_dataset(_dataset_root(tmp_path))[0]
+    store = InMemoryVectorStore()
+    states = InMemoryVideoStateStore()
+    work_root = tmp_path / "work"
+
+    legacy = _run(
+        _pipeline(
+            store,
+            FakeEmbeddingProvider(dimension=_EMBEDDING_DIMENSION),
+            states,
+            frames_per_video=5,
+        ).index_video(video, work_root=work_root)
+    )
+    assert legacy.status == "indexed"
+    assert legacy.frame_count > 1
+
+    adaptive = _run(
+        _pipeline(
+            store,
+            FakeEmbeddingProvider(dimension=_EMBEDDING_DIMENSION),
+            states,
+            sampling="adaptive",
+        ).index_video(video, work_root=work_root)
+    )
+
+    assert adaptive.status == "indexed"
+    assert 1 <= adaptive.frame_count <= 8
+    assert adaptive.frame_count < legacy.frame_count
+    assert _run(store.stats()) == {
+        "videos": 1,
+        "frames": adaptive.frame_count,
+        "vectors": adaptive.frame_count,
+    }
+    assert _run(states.status(video_id_for(video.local_ref))) == "indexed"
+
+
+def test_failed_reindex_preserves_previous_complete_index(tmp_path: Path) -> None:
+    """FR-010/SC-007: fallo posterior no publica un índice parcial."""
+    _require_ffmpeg()
+    video_path = _dataset_root(tmp_path) / "a.mp4"
+    video = scan_dataset(video_path.parent)[0]
+    store = InMemoryVectorStore()
+    states = InMemoryVideoStateStore()
+    work_root = tmp_path / "work"
+
+    first = _run(
+        _pipeline(
+            store,
+            FakeEmbeddingProvider(dimension=_EMBEDDING_DIMENSION),
+            states,
+            frames_per_video=5,
+        ).index_video(video, work_root=work_root)
+    )
+    assert first.status == "indexed"
+    before = _run(store.ann_search(_query(), k=100))
+    assert before
+
+    video_path.write_bytes(b"not a video")
+    failed = _run(
+        _pipeline(
+            store,
+            FakeEmbeddingProvider(dimension=_EMBEDDING_DIMENSION),
+            states,
+            sampling="adaptive",
+        ).index_video(video, work_root=work_root)
+    )
+
+    assert failed.status == "failed"
+    assert _run(states.status(video_id_for(video.local_ref))) == "failed"
+    assert _run(store.get_video_index(video_id_for(video.local_ref)))["status"] == "failed"
+    failed_state = _run(states.snapshot(video_id_for(video.local_ref)))
+    assert failed_state is not None
+    assert failed_state.frame_count == first.frame_count
+    assert failed_state.duration_ms is not None
+    after = _run(store.ann_search(_query(), k=100))
+    assert [(hit["frame_id"], hit["timestamp_ms"]) for hit in after] == [
+        (hit["frame_id"], hit["timestamp_ms"]) for hit in before
+    ]
+
+
+def test_failed_reindex_with_fresh_default_state_hydrates_index_metadata(
+    tmp_path: Path,
+) -> None:
+    """A fresh default state store retains metadata from a reused memory index."""
+    _require_ffmpeg()
+    video_path = _dataset_root(tmp_path) / "a.mp4"
+    video = scan_dataset(video_path.parent)[0]
+    store = InMemoryVectorStore()
+    work_root = tmp_path / "work"
+
+    first = _run(
+        _pipeline(
+            store,
+            FakeEmbeddingProvider(dimension=_EMBEDDING_DIMENSION),
+            InMemoryVideoStateStore(),
+            frames_per_video=5,
+        ).index_video(video, work_root=work_root)
+    )
+    assert first.status == "indexed"
+    before = _run(store.ann_search(_query(), k=100))
+
+    video_path.write_bytes(b"not a video")
+    fresh_pipeline = IndexingPipeline(
+        store=store,
+        embeddings=FakeEmbeddingProvider(dimension=_EMBEDDING_DIMENSION),
+        video_states=None,
+        config=IndexingConfig(sampling="adaptive"),
+    )
+    failed = _run(fresh_pipeline.index_video(video, work_root=work_root))
+
+    assert failed.status == "failed"
+    failed_state = _run(fresh_pipeline._video_states.snapshot(video_id_for(video.local_ref)))
+    assert failed_state is not None
+    assert failed_state.status == "failed"
+    assert failed_state.frame_count == first.frame_count
+    assert failed_state.duration_ms is not None
+    metadata = _run(store.get_video_index(video_id_for(video.local_ref)))
+    assert metadata["status"] == "failed"
+    assert metadata["frame_count"] == first.frame_count
+    assert metadata["duration_ms"] == failed_state.duration_ms
+
+    after = _run(store.ann_search(_query(), k=100))
+    assert [(hit["frame_id"], hit["timestamp_ms"]) for hit in after] == [
+        (hit["frame_id"], hit["timestamp_ms"]) for hit in before
+    ]
+
+
 def test_video_and_frame_ids_are_stable_across_runs(tmp_path: Path) -> None:
     """FR-008: ids estables (uuid5) aunque se parta de stores nuevos (SC-007)."""
     _require_ffmpeg()

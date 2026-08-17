@@ -36,8 +36,8 @@ Trazabilidad (constitución §3): cada test marca el requisito que valida:
   el markup), excedían la duración hasta 5x (p. ej. ts=2.400.000ms en un
   vídeo de 480.000ms). La galería está distribuida uniformemente sobre el
   vídeo: `timestamp_ms = round(N/K*duration_ms)` con `K = MÁXIMA posición
-  observada`, **clamp** a `[0, duration_ms]` (N==K → duración exacta) y
-  `None` defensivo (sin duración o K<=0).
+  observada`, **clamp** a `[0, duration_ms)` (N==K → último milisegundo válido)
+  y `None` defensivo (sin duración o K<=0).
 - FR-002 (soporte): `VideoSource` normalizado poblado desde el parseo
   (og:*, JSON-LD).
 - FR-005/SC-006: `get_visual_assets` devuelve la galería de thumbnails
@@ -71,6 +71,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from xtrace_spike.sampling import AdaptiveSamplingPolicy
 
 from xtrace_crawler import __file__ as _crawler_pkg_init
 from xtrace_crawler.adapters.base import SourceAdapter
@@ -84,6 +85,7 @@ from xtrace_crawler.adapters.registry import AdapterNotEnabledError, AdapterRegi
 from xtrace_crawler.adapters.xvideos import (
     XvideosAdapter,
     XvideosParseError,
+    _gallery_positions_for_sampling,
     parse_listing_page,
     parse_video_page,
 )
@@ -107,6 +109,31 @@ _FALLBACK_VIDEO_HTML = f"""<!DOCTYPE html>
 </head>
 <body>
   <h2 class="page-title">Titulo de ejemplo 7</h2>
+</body>
+</html>"""
+
+
+# Página sintética donde el HTML solo declara dos posiciones del vídeo
+# (`xv_3_t.jpg` y `xv_18_t.jpg`), aunque el patrón público del mismo path CDN
+# permite solicitar posiciones intermedias durante REINDEX adaptativo.
+_FIXTURE_THUMB_BASE_ESCAPED = FIXTURE_THUMB_BASE.replace("/", "\\/")
+_PUBLIC_GALLERY_VIDEO_HTML = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta property="og:title" content="Titulo de ejemplo 22" />
+  <meta property="og:url"
+        content="https://www.xvideos.invalid/video.synth00022/titulo-de-ejemplo-22" />
+  <meta property="og:duration" content="758" />
+  <meta property="og:image"
+        content="{FIXTURE_THUMB_BASE}/xv_18_t.jpg" />
+</head>
+<body>
+  <script>
+    var gallery = [
+      "{_FIXTURE_THUMB_BASE_ESCAPED}\\/xv_3_t.jpg",
+      "{_FIXTURE_THUMB_BASE_ESCAPED}\\/xv_18_t.jpg"
+    ];
+  </script>
 </body>
 </html>"""
 
@@ -153,6 +180,7 @@ def _fixture_handler() -> Callable[[httpx.Request], httpx.Response]:
     - `/video.synth00002/...` → `video_page_minimal.html` (opcionales None)
     - `/video.synth00007/...` → `_FALLBACK_VIDEO_HTML` (og:image sin galería)
     - `/video.synth00013/...` → `_SYNTH13_VIDEO_HTML` (PR-045: URL completa con slug)
+    - `/video.synth00022/...` → `_PUBLIC_GALLERY_VIDEO_HTML` (solo xv_3/xv_18 declarados)
     - `/video.synth00021/...` → `video_page_sparse_gallery.html`
       (PR-053: galería dispersa xv_3/12/15/28/30_t.jpg, K=30)
     - `/video.synth50000/...` → 200 con HTML sin estructura de vídeo (estructura cambiada)
@@ -185,6 +213,8 @@ def _fixture_handler() -> Callable[[httpx.Request], httpx.Response]:
             body = _FALLBACK_VIDEO_HTML.encode("utf-8")
         elif path.startswith("/video.synth00013"):
             body = _SYNTH13_VIDEO_HTML.encode("utf-8")
+        elif path.startswith("/video.synth00022"):
+            body = _PUBLIC_GALLERY_VIDEO_HTML.encode("utf-8")
         elif path.startswith("/video.synth00021"):
             body = _fixture("video_page_sparse_gallery.html").encode("utf-8")
         elif path.startswith("/video.synth50000"):
@@ -1095,7 +1125,7 @@ def test_get_visual_assets_galeria_thumbnails_con_timestamps() -> None:
     parsean del mismo path CDN que `og:image`; `kind="thumbnail"`,
     `position=N` y `timestamp_ms = round(N/K*duration_ms)` con
     `K = MÁXIMA posición` (PR-053: galería contigua 1..6 → N/6, no N/7 como
-    antes del fix; N==K → la duración exacta, clamp). Nunca un
+    antes del fix; N==K → el último milisegundo válido, clamp). Nunca un
     mp4 completo (SC-006) ni storyboard (sin sprite real, PR-043).
     """
     assets: list[VisualAsset] = []
@@ -1117,10 +1147,52 @@ def test_get_visual_assets_galeria_thumbnails_con_timestamps() -> None:
         440_500,  # round(3/6 * 881_000)
         587_333,  # round(4/6 * 881_000)
         734_167,  # round(5/6 * 881_000)
-        881_000,  # round(6/6 * 881_000) == duración (clamp N==K)
+        880_999,  # round(6/6 * 881_000), clamp al último ms válido
     ]
     assert assets[0].url == f"{FIXTURE_THUMB_BASE}/xv_1_t.jpg"
     assert assets[-1].url == f"{FIXTURE_THUMB_BASE}/xv_6_t.jpg"
+
+
+def test_get_visual_assets_for_sampling_expande_posiciones_publicas_del_mismo_path() -> None:
+    """FR-001/FR-005: REINDEX puede pedir posiciones públicas no listadas en HTML.
+
+    El flujo legacy sigue viendo solo las dos URLs declaradas (`xv_3`/`xv_18`),
+    mientras que la ruta adaptativa usa el máximo observado (18) para construir
+    los siete puntos centrados que necesita un vídeo de 758 s.
+    """
+    legacy_assets: list[VisualAsset] = []
+    adaptive_assets: list[VisualAsset] = []
+
+    async def scenario() -> None:
+        nonlocal legacy_assets, adaptive_assets
+        adapter = _adapter()
+        video = await adapter.get_video("video.synth00022")
+        assert video is not None
+        legacy_assets = await adapter.get_visual_assets(video)
+        adaptive_assets = await adapter.get_visual_assets_for_sampling(
+            video, policy=AdaptiveSamplingPolicy()
+        )
+
+    _run(scenario)
+    assert [asset.position for asset in legacy_assets] == [3, 18]
+    assert [asset.position for asset in adaptive_assets] == [1, 3, 4, 6, 9, 12, 18]
+    assert [asset.kind for asset in adaptive_assets] == ["thumbnail"] * 7
+    assert all(
+        "11111111-2222-4333-8444-555555555555/3/xv_" in asset.url for asset in adaptive_assets
+    )
+    assert all(asset.timestamp_ms is not None for asset in adaptive_assets)
+
+
+def test_gallery_positions_no_colapsa_por_redondeo() -> None:
+    """FR-001/FR-003: target posiciones distintas cuando K es pequeño."""
+    policy = AdaptiveSamplingPolicy()
+
+    assert _gallery_positions_for_sampling(
+        [1, 3], gallery_max=3, duration_ms=360_000, policy=policy
+    ) == [1, 2, 3]
+    assert _gallery_positions_for_sampling(
+        [1, 8], gallery_max=8, duration_ms=960_000, policy=policy
+    ) == list(range(1, 9))
 
 
 def test_get_visual_assets_galeria_posiciones_dispersas_timestamps_correctos() -> None:
@@ -1132,7 +1204,7 @@ def test_get_visual_assets_galeria_posiciones_dispersas_timestamps_correctos() -
     `round(N/(total+1)*duration_ms)` (el bug: el denominador era el nº de
     assets conservados, 5, y N=30 daba 6x la duración — p. ej.
     ts=2.400.000ms en un vídeo de 480.000ms). N=15 → 0.5*duración; N==K (30)
-    → la duración exacta (clamp a `[0, duration_ms]`).
+    → el último milisegundo válido (clamp a `[0, duration_ms)`).
     """
     assets: list[VisualAsset] = []
 
@@ -1152,11 +1224,11 @@ def test_get_visual_assets_galeria_posiciones_dispersas_timestamps_correctos() -
         12_000,  # round(12/30 * 30_000) = 0.4 * duración
         15_000,  # round(15/30 * 30_000) = 0.5 * duración
         28_000,  # round(28/30 * 30_000) ≈ 0.933 * duración
-        30_000,  # round(30/30 * 30_000) == duración (N==K, clamp)
+        29_999,  # round(30/30 * 30_000), clamp al último ms válido
     ]
     assert all(
-        0 <= ts <= 30_000 for asset in assets for ts in (asset.timestamp_ms,) if ts is not None
-    )  # clamp: ningún timestamp excede la duración
+        0 <= ts < 30_000 for asset in assets for ts in (asset.timestamp_ms,) if ts is not None
+    )  # clamp: ningún timestamp alcanza la duración (límite exclusivo)
 
 
 def test_get_visual_assets_galeria_sin_duracion_timestamps_none() -> None:

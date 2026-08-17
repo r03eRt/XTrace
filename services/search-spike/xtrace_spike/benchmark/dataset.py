@@ -36,6 +36,7 @@ import shutil
 from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -91,6 +92,9 @@ class SourceFrame:
 
     video_ref: str
     path: Path
+    source: str = "local"
+    duration_ms: int | None = None
+    timestamp_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -111,6 +115,28 @@ class BenchmarkCase:
     variant: str
     expected_video_ref: str | None = None
     source_frame_path: Path | None = None
+    source: str = "local"
+    duration_ms: int | None = None
+    timestamp_ms: int | None = None
+    truth_timestamp_ms: int | None = None
+    case_id: str | None = None
+
+    def __post_init__(self) -> None:
+        """Normaliza los dos nombres públicos del timestamp de verdad.
+
+        ``timestamp_ms`` es el nombre histórico del spike; ``truth_timestamp_ms``
+        hace explícito en sidecars que no es un timestamp interpolado. Aceptar
+        ambos mantiene compatibilidad con manifests antiguos y evita perder
+        trazabilidad al cargar datasets nuevos.
+        """
+        timestamps = [
+            value for value in (self.timestamp_ms, self.truth_timestamp_ms) if value is not None
+        ]
+        if len(set(timestamps)) > 1:
+            raise BenchmarkError("timestamp_ms y truth_timestamp_ms deben coincidir")
+        canonical = timestamps[0] if timestamps else None
+        object.__setattr__(self, "timestamp_ms", canonical)
+        object.__setattr__(self, "truth_timestamp_ms", canonical)
 
 
 @dataclass(frozen=True)
@@ -154,6 +180,10 @@ class BenchmarkDataset:
                     "source_frame_path": (
                         str(case.source_frame_path) if case.source_frame_path is not None else None
                     ),
+                    "source": case.source,
+                    "duration_ms": case.duration_ms,
+                    "timestamp_ms": case.timestamp_ms,
+                    "case_id": case.case_id,
                 }
                 for case in self.cases
             ],
@@ -166,7 +196,12 @@ class BenchmarkDataset:
         return self.manifest_path
 
 
-def scan_frames_root(frames_root: str | Path, *, pattern: str = "*.png") -> tuple[SourceFrame, ...]:
+def scan_frames_root(
+    frames_root: str | Path,
+    *,
+    pattern: str = "*.png",
+    sidecar: str | Path | None = None,
+) -> tuple[SourceFrame, ...]:
     """Escanea un directorio de frames con layout <root>/<video_ref>/<frame>.png.
 
     Cada subdirectorio inmediato se interpreta como un vídeo (video_ref = nombre
@@ -181,10 +216,92 @@ def scan_frames_root(frames_root: str | Path, *, pattern: str = "*.png") -> tupl
         raise BenchmarkError(
             f"el directorio de frames '{frames_root}' no existe o no es un directorio"
         )
+    sidecar_frames: dict[Path, SourceFrame] = {}
+    if sidecar is not None:
+        sidecar_frames = {frame.path: frame for frame in load_frame_sidecar(sidecar, root)}
     frames: list[SourceFrame] = []
     for path in sorted(root.rglob(pattern)):
-        frames.append(SourceFrame(video_ref=path.parent.name, path=path.absolute()))
+        absolute = path.absolute()
+        metadata = sidecar_frames.get(absolute)
+        if metadata is None:
+            frames.append(SourceFrame(video_ref=path.parent.name, path=absolute))
+        else:
+            frames.append(metadata)
     return tuple(frames)
+
+
+def load_frame_sidecar(
+    sidecar_path: str | Path,
+    frames_root: str | Path | None = None,
+) -> tuple[SourceFrame, ...]:
+    """Carga metadatos de frames permitidos desde un sidecar JSON.
+
+    Se admiten dos formas equivalentes y ambas son deliberadamente sencillas
+    de generar desde los crawlers:
+
+    ``{"frames": [{"path": ..., "video_ref": ..., ...}]}`` o
+    ``{"videos": [{"video_ref": ..., "frames": [{"path": ..., ...}]}]}``.
+    Las rutas relativas se resuelven respecto al sidecar, salvo que se indique
+    ``frames_root``. No se descargan ni abren assets en esta fase.
+    """
+    path = Path(sidecar_path)
+    data = _load_json_object(path)
+    base = Path(frames_root).absolute() if frames_root is not None else path.parent.absolute()
+    entries: list[tuple[dict[str, object], str | None, int | None]] = []
+    raw_frames = data.get("frames")
+    if isinstance(raw_frames, list):
+        for raw in raw_frames:
+            if isinstance(raw, dict):
+                entries.append((cast(dict[str, object], raw), None, None))
+    raw_videos = data.get("videos")
+    if isinstance(raw_videos, list):
+        for raw_video in raw_videos:
+            if not isinstance(raw_video, dict):
+                continue
+            video = cast(dict[str, object], raw_video)
+            video_ref = _optional_string(video.get("video_ref"))
+            duration = _optional_int(video.get("duration_ms"))
+            raw_video_frames = video.get("frames")
+            if not isinstance(raw_video_frames, list):
+                continue
+            for raw_frame in raw_video_frames:
+                if isinstance(raw_frame, str):
+                    entries.append(({"path": raw_frame}, video_ref, duration))
+                elif isinstance(raw_frame, dict):
+                    entries.append((cast(dict[str, object], raw_frame), video_ref, duration))
+    if not entries:
+        raise BenchmarkError(f"el sidecar '{sidecar_path}' no contiene frames")
+
+    frames: list[SourceFrame] = []
+    for entry, inherited_video_ref, inherited_duration in entries:
+        raw_path = entry.get("path") or entry.get("frame_path") or entry.get("image_path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise BenchmarkError("cada frame del sidecar necesita path")
+        frame_path = Path(raw_path)
+        if not frame_path.is_absolute():
+            frame_path = base / frame_path
+        video_ref = _optional_string(entry.get("video_ref")) or inherited_video_ref
+        if not video_ref:
+            video_ref = frame_path.parent.name
+        source = (_optional_string(entry.get("source")) or "local").lower()
+        duration = _optional_int(entry.get("duration_ms"))
+        if duration is None:
+            duration = inherited_duration
+        timestamp = _optional_int(
+            entry.get("timestamp_ms")
+            if entry.get("timestamp_ms") is not None
+            else entry.get("truth_timestamp_ms")
+        )
+        frames.append(
+            SourceFrame(
+                video_ref=video_ref,
+                path=frame_path.absolute(),
+                source=source,
+                duration_ms=duration,
+                timestamp_ms=timestamp,
+            )
+        )
+    return tuple(sorted(frames, key=lambda frame: (frame.video_ref, str(frame.path))))
 
 
 def generate_benchmark_dataset(
@@ -230,6 +347,10 @@ def generate_benchmark_dataset(
                     variant=variant,
                     expected_video_ref=frame.video_ref,
                     source_frame_path=frame.path,
+                    source=frame.source,
+                    duration_ms=frame.duration_ms,
+                    timestamp_ms=frame.timestamp_ms,
+                    case_id=f"{frame.video_ref}:{frame.path.stem}:{variant}:{index:04d}",
                 )
             )
 
@@ -277,14 +398,125 @@ def load_manifest(manifest_path: str | Path) -> tuple[BenchmarkCase, ...]:
                     if entry["source_frame_path"] is not None
                     else None
                 ),
+                source=str(entry.get("source", "local")).lower(),
+                duration_ms=_optional_int(entry.get("duration_ms")),
+                timestamp_ms=_optional_int(
+                    entry.get("timestamp_ms")
+                    if entry.get("timestamp_ms") is not None
+                    else entry.get("truth_timestamp_ms")
+                ),
+                case_id=_optional_string(entry.get("case_id")),
             )
         )
     return tuple(cases)
 
 
+def load_benchmark_sidecar(sidecar_path: str | Path) -> tuple[BenchmarkCase, ...]:
+    """Carga casos de benchmark con verdad conocida desde un sidecar JSON.
+
+    El sidecar es la frontera de datos para la comparación local/web. Cada
+    entrada debe conservar ``source``, ``duration_ms`` y ``timestamp_ms`` (o
+    ``truth_timestamp_ms``); se aceptan casos negativos con vídeo/timestamp
+    nulos, aunque no contribuyen a las métricas temporales.
+    """
+    path = Path(sidecar_path)
+    data = _load_json_object(path)
+    raw_cases = data.get("cases")
+    if not isinstance(raw_cases, list):
+        raise BenchmarkError(f"el sidecar '{sidecar_path}' no contiene cases")
+    cases: list[BenchmarkCase] = []
+    for index, raw_case in enumerate(raw_cases):
+        if not isinstance(raw_case, dict):
+            raise BenchmarkError(f"el caso {index} del sidecar no es un objeto")
+        entry = cast(dict[str, object], raw_case)
+        case_id = _optional_string(entry.get("case_id")) or f"case-{index:06d}"
+        raw_query = entry.get("query_image_path") or entry.get("image_path")
+        query_path = (
+            Path(str(raw_query))
+            if isinstance(raw_query, str) and raw_query
+            else path.parent / "queries" / f"{case_id}.png"
+        )
+        if not query_path.is_absolute():
+            query_path = path.parent / query_path
+        expected = entry.get("expected_video_ref")
+        expected_video_ref = str(expected) if expected is not None else None
+        source = (_optional_string(entry.get("source")) or "local").lower()
+        duration_ms = _optional_int(entry.get("duration_ms"))
+        timestamp_ms = _optional_int(
+            entry.get("timestamp_ms")
+            if entry.get("timestamp_ms") is not None
+            else entry.get("truth_timestamp_ms")
+        )
+        raw_source_frame = entry.get("source_frame_path")
+        source_frame_path = (
+            Path(str(raw_source_frame))
+            if isinstance(raw_source_frame, str) and raw_source_frame
+            else None
+        )
+        if source_frame_path is not None and not source_frame_path.is_absolute():
+            source_frame_path = path.parent / source_frame_path
+        cases.append(
+            BenchmarkCase(
+                query_image_path=query_path.absolute(),
+                variant=str(entry.get("variant", "exact")),
+                expected_video_ref=expected_video_ref,
+                source_frame_path=source_frame_path,
+                source=source,
+                duration_ms=duration_ms,
+                timestamp_ms=timestamp_ms,
+                case_id=case_id,
+            )
+        )
+    if not cases:
+        raise BenchmarkError(f"el sidecar '{sidecar_path}' no contiene casos")
+    return tuple(cases)
+
+
+# Alias explícitos para consumidores que prefieren el término genérico sidecar.
+load_case_sidecar = load_benchmark_sidecar
+load_sidecar = load_benchmark_sidecar
+
+
 # ---------------------------------------------------------------------------
 # Validación y utilidades
 # ---------------------------------------------------------------------------
+
+
+def _load_json_object(path: Path) -> dict[str, object]:
+    """Carga un objeto JSON y traduce errores de entrada al error de dominio."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BenchmarkError(f"no se puede leer el sidecar '{path}': {exc}") from exc
+    if not isinstance(raw, dict):
+        raise BenchmarkError(f"el sidecar '{path}' debe contener un objeto JSON")
+    return cast(dict[str, object], raw)
+
+
+def _optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise BenchmarkError(f"valor entero inválido en sidecar: {value!r}")
+    try:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            if not value.is_integer():
+                raise ValueError
+            return int(value)
+        if isinstance(value, str):
+            return int(value.strip())
+        raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise BenchmarkError(f"valor entero inválido en sidecar: {value!r}") from exc
 
 
 def _validate_config(

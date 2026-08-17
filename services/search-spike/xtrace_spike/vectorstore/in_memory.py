@@ -9,7 +9,12 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from xtrace_spike.vectorstore.base import FrameHit, FrameRecord, VectorStoreStats
+from xtrace_spike.vectorstore.base import (
+    FrameHit,
+    FrameRecord,
+    VectorStoreStats,
+    VideoIndexMetadata,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +32,15 @@ class _StoredFrame:
     timestamp_ms: int | None
     phash: int
     embedding: tuple[float, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _VideoIndexMetadata:
+    """Metadata committed together with a video's frame representation."""
+
+    status: str
+    frame_count: int
+    duration_ms: int | None
 
 
 def _cosine_distance(a: Sequence[float], b: Sequence[float]) -> float:
@@ -58,6 +72,7 @@ class InMemoryVectorStore:
     def __init__(self) -> None:
         self._frames: dict[str, _StoredFrame] = {}
         self._excluded_videos: set[str] = set()
+        self._video_metadata: dict[str, _VideoIndexMetadata] = {}
 
     async def upsert_frames(self, frames: Sequence[FrameRecord]) -> int:
         for record in frames:
@@ -68,7 +83,114 @@ class InMemoryVectorStore:
                 phash=record["phash"],
                 embedding=tuple(record["embedding"]),
             )
+        for video_id in {record["video_id"] for record in frames}:
+            frame_count = sum(frame.video_id == video_id for frame in self._frames.values())
+            previous = self._video_metadata.get(video_id)
+            self._video_metadata[video_id] = _VideoIndexMetadata(
+                status="indexed",
+                frame_count=frame_count,
+                duration_ms=previous.duration_ms if previous is not None else None,
+            )
         return len(frames)
+
+    async def replace_video_index(
+        self,
+        video_id: str,
+        frames: Sequence[FrameRecord],
+        *,
+        duration_ms: int | None,
+    ) -> None:
+        """Atomically replace one video's frames and committed metadata.
+
+        All validation and frame materialization happen before publishing either
+        dictionary, so an invalid or failed replacement leaves the old complete
+        representation untouched.  The exclusion set is intentionally never
+        modified: exclusion is an operator decision, not an indexing side effect.
+        """
+        if not frames:
+            raise ValueError("el índice de vídeo no puede quedar vacío")
+        if any(record["video_id"] != video_id for record in frames):
+            raise ValueError("todos los frames deben pertenecer al video_id indicado")
+        frame_ids = [record["frame_id"] for record in frames]
+        if len(frame_ids) != len(set(frame_ids)):
+            raise ValueError("el índice de vídeo contiene frame_id duplicados")
+        timestamps = [record["timestamp_ms"] for record in frames]
+        positioned = [timestamp for timestamp in timestamps if timestamp is not None]
+        if len(positioned) != len(set(positioned)):
+            raise ValueError("el índice de vídeo contiene posiciones duplicadas")
+
+        replacement = {
+            record["frame_id"]: _StoredFrame(
+                frame_id=record["frame_id"],
+                video_id=record["video_id"],
+                timestamp_ms=record["timestamp_ms"],
+                phash=record["phash"],
+                embedding=tuple(record["embedding"]),
+            )
+            for record in frames
+        }
+        next_frames = {
+            frame_id: frame
+            for frame_id, frame in self._frames.items()
+            if frame.video_id != video_id
+        }
+        next_frames.update(replacement)
+        next_metadata = _VideoIndexMetadata(
+            status="indexed",
+            frame_count=len(replacement),
+            duration_ms=duration_ms,
+        )
+
+        self._frames = next_frames
+        self._video_metadata[video_id] = next_metadata
+
+    async def get_video_index(self, video_id: str) -> dict[str, object]:
+        """Return committed metadata for deterministic replacement assertions."""
+        metadata = self._video_metadata.get(video_id)
+        return {
+            "status": metadata.status if metadata is not None else None,
+            "frame_count": metadata.frame_count if metadata is not None else 0,
+            "duration_ms": metadata.duration_ms if metadata is not None else None,
+            "excluded": video_id in self._excluded_videos,
+        }
+
+    async def get_video_index_metadata(self, video_id: str) -> VideoIndexMetadata | None:
+        """Expose committed count/duration for fresh state-store hydration."""
+        metadata = self._video_metadata.get(video_id)
+        if metadata is None:
+            return None
+        return {
+            "frame_count": metadata.frame_count,
+            "duration_ms": metadata.duration_ms,
+        }
+
+    async def mark_video_failed(self, video_id: str) -> None:
+        """Keep the prior frame set while exposing a failed indexing state."""
+        previous = self._video_metadata.get(video_id)
+        self._video_metadata[video_id] = _VideoIndexMetadata(
+            status="failed",
+            frame_count=previous.frame_count if previous is not None else 0,
+            duration_ms=previous.duration_ms if previous is not None else None,
+        )
+
+    async def snapshot_video_index(self) -> object:
+        """Capture the complete in-memory index for a contractual rollback."""
+        return dict(self._frames), dict(self._video_metadata), set(self._excluded_videos)
+
+    async def restore_video_index(self, snapshot: object) -> None:
+        """Restore a prior complete index after a state-publication failure."""
+        if not isinstance(snapshot, tuple) or len(snapshot) != 3:
+            raise ValueError("snapshot de índice en memoria inválido")
+        frames, metadata, excluded = snapshot
+        if (
+            not isinstance(frames, dict)
+            or not isinstance(metadata, dict)
+            or not isinstance(excluded, set)
+        ):
+            raise ValueError("snapshot de índice en memoria inválido")
+        self._frames = frames
+        self._video_metadata = metadata
+        self._excluded_videos = excluded
 
     async def get_frame(self, frame_id: str) -> FrameRecord | None:
         """Devuelve el registro almacenado (incluye el pHash real, FIX-phash).
@@ -115,6 +237,12 @@ class InMemoryVectorStore:
         for frame_id in [fid for fid, frame in self._frames.items() if frame.video_id == video_id]:
             del self._frames[frame_id]
         self._excluded_videos.add(video_id)
+        previous = self._video_metadata.get(video_id)
+        self._video_metadata[video_id] = _VideoIndexMetadata(
+            status=previous.status if previous is not None else "excluded",
+            frame_count=0,
+            duration_ms=previous.duration_ms if previous is not None else None,
+        )
 
     async def stats(self) -> VectorStoreStats:
         video_ids = {frame.video_id for frame in self._frames.values()}

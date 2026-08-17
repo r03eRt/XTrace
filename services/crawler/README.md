@@ -91,3 +91,12 @@ Hardening de la ruta de descarga de assets (PR-036 · SEC-001 · contracts §1/�
 
 - Spec: `specs/002-source-sdk-crawler/spec.md` (APPROVED) · Plan: `plan.md` · Tareas: `tasks.md`
 - ADR-0011: reutilización del spike como dependencia editable
+
+## Muestreo adaptativo
+
+La reindexación web adaptativa es una operación explícita y conserva el acceso
+solo a assets públicos permitidos; no descarga vídeos completos. El perfil se
+valida con el benchmark del spike antes de considerar cualquier cambio de
+default. Para una prueba local reproducible, usa `reindex --sampling adaptive
+--max-frames 8 --target-interval-seconds 120` y consulta después
+`reindex-status --run-id <uuid>`.

@@ -98,7 +98,17 @@ from xtrace_crawler.crawling.ratelimit import RateLimiter
 from xtrace_crawler.jobs.repo import JobsRepo
 from xtrace_crawler.jobs.types import Job, JobType
 from xtrace_crawler.jobs.worker import JobWorker
-from xtrace_crawler.pipeline import CrawlerPipeline, CrawlerRepoProtocol, EmbeddingProviderProtocol
+from xtrace_crawler.pipeline import (
+    REINDEX_ELIGIBLE_STATUSES,
+    REINDEX_MAX_FRAMES,
+    REINDEX_SAMPLING_MODE,
+    REINDEX_TARGET_INTERVAL_SECONDS,
+    CrawlerPipeline,
+    CrawlerRepoProtocol,
+    EmbeddingProviderProtocol,
+    reindex_dedupe_key,
+    validate_reindex_sampling_profile,
+)
 from xtrace_crawler.repo import (
     DEFAULT_RECENT_ERRORS_LIMIT,
     CrawlerRepo,
@@ -135,6 +145,8 @@ class CliRepoProtocol(CrawlerRepoProtocol, Protocol):
         recent_errors_limit: int = DEFAULT_RECENT_ERRORS_LIMIT,
         rate_limits: dict[str, RateLimitStatsRecord] | None = None,
     ) -> CrawlerStats: ...
+
+    async def reindex_status(self, run_id: str) -> dict[str, Any]: ...
 
 
 class CliJobsProtocol(Protocol):
@@ -371,6 +383,65 @@ def check_availability_cmd(
     typer.echo(json.dumps(result, sort_keys=True, ensure_ascii=False))
 
 
+@app.command("reindex")
+def reindex_cmd(
+    ctx: typer.Context,
+    source: Annotated[str, typer.Option("--source", help="Nombre canónico de la fuente")],
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit",
+            min=1,
+            help="Máx. vídeos elegibles a reindexar (default: backfill_default_limit)",
+        ),
+    ] = None,
+    sampling: Annotated[
+        str, typer.Option("--sampling", help="Perfil explícito; REINDEX exige adaptive")
+    ] = REINDEX_SAMPLING_MODE,
+    max_frames: Annotated[
+        int, typer.Option("--max-frames", min=1, help="Máximo adaptativo; debe ser 8")
+    ] = REINDEX_MAX_FRAMES,
+    target_interval_seconds: Annotated[
+        int,
+        typer.Option(
+            "--target-interval-seconds",
+            min=1,
+            help="Intervalo adaptativo; debe ser 120 segundos",
+        ),
+    ] = REINDEX_TARGET_INTERVAL_SECONDS,
+) -> None:
+    """Encola REINDEX adaptativo solo para vídeos elegibles (FR-009/SEC-005)."""
+    deps = _deps(ctx)
+    try:
+        result = asyncio.run(
+            _reindex(
+                deps,
+                source=source,
+                limit=limit,
+                sampling=sampling,
+                max_frames=max_frames,
+                target_interval_seconds=target_interval_seconds,
+            )
+        )
+    except CliUserError as error:
+        raise _fail(error) from None
+    typer.echo(json.dumps(result, sort_keys=True, ensure_ascii=False))
+
+
+@app.command("reindex-status")
+def reindex_status_cmd(
+    ctx: typer.Context,
+    run_id: Annotated[str, typer.Option("--run-id", help="UUID de la ejecución de REINDEX")],
+) -> None:
+    """Devuelve el agregado durable de una ejecución REINDEX (FR-011/SC-007)."""
+    deps = _deps(ctx)
+    try:
+        result = asyncio.run(_reindex_status(deps, run_id=run_id))
+    except CliUserError as error:
+        raise _fail(error) from None
+    typer.echo(json.dumps(result, sort_keys=True, ensure_ascii=False))
+
+
 # -- Lógica async de los comandos ----------------------------------------------
 
 
@@ -479,6 +550,99 @@ async def _check_availability(
         "enqueued": len(job_ids),
         "job_ids": job_ids,
     }
+
+
+async def _reindex(
+    deps: CliContext,
+    *,
+    source: str,
+    limit: int | None,
+    sampling: str,
+    max_frames: int,
+    target_interval_seconds: int,
+) -> dict[str, Any]:
+    """Validate the profile, filter eligible videos and enqueue one REINDEX each."""
+    source_record = await _validate_source(deps, source)
+    if not source_record.enabled:
+        raise CliUserError(f"fuente {source!r} no habilitada para REINDEX (sources.enabled=false)")
+    profile = {
+        "mode": sampling,
+        "target_interval_seconds": target_interval_seconds,
+        "max_frames": max_frames,
+    }
+    try:
+        validate_reindex_sampling_profile(profile)
+    except ValueError as error:
+        raise CliUserError(str(error)) from None
+    effective_limit = limit if limit is not None else deps.settings.backfill_default_limit
+    candidates = [
+        record
+        for record in await deps.repo.list_reindex_candidates(source, effective_limit)
+        if record.external_id is not None
+        and not record.excluded
+        and record.status in REINDEX_ELIGIBLE_STATUSES
+    ]
+    run_id = str(uuid.uuid4())
+    job_ids: list[str] = []
+    reused_job_ids: list[str] = []
+    reused_run_ids: set[str] = set()
+    for record in candidates:
+        assert record.external_id is not None
+        dedupe_key = reindex_dedupe_key(source, record.external_id, profile)
+        payload = {
+            "run_id": run_id,
+            "source": source,
+            "external_id": record.external_id,
+            "sampling": dict(profile),
+        }
+        job = await deps.jobs.enqueue(
+            JobType.REINDEX,
+            source_id=parse_uuid(source_record.id, "source_id"),
+            video_id=parse_uuid(record.id, "video_id"),
+            payload=payload,
+            dedupe_key=dedupe_key,
+        )
+        job_id = str(job.id)
+        returned_run_id = job.payload.get("run_id")
+        if returned_run_id == run_id:
+            if job_id not in job_ids:
+                job_ids.append(job_id)
+        else:
+            if job_id not in reused_job_ids:
+                reused_job_ids.append(job_id)
+            if isinstance(returned_run_id, str) and returned_run_id:
+                reused_run_ids.add(returned_run_id)
+    result = {
+        "run_id": run_id,
+        "source": source,
+        "selected": len(candidates),
+        "enqueued": len(job_ids),
+        "sampling": dict(profile),
+        "job_ids": job_ids,
+        "reused_job_ids": reused_job_ids,
+        "reused_run_ids": sorted(reused_run_ids),
+    }
+    logger.info(
+        "reindex run_id=%s source=%s selected=%d enqueued=%d",
+        run_id,
+        source,
+        len(candidates),
+        len(job_ids),
+    )
+    return result
+
+
+async def _reindex_status(deps: CliContext, *, run_id: str) -> dict[str, Any]:
+    """Validate and return the durable aggregate for a REINDEX run."""
+    try:
+        canonical_run_id = str(uuid.UUID(run_id))
+    except (ValueError, AttributeError) as error:
+        raise CliUserError(f"run_id no es un UUID válido: {run_id!r}") from error
+    try:
+        result = await deps.repo.reindex_status(canonical_run_id)
+    except ValueError as error:
+        raise CliUserError(str(error)) from None
+    return result
 
 
 async def _run_worker(deps: CliContext, *, concurrency: int | None, once: bool) -> dict[str, Any]:

@@ -19,8 +19,11 @@ spike (`test_pgvector_store.py`): comprobación en recolección vía `pytestmark
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 import psycopg
 import pytest
@@ -40,15 +43,18 @@ def _db_available() -> bool:
         return False
 
 
+_DESTRUCTIVE_DB_TESTS_ENABLED = os.environ.get("XTRACE_CRAWLER_ALLOW_DB_RESET") == "1"
+
 pytestmark = pytest.mark.skipif(
-    not _db_available(),
-    reason="Supabase local no alcanzable (CI sin DB): integration repo saltada",
+    not _DESTRUCTIVE_DB_TESTS_ENABLED or not _db_available(),
+    reason="integration repo destructiva deshabilitada: define "
+    "XTRACE_CRAWLER_ALLOW_DB_RESET=1 contra una BD desechable",
 )
 
 
 @pytest.fixture(autouse=True)
 def _clean_tables() -> None:
-    """Estado DB limpio por test (jobs→videos→sources; cascade alcanza frames)."""
+    """Limpia solo la BD desechable autorizada explícitamente por el operador."""
     with psycopg.connect(resolve_dsn(), autocommit=True) as conn:
         with conn.cursor() as cur:
             cur.execute("truncate table public.jobs, public.videos, public.sources cascade")
@@ -128,6 +134,46 @@ def _insert_job(
                 "values (%s, %s, %s, %s, %s)",
                 (job_type, status, source_id, video_id, error),
             )
+
+
+def _insert_reindex_job(
+    *,
+    run_id: str,
+    status: str,
+    source_id: str,
+    video_id: str,
+    error: str | None = None,
+    result_outcome: str | None = None,
+    result_frames: int | None = None,
+    result_reason: str | None = None,
+) -> str:
+    """Inserta un REINDEX con ``run_id`` en JSONB y devuelve su id."""
+    payload: dict[str, object] = {"run_id": run_id}
+    if result_outcome is not None:
+        payload.update(
+            {
+                "result_outcome": result_outcome,
+                "result_frames": result_frames,
+                "result_reason": result_reason,
+            }
+        )
+    with psycopg.connect(resolve_dsn(), autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "insert into public.jobs "
+                "(job_type, status, source_id, video_id, payload, error) "
+                "values ('REINDEX', %s, %s, %s, %s::jsonb, %s) returning id::text",
+                (
+                    status,
+                    source_id,
+                    video_id,
+                    json.dumps(payload),
+                    error,
+                ),
+            )
+            row = cur.fetchone()
+    assert row is not None
+    return str(row[0])
 
 
 def _count(table: str) -> int:
@@ -444,3 +490,111 @@ def test_stats_embeds_rate_limits_section() -> None:
     assert stats.recent_errors == []
     # Sin `rate_limits` → sección vacía (llamadas previas intactas, FR-014).
     assert _run(_repo().stats()).rate_limits == {}
+
+
+# ---------------------------------------------------------------------------
+# TASK-005-003 · candidatos y estado agregado de REINDEX (FR-009/011)
+# ---------------------------------------------------------------------------
+
+
+def test_list_reindex_candidates_filters_source_excluded_and_status() -> None:
+    """FR-009/SEC-005: SQL filtra enabled, excluded=false e indexed/failed."""
+    enabled = _upsert_source("fuente-enabled", enabled=True)
+    disabled = _upsert_source("fuente-disabled", enabled=False)
+    indexed = _upsert_video(enabled, "vid-indexed")
+    failed = _upsert_video(enabled, "vid-failed")
+    discovered = _upsert_video(enabled, "vid-discovered")
+    excluded = _upsert_video(enabled, "vid-excluded")
+    disabled_video = _upsert_video(disabled, "vid-disabled-source")
+    repo = _repo()
+    _run(repo.set_video_status(indexed.id, "indexed"))
+    _run(repo.set_video_status(failed.id, "failed"))
+    _run(repo.set_video_status(discovered.id, "discovered"))
+    _run(repo.set_video_status(excluded.id, "indexed"))
+    _run(repo.exclude(excluded.id))
+    _run(repo.set_video_status(disabled_video.id, "indexed"))
+
+    candidates = _run(repo.list_reindex_candidates("fuente-enabled", 20))
+
+    assert [(record.external_id, record.status) for record in candidates] == [
+        ("vid-failed", "failed"),
+        ("vid-indexed", "indexed"),
+    ]
+    assert _run(repo.list_reindex_candidates("fuente-disabled", 20)) == []
+
+
+def test_reindex_status_aggregates_jsonb_run_and_classifies_results() -> None:
+    """FR-011/SC-007: run_id en JSONB agrega pending/completed/skipped/failed."""
+    source = _upsert_source("fuente-enabled", enabled=True)
+    completed = _upsert_video(source, "vid-completed")
+    skipped = _upsert_video(source, "vid-skipped")
+    failed = _upsert_video(source, "vid-failed")
+    pending = _upsert_video(source, "vid-pending")
+    other_run_video = _upsert_video(source, "vid-other-run")
+    repo = _repo()
+    # El estado actual se contradice deliberadamente con los outcomes para
+    # demostrar que el agregado usa el resultado durable del job.
+    _run(repo.set_video_status(completed.id, "failed"))
+    _run(repo.set_video_status(skipped.id, "indexed"))
+
+    run_id = str(uuid4())
+    other_run_id = str(uuid4())
+    _insert_reindex_job(
+        run_id=run_id,
+        status="done",
+        source_id=source.id,
+        video_id=completed.id,
+        result_outcome="completed",
+        result_frames=3,
+    )
+    _insert_reindex_job(
+        run_id=run_id,
+        status="done",
+        source_id=source.id,
+        video_id=skipped.id,
+        result_outcome="skipped",
+        result_frames=0,
+        result_reason="video_excluded",
+    )
+    _insert_reindex_job(
+        run_id=run_id,
+        status="failed",
+        source_id=source.id,
+        video_id=failed.id,
+        error="asset corrupto",
+    )
+    _insert_reindex_job(
+        run_id=run_id,
+        status="pending",
+        source_id=source.id,
+        video_id=pending.id,
+    )
+    _insert_reindex_job(
+        run_id=other_run_id,
+        status="done",
+        source_id=source.id,
+        video_id=other_run_video.id,
+        result_outcome="completed",
+        result_frames=2,
+    )
+
+    result = _run(repo.reindex_status(run_id))
+
+    assert result["run_id"] == run_id
+    assert result["pending"] == 1
+    assert result["completed"] == 1
+    assert result["skipped"] == 1
+    assert result["failed"] == 1
+    assert result["frames"] == 3
+    by_external_id = {row["external_id"]: row for row in result["results"]}
+    assert set(by_external_id) == {
+        "vid-completed",
+        "vid-skipped",
+        "vid-failed",
+        "vid-pending",
+    }
+    assert by_external_id["vid-completed"]["status"] == "completed"
+    assert by_external_id["vid-completed"]["frames"] == 3
+    assert by_external_id["vid-skipped"]["status"] == "skipped"
+    assert by_external_id["vid-failed"]["status"] == "failed"
+    assert by_external_id["vid-pending"]["status"] == "pending"

@@ -20,7 +20,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from xtrace_spike.repo import PgRepo, parse_uuid
+import psycopg
+
+from xtrace_spike.repo import PgRepo, parse_uuid, resolve_dsn
 from xtrace_spike.vectorstore.base import FrameHit, FrameRecord, VectorStoreStats
 
 #: Dimensión del embedding fijada por PR-005 (SigLIP2) y usada por el esquema
@@ -100,8 +102,11 @@ class PgVectorStore:
       in-memory (videos = vídeos con ≥ 1 frame indexado).
     """
 
+    handles_video_state = True
+
     def __init__(self, dsn: str | None = None) -> None:
-        self._repo = PgRepo(dsn)
+        self._dsn = dsn or resolve_dsn()
+        self._repo = PgRepo(self._dsn)
 
     async def upsert_frames(self, frames: Sequence[FrameRecord]) -> int:
         if not frames:
@@ -146,6 +151,82 @@ class PgVectorStore:
                     rows,
                 )
         return len(frames)
+
+    async def replace_video_index(
+        self,
+        video_id: str,
+        frames: Sequence[FrameRecord],
+        *,
+        duration_ms: int | None,
+    ) -> None:
+        """Replace one video's frames and metadata in one SQL transaction.
+
+        The connection deliberately uses ``autocommit=False`` because the
+        regular spike operations predate this replacement boundary and use the
+        repository's autocommit connection.  An exception rolls back both the
+        delete/insert and the final ``videos`` update, preserving the prior
+        complete representation.
+        """
+        if not frames:
+            raise ValueError("el índice de vídeo no puede quedar vacío")
+        if duration_ms is not None and duration_ms < 0:
+            raise ValueError("duration_ms debe ser >= 0 o None")
+        video_uuid = parse_uuid(video_id, "video_id")
+        if any(record["video_id"] != video_id for record in frames):
+            raise ValueError("todos los frames deben pertenecer al video_id indicado")
+
+        rows: list[tuple[Any, ...]] = []
+        ordinals: dict[str, int] = {}
+        seen_sequences: set[int] = set()
+        for record in frames:
+            frame_uuid = parse_uuid(record["frame_id"], "frame_id")
+            timestamp_ms = record["timestamp_ms"]
+            if timestamp_ms is not None:
+                frame_seq = timestamp_ms
+            else:
+                ordinal = ordinals.get(video_id, 0)
+                ordinals[video_id] = ordinal + 1
+                frame_seq = _NULL_TS_SEQ_OFFSET + ordinal
+            if frame_seq in seen_sequences:
+                raise ValueError("el índice de vídeo contiene posiciones duplicadas")
+            seen_sequences.add(frame_seq)
+            rows.append(
+                (
+                    frame_uuid,
+                    video_uuid,
+                    timestamp_ms,
+                    frame_seq,
+                    phash_to_db(record["phash"]),
+                    _embedding_literal(record["embedding"]),
+                )
+            )
+
+        async with await psycopg.AsyncConnection.connect(self._dsn, autocommit=False) as conn:
+            try:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "insert into public.videos (id, local_ref) values (%s, %s) "
+                        "on conflict (id) do nothing",
+                        (video_uuid, video_id),
+                    )
+                    await cur.execute(
+                        "delete from public.frames where video_id = %s", (video_uuid,)
+                    )
+                    await cur.executemany(
+                        "insert into public.frames "
+                        "(id, video_id, timestamp_ms, frame_seq, phash, embedding) "
+                        "values (%s, %s, %s, %s, %s, %s::vector)",
+                        rows,
+                    )
+                    await cur.execute(
+                        "update public.videos set status = 'indexed', frame_count = %s, "
+                        "duration_ms = %s, error = null, indexed_at = now() where id = %s",
+                        (len(rows), duration_ms, video_uuid),
+                    )
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
 
     async def ann_search(
         self,

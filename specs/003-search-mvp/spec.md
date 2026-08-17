@@ -4,12 +4,13 @@
 
 **Created**: 2026-08-16
 
-**Status**: IMPLEMENTING
+**Status**: APPROVED
 
 **Input**: User description: "Fase 3 — MVP de búsqueda USABLE: API REST de búsqueda por
 imagen + frontend mínimo Next.js (subir imagen → ver resultados) contra el índice real
 existente (vídeos locales del spike + vídeos web del crawler, p. ej. los 104 del tag
-`buttfucking`). Solo local, sin exposición pública y sin auth en esta fase."
+`buttfucking`). Local por defecto, con acceso remoto temporal protegido para pruebas del
+operador; sin despliegue público permanente."
 
 > Origen de requisitos: `docs/PRODUCT_IDEA.md` (ASSUMPTION-2: sin acceso público hasta
 > cerrar compliance; ASSUMPTION-6: media de consulta borrada inmediatamente) y el estado
@@ -18,8 +19,8 @@ existente (vídeos locales del spike + vídeos web del crawler, p. ej. los 104 d
 >
 > Esta spec describe **qué** y **por qué**. Las decisiones técnicas concretas (framework
 > y empaquetado del API, mecanismo de subida) se fijan en `technical-planning` tras la
-> **aprobación humana**; el despliegue queda acotado por **D4** (frontend → Preview
-> automático de Vercel del PR; API → solo local). La reutilización del pipeline de
+> **aprobación humana**; el despliegue queda acotado por **D4/D6** (sin despliegue
+> permanente de la API; acceso remoto solo temporal y protegido). La reutilización del pipeline de
 > búsqueda del spike (`xtrace_spike`) se menciona como **dirección**, no como diseño.
 
 ## Objetivo
@@ -27,8 +28,9 @@ existente (vídeos locales del spike + vídeos web del crawler, p. ej. los 104 d
 Que el **operador** pueda probar la búsqueda visual de XTrace desde un **navegador** (o
 `curl`) contra el **índice real existente**: sube una captura, recibe resultados con
 **vídeo, score y timestamp**, y puede abrir el vídeo en su fuente original. Es el primer
-paso de producto usable tras las fases de validación (spike) e ingesta (crawler), sin
-exponer nada públicamente.
+paso de producto usable tras las fases de validación (spike) e ingesta (crawler). Opera
+localmente por defecto y puede compartirse de forma temporal con el operador mediante un
+túnel remoto protegido, sin convertirse en un despliegue público permanente.
 
 ## Alcance
 
@@ -43,9 +45,12 @@ exponer nada públicamente.
 - **Validación de media de consulta** (MIME por firma y tamaño, en servidor) y **borrado
   inmediato** tras procesar la búsqueda (extiende FR-018 del spike).
 - **Logs de búsquedas**: registro analítico sin media, con TTL configurable.
-- **Solo local**: sin auth y sin despliegue público en esta fase (D3, ASSUMPTION-2); el
-  frontend se publica únicamente como **Preview automático de Vercel del PR** y la **API
-  no se despliega** (D4).
+- **Local por defecto**: frontend y API escuchan en loopback y no se despliegan de forma
+  permanente.
+- **Acceso remoto temporal del operador** (D6): se permite un túnel de Cloudflare
+  supervisado, revocable y protegido por una capa de acceso autenticada. La URL no se
+  considera un despliegue, no permanece activa al terminar la prueba y no expone
+  credenciales ni la base de datos.
 
 ## Fuera de alcance
 
@@ -59,7 +64,8 @@ exponer nada públicamente.
 - **Ranking nuevo** o cambios en la cadena de búsqueda (se reutiliza la del spike tal
   cual).
 - **Crawler nuevo** o reindexado del corpus (se consume el índice real existente).
-- **Exposición pública** (bloqueada hasta cerrar compliance) y adaptación **móvil**.
+- **Exposición pública anónima**, Quick Tunnels sin protección de acceso, publicación
+  permanente y adaptación **móvil**.
 - Almacenamiento de vídeos completos o de la media de consulta.
 
 ## Actores
@@ -142,6 +148,28 @@ estado y conteos coherentes con el índice real.
 3. **Given** una petición malformada o media no soportada, **When** se envía, **Then** la
    API devuelve un error estructurado 4xx con mensaje claro en el idioma del frontend.
 
+### User Story 4 - Probar remotamente mediante un túnel temporal (Priority: P2)
+
+El operador quiere abrir la interfaz desde otro dispositivo o red durante una sesión de
+prueba controlada, sin desplegar XTrace ni dejar el servicio accesible permanentemente.
+
+**Why this priority**: Permite validar el flujo real desde fuera del equipo de desarrollo
+sin convertir el MVP local en un servicio público.
+
+**Independent Test**: Iniciar un túnel temporal protegido, acceder como operador
+autorizado, ejecutar una búsqueda y comprobar que un cliente no autenticado es rechazado;
+detener el túnel y verificar que la URL deja de responder.
+
+**Acceptance Scenarios**:
+
+1. **Given** frontend y API ejecutándose en loopback, **When** el operador inicia una
+   sesión remota autorizada, **Then** puede acceder al flujo de búsqueda mediante una URL
+   temporal protegida sin exponer Supabase ni secretos.
+2. **Given** el túnel activo, **When** un cliente no autenticado intenta acceder, **Then**
+   la capa de acceso lo rechaza antes de que la petición alcance XTrace.
+3. **Given** una sesión de prueba terminada, **When** el operador detiene el túnel,
+   **Then** la URL remota deja de proporcionar acceso al frontend y a la API.
+
 ### Edge Cases
 
 - Fichero renombrado o con extensión falsa (no es una imagen real) → rechazado por firma
@@ -161,6 +189,10 @@ estado y conteos coherentes con el índice real.
 - Fallo al borrar la media → se registra como warning sin enmascarar el resultado.
 - Búsquedas concurrentes → independientes, cada una con su `search_id`.
 - Subida cancelada en el navegador → el frontend no deja estados colgados.
+- Fallo o desconexión del túnel → la aplicación local continúa disponible y la sesión
+  remota falla de forma cerrada.
+- URL remota compartida accidentalmente → no concede acceso sin superar la capa de
+  autenticación.
 
 ## Requirements _(mandatory)_
 
@@ -206,12 +238,15 @@ estado y conteos coherentes con el índice real.
 - **FR-013**: La búsqueda MUST operar contra el **índice real actual** (D5: dataset local
   del spike, 43 vídeos + vídeos web del crawler, 104 `indexed` del tag `buttfucking`) tal
   cual está, sin requerir reindexado previo en esta fase.
+- **FR-014**: El operador MUST poder habilitar y revocar una sesión de acceso remoto
+  temporal al frontend y a la API sin desplegar permanentemente ninguno de los dos.
 
 ### Security Requirements
 
-- **SEC-001**: El MVP MUST ejecutarse **solo en local** y MUST NOT exponerse públicamente
-  (sin deploy público ni auth en esta fase; D3 + ASSUMPTION-2: la exposición pública
-  espera a cerrar compliance; la API no se despliega, D4).
+- **SEC-001**: El MVP MUST ejecutarse **en local por defecto**, con frontend, API y base
+  de datos ligados a loopback. Solo MAY habilitar acceso remoto durante una sesión de
+  prueba explícita del operador conforme a SEC-007..SEC-010; no se permite despliegue
+  público permanente.
 - **SEC-002**: La validación de la media de consulta MUST hacerse **en servidor** (tamaño y
   firma MIME), no solo en la interfaz.
 - **SEC-003**: El borrado de la media de consulta MUST estar **garantizado incluso ante
@@ -223,6 +258,18 @@ estado y conteos coherentes con el índice real.
   contenido (solo el registro analítico sin media).
 - **SEC-006**: No se añaden **secretos** al repositorio; la configuración local usa
   variables de entorno (las ya contempladas en el skeleton).
+- **SEC-007**: Toda sesión remota MUST estar protegida por una capa de acceso autenticada
+  delante del frontend y la API; una URL aleatoria por sí sola no constituye
+  autenticación. Los Quick Tunnels anónimos están prohibidos.
+- **SEC-008**: El túnel MUST exponer únicamente el frontend y las rutas de API necesarias
+  para la prueba. MUST NOT exponer Supabase, PostgreSQL, puertos de administración,
+  secretos, ficheros locales ni endpoints de depuración.
+- **SEC-009**: El acceso remoto MUST ser temporal, supervisado y revocable: se inicia por
+  acción explícita del operador y se detiene al terminar la sesión. Un reinicio del equipo
+  o de la aplicación no debe reabrirlo automáticamente.
+- **SEC-010**: La sesión remota MUST mantener la validación, límites de tamaño, borrado
+  inmediato de media y CORS restringido al origen temporal autorizado. Las credenciales
+  del túnel o de su capa de acceso nunca se registran en el repositorio.
 
 ### Data Requirements
 
@@ -247,6 +294,8 @@ estado y conteos coherentes con el índice real.
   decide en `technical-planning`).
 - **NFR-004**: El frontend y la API deben arrancar y funcionar en local con la
   configuración mínima documentada, sin servicios externos de pago.
+- **NFR-005**: Habilitar o revocar el acceso remoto temporal no debe modificar el corpus,
+  debilitar RLS ni impedir que el flujo local siga funcionando.
 
 ### UX Requirements
 
@@ -286,13 +335,19 @@ estado y conteos coherentes con el índice real.
   resultado con enlace a la fuente) es **verde en CI**.
 - **SC-006**: La validación **rechaza con 4xx** la media inválida (no imagen, > 10 MB,
   corrupta) **sin ejecutar búsqueda**.
+- **SC-007**: Durante una prueba remota, el operador autenticado completa una búsqueda de
+  extremo a extremo y un cliente no autenticado no alcanza XTrace.
+- **SC-008**: Tras detener la sesión remota, la URL deja de dar acceso mientras el
+  frontend y la API continúan disponibles únicamente en loopback.
 
 ## Assumptions
 
-- **D3 (confirmado por el humano responsable, 2026-08-16)**: el MVP se ejecuta **solo en
-  local**, **sin auth** (tampoco para el frontend) y **nunca se publica** hasta cerrar
-  compliance (ASSUMPTION-2 confirmada); la compliance (18+, privacidad, ToS, takedown)
-  sigue siendo puerta previa a cualquier acceso público.
+- **D3 (enmendada por D6, 2026-08-17)**: el MVP se ejecuta localmente y sin auth propia;
+  no se publica ni despliega permanentemente. Una sesión remota solo se permite con una
+  capa de acceso externa autenticada y temporal.
+- **D6 (aprobada por el humano responsable, 2026-08-17)**: el operador puede habilitar un
+  túnel temporal de Cloudflare protegido para probar desde otra red o dispositivo. Un
+  Quick Tunnel anónimo no queda autorizado.
 - **D5 (confirmado por el humano responsable, 2026-08-16)**: el **corpus es el índice real
   actual** (Fases 1-2): **104 vídeos** `indexed` del tag `buttfucking` (web) + **43
   vídeos** del dataset local del spike; no se reindexa ni se crawlea contenido nuevo en
@@ -330,8 +385,10 @@ estado y conteos coherentes con el índice real.
 - **Media sensible**: la imagen de consulta puede ser contenido sensible; mitigación:
   validación en servidor, temporal seguro y borrado inmediato (SEC-002/003), sin logs de
   media (SEC-005).
-- **Exposición accidental**: un bind o despliegue incorrecto expondría contenido adulto;
-  mitigación: solo local (SEC-001) y revisión de seguridad.
+- **Exposición accidental**: un bind, túnel anónimo o despliegue incorrecto expondría una
+  API de subida y contenido adulto; mitigación: loopback por defecto, autenticación previa
+  al túnel, CORS exacto, revocación al terminar y revisión de seguridad
+  (SEC-001/007..010).
 - **Acoplamiento frontend-API**: si el frontend asume detalles del API antes de fijarse el
   contrato, hay retrabajo; mitigación: FR-004 como frontera estable.
 - **Contenido adulto en CI/E2E**: el E2E necesita una captura de prueba; se usan fixtures
@@ -339,25 +396,28 @@ estado y conteos coherentes con el índice real.
 
 ## Open Questions
 
-_Ronda 1 resuelta por el humano responsable el 2026-08-16 (decisiones D1..D5). No quedan
-preguntas abiertas capaces de cambiar la implementación._
+_Ronda 1 resuelta por el humano responsable el 2026-08-16 (decisiones D1..D5). La
+enmienda D6 fue aprobada el 2026-08-17._
 
 1. **Endpoints mínimos exactos** → **D1**: `POST /search` (subida de imagen → resultados)
    + `GET /health` + `GET /stats` + `GET /videos/{id}` (ficha con metadatos, fuente y
    enlace original).
 2. **Frontend** → **D2**: una sola página (upload + resultados: título, fuente, score,
    timestamp y enlace al vídeo original); **sin exploración del corpus**.
-3. **Auth y local** → **D3**: **sin auth** y **solo local** (también el frontend); nunca
-   se publica hasta cerrar compliance (ASSUMPTION-2).
-4. **Deploy** → **D4**: el frontend usa el **Preview automático de Vercel del PR**; la
-   **API solo local** (no se despliega).
+3. **Auth y local** → **D3**: decisión original de ejecución solo local, posteriormente
+   enmendada por D6 para permitir sesiones remotas temporales protegidas.
+4. **Deploy** → **D4**: el frontend usa el **Preview automático de Vercel del PR** y la
+   API no se despliega permanentemente; D6 permite únicamente un túnel temporal protegido.
 5. **Corpus de prueba** → **D5**: índice real actual — **104 vídeos** del tag
    `buttfucking` (web) + **43 vídeos** del dataset local del spike.
+6. **Acceso remoto temporal** → **D6**: permitido mediante túnel de Cloudflare temporal
+   y autenticado; prohibido como Quick Tunnel anónimo o despliegue permanente.
 
 ## Approval
 
-**Estado**: `APPROVED` — aprobada por el humano responsable el 2026-08-16 (frase exacta
-"Especificación aprobada"). Habilitado el paso a `technical-planning`.
+**Estado**: `APPROVED` — la spec original fue aprobada el 2026-08-16 y la enmienda D6 de
+acceso remoto temporal fue aprobada por el humano responsable el 2026-08-17 con la frase
+exacta "Especificación aprobada". Habilitado el paso a `technical-planning`.
 
 **Cierre de la implementación (2026-08-17, PR-054…PR-058)**: la implementación está
 completa y **SC-001/SC-003/SC-005/SC-006 quedan verdes** por tests automatizados (paridad
@@ -371,6 +431,12 @@ documentada en `docs/handoffs/PR-058.md`). El humano responsable la moverá a
 
 ## Historial de decisiones
 
+- **2026-08-17 · Aprobación D6**: el humano responsable aprueba la enmienda de acceso
+  remoto temporal con la frase exacta "Especificación aprobada".
+- **2026-08-17 · D6 READY_FOR_REVIEW**: a petición del operador, se permite acceso remoto
+  temporal mediante un túnel de Cloudflare protegido por autenticación, conservando
+  loopback como valor por defecto y prohibiendo Quick Tunnels anónimos y despliegues
+  permanentes. Pendiente de aprobación humana.
 - **2026-08-16 · Aprobación**: spec **`APPROVED`** por el humano responsable (frase
   exacta "Especificación aprobada"). Se habilita `technical-planning`.
 - **2026-08-16 · Borrador inicial**: decisión de alcance del operador: la Fase 3 es el

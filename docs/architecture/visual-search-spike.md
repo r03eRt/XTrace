@@ -88,6 +88,9 @@ flowchart LR
 
 ## Scaling strategy (resumen)
 
-- Spike/MVP: pgvector + HNSW (≤ ~3M vectores según benchmark).
-- Futuro (millones/decenas de millones): evaluar Qdrant detrás de `VectorStore` sin tocar
-  el dominio. GPU serverless solo cuando haya embeddings pendientes.
+- Spike/validación: pgvector + HNSW y la configuración medida de 30 frames/vídeo.
+- Catálogo global multi-proveedor: **8 frames representativos/vídeo** en el índice base,
+  seguido de refinamiento bajo demanda sobre los candidatos principales (ADR-0013).
+- Futuro (millones/decenas de millones): evaluar particionado o Qdrant detrás de
+  `VectorStore` sin tocar el dominio; la capa global debe escalar independientemente del
+  refinamiento temporal. GPU serverless solo cuando haya embeddings pendientes.

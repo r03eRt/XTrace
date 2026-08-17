@@ -14,6 +14,8 @@ import math
 
 import pytest
 
+from xtrace_spike.indexing.state import InMemoryVideoStateStore
+from xtrace_spike.indexing.writer import AtomicReplacementError, VideoIndexWriter
 from xtrace_spike.vectorstore.base import FrameRecord, VectorStore
 from xtrace_spike.vectorstore.in_memory import InMemoryVectorStore
 
@@ -200,3 +202,132 @@ def test_ann_search_zero_vectors_get_max_distance() -> None:
     hits = asyncio.run(store.ann_search([1.0, 0.0], k=1))
     assert hits[0]["frame_id"] == "f-zero"
     assert hits[0]["distance"] == 1.0
+
+
+def test_replace_video_index_removes_stale_frames_and_updates_metadata() -> None:
+    """TASK-005-001/FR-010: reemplazo completo conserva solo el nuevo índice."""
+    store = InMemoryVectorStore()
+    asyncio.run(
+        store.upsert_frames(
+            [
+                _record("old-1", "v1", [1.0, 0.0], timestamp_ms=0),
+                _record("old-2", "v1", [0.0, 1.0], timestamp_ms=1000),
+                _record("other", "v2", [1.0, 0.0], timestamp_ms=0),
+            ]
+        )
+    )
+
+    asyncio.run(
+        store.replace_video_index(
+            "v1",
+            [_record("new-1", "v1", [1.0, 0.0], timestamp_ms=500)],
+            duration_ms=12_345,
+        )
+    )
+
+    assert asyncio.run(store.get_frame("old-1")) is None
+    assert asyncio.run(store.get_frame("old-2")) is None
+    assert asyncio.run(store.get_frame("new-1")) is not None
+    assert asyncio.run(store.get_frame("other")) is not None
+    assert asyncio.run(store.stats()) == {"videos": 2, "frames": 2, "vectors": 2}
+    metadata = asyncio.run(store.get_video_index("v1"))
+    assert metadata == {
+        "status": "indexed",
+        "frame_count": 1,
+        "duration_ms": 12_345,
+        "excluded": False,
+    }
+
+
+def test_replace_video_index_rejects_empty_without_mutating_previous_index() -> None:
+    """Un lote vacío no puede borrar accidentalmente una representación válida."""
+    store = InMemoryVectorStore()
+    asyncio.run(store.upsert_frames([_record("old", "v1", [1.0, 0.0], timestamp_ms=100)]))
+
+    with pytest.raises(ValueError, match="vacío"):
+        asyncio.run(store.replace_video_index("v1", [], duration_ms=99))
+
+    assert asyncio.run(store.get_frame("old")) is not None
+    assert asyncio.run(store.stats()) == {"videos": 1, "frames": 1, "vectors": 1}
+
+
+def test_replace_video_index_does_not_change_excluded_flag() -> None:
+    """FR-010: reindexar no deshace una exclusión explícita."""
+    store = InMemoryVectorStore()
+    asyncio.run(store.upsert_frames([_record("old", "v1", [1.0, 0.0], timestamp_ms=100)]))
+    asyncio.run(store.delete_video("v1"))
+
+    asyncio.run(
+        store.replace_video_index(
+            "v1", [_record("new", "v1", [1.0, 0.0], timestamp_ms=200)], duration_ms=500
+        )
+    )
+
+    assert asyncio.run(store.get_video_index("v1"))["excluded"] is True
+    assert asyncio.run(store.ann_search([1.0, 0.0], k=10)) == []
+    assert len(asyncio.run(store.ann_search([1.0, 0.0], k=10, exclude_videos=False))) == 1
+
+
+def test_writer_rolls_back_frames_if_state_commit_fails() -> None:
+    """FR-010: el estado y el conjunto de frames no quedan descoordinados."""
+
+    class _FailingStateStore(InMemoryVideoStateStore):
+        async def mark_indexed(
+            self, video_id: str, *, frame_count: int, duration_ms: int | None
+        ) -> None:
+            raise RuntimeError("state commit failed")
+
+    store = InMemoryVectorStore()
+    asyncio.run(store.upsert_frames([_record("old", "v1", [1.0, 0.0], timestamp_ms=100)]))
+    writer = VideoIndexWriter(store=store, video_states=_FailingStateStore())
+
+    with pytest.raises(RuntimeError, match="state commit failed"):
+        asyncio.run(
+            writer.replace_video_index(
+                "v1", [_record("new", "v1", [1.0, 0.0], timestamp_ms=200)], duration_ms=500
+            )
+        )
+
+    assert asyncio.run(store.get_frame("old")) is not None
+    assert asyncio.run(store.get_frame("new")) is None
+
+
+def test_video_state_snapshot_restore_is_public_and_preserves_metadata() -> None:
+    """FR-010: rollback usa snapshot/restore sin inspeccionar `_videos`."""
+    states = InMemoryVideoStateStore()
+    asyncio.run(states.mark_discovered("v1", "clip.mp4"))
+    asyncio.run(states.mark_indexed("v1", frame_count=5, duration_ms=12_000))
+    snapshot = asyncio.run(states.snapshot("v1"))
+    assert snapshot is not None
+    assert snapshot.frame_count == 5
+    assert snapshot.duration_ms == 12_000
+
+    asyncio.run(states.mark_failed("v1", "boom"))
+    assert asyncio.run(states.snapshot("v1")).status == "failed"
+    asyncio.run(states.restore("v1", snapshot))
+    restored = asyncio.run(states.snapshot("v1"))
+    assert restored == snapshot
+
+
+def test_writer_fails_before_mutation_without_public_rollback_contract() -> None:
+    """FR-010: un store no rollbackable no puede publicar una sustitución."""
+
+    class _NoRollbackStore:
+        def __init__(self) -> None:
+            self.called = False
+
+        async def replace_video_index(
+            self, _video_id: str, _records: list[FrameRecord], *, duration_ms: int | None
+        ) -> None:
+            self.called = True
+
+    store = _NoRollbackStore()
+    writer = VideoIndexWriter(store=store, video_states=InMemoryVideoStateStore())  # type: ignore[arg-type]
+
+    with pytest.raises(AtomicReplacementError, match="rollback"):
+        asyncio.run(
+            writer.replace_video_index(
+                "v1", [_record("f1", "v1", [1.0, 0.0], timestamp_ms=100)], duration_ms=500
+            )
+        )
+    assert store.called is False
