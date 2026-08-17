@@ -72,7 +72,7 @@ continúan tras PR-053 (fix del crawler, fase 2, ya mergeado a `main`).
 ## Fase 1 — US1: API de búsqueda por imagen (P1) 🎯
 
 ### PR-055 · `POST /search`: validación de media, borrado inmediato y contrato CLI (paridad)
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola B)
 - **Prioridad**: P1 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: medio (SEC)
 - **Spec/Req**: FR-001..005, FR-011 (400/413/415), FR-012 (registro), FR-013 ·
   `SEC-002/003/005` · UX-001 · NFR-002 · DATA-002/003 · SC-001/003/006 · contracts §1/§5/§7
