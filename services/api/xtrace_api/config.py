@@ -9,7 +9,8 @@ Secciones: base del bootstrap (PR-054): bind local (SEC-001), DSN de servidor
 (SEC-004), proveedor de embeddings (paridad CLI), `work_root` para los
 temporales de media de consulta (SEC-005) y allowlist CORS; search (PR-055):
 defaults de `POST /search` (top_k/min_score, mismos que la CLI — contracts
-§1). La sección TTL de `searches` llega en PR-056.
+§1); TTL de `searches` (PR-056): antigüedad máxima y intervalo del cleanup
+por `created_at` sin migración (FR-012 · DATA-001 · data-model.md).
 """
 
 from __future__ import annotations
@@ -76,6 +77,16 @@ class Settings(BaseSettings):
     # orígenes de Vercel Preview se añaden por env del operador si se quiere
     # probar el preview contra la API local (plan §Security strategy).
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
+
+    # Sección TTL de `searches` (PR-056 · FR-012 · DATA-001 · data-model.md):
+    # cleanup por `created_at` SIN migración (la tabla `searches` no cambia).
+    # El lifespan ejecuta un purge inicial al arrancar y luego un loop
+    # periódico que borra `created_at < now() - TTL` (env
+    # `XTRACE_API_SEARCHES_TTL_DAYS`, default 30 — data-model.md).
+    searches_ttl_days: int = Field(default=30, ge=1, le=3650)
+    # Intervalo del cleanup en minutos (env `XTRACE_API_SEARCHES_TTL_CLEANUP_MIN`,
+    # default 60 — data-model.md).
+    searches_ttl_cleanup_min: int = Field(default=60, ge=1, le=10080)
 
 
 @lru_cache

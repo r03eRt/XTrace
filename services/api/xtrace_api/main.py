@@ -1,5 +1,5 @@
-"""Aplicación FastAPI del servicio de búsqueda de XTrace (PR-054/055 · FR-006/011
-· SEC-001 · ADR-0012).
+"""Aplicación FastAPI del servicio de búsqueda de XTrace (PR-054/055/056 ·
+FR-006/007/008/011/012 · SEC-001/004/005 · DATA-001 · ADR-0012).
 
 Base del bootstrap (PR-054): app con CORS (allowlist por env, SEC-001),
 lifespan que asegura `work_root` (SEC-005) y `GET /health` (FR-006 ·
@@ -9,15 +9,23 @@ PR-055: registra el router `POST /search` y los **exception handlers
 estructurados** del contracts §5 (FR-011, mensajes en español — UX-001):
 400 (media/petición inválida, body no multipart), 413 (media > 10 MB),
 415 (firma MIME no soportada), 503 (índice/BD no disponible) y 500 (fallo
-interno). Los routers `/stats` y `/videos/{id}` y el cleanup TTL llegan en
-PR-056.
+interno).
+
+PR-056: registra los routers `GET /stats` (FR-007 · contracts §3) y
+`GET /videos/{id}` (FR-008 · contracts §4) con el handler del error de la
+ficha (400 `invalid_uuid` / 404 `video_not_found` · contracts §5), y el
+**TTL de `searches`** en el lifespan (FR-012 · DATA-001 · data-model.md):
+cleanup por `created_at` sin migración — purge inicial al arrancar + loop
+periódico, ambos best-effort y solo con backend postgres (modo in-memory no
+hay tabla `searches`, mismo criterio que `record_search`).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import psycopg
 from fastapi import FastAPI, Request
@@ -25,21 +33,44 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from xtrace_spike.cli import build_backend  # type: ignore[import-untyped]
 
 from xtrace_api import __version__
+from xtrace_api.analytics import searches_ttl_loop, searches_ttl_round
 from xtrace_api.config import get_settings
 from xtrace_api.media import MediaValidationError
 from xtrace_api.routers.search import router as search_router
+from xtrace_api.routers.stats import router as stats_router
+from xtrace_api.routers.videos import VideoCardError
+from xtrace_api.routers.videos import router as videos_router
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Arranque/apagado del servicio (PR-054: asegura `work_root`; TTL en PR-056)."""
+    """Arranque/apagado del servicio (PR-054: `work_root`; PR-056: TTL de searches).
+
+    El TTL (FR-012 · DATA-001) es cleanup por `created_at` sin migración
+    (data-model.md): purge inicial al arrancar + loop periódico, ambos
+    best-effort (un fallo de BD se loguea y se reintenta). Solo con backend
+    postgres: en modo in-memory (tests/dev sin `SUPABASE_DB_URL`) no hay
+    tabla `searches` que limpiar (mismo criterio que `record_search`).
+    """
     settings = get_settings()
     settings.work_root.mkdir(parents=True, exist_ok=True)
-    yield
+
+    ttl_task: asyncio.Task[None] | None = None
+    if build_backend().label == "postgres":
+        await searches_ttl_round(settings)
+        ttl_task = asyncio.create_task(searches_ttl_loop(settings))
+    try:
+        yield
+    finally:
+        if ttl_task is not None:
+            ttl_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await ttl_task
 
 
 def _error_response(status_code: int, error_type: str, message: str) -> JSONResponse:
@@ -67,8 +98,10 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Router de búsqueda (PR-055); stats/videos se registran en PR-056.
+    # Routers de búsqueda (PR-055), stats y ficha de vídeo (PR-056).
     app.include_router(search_router)
+    app.include_router(stats_router)
+    app.include_router(videos_router)
 
     @app.get("/health", tags=["health"])
     def health() -> dict[str, str]:
@@ -85,6 +118,15 @@ def create_app() -> FastAPI:
 
         El mensaje ya viene en español y sin rutas ni nombres de fichero
         (SEC-005); `error_type` es estable para el frontend.
+        """
+        return _error_response(exc.status_code, exc.error_type, exc.message)
+
+    @app.exception_handler(VideoCardError)
+    def video_card_error_handler(_request: Request, exc: VideoCardError) -> JSONResponse:
+        """Ficha del vídeo: 400 `invalid_uuid` / 404 `video_not_found` (contracts §5).
+
+        El mensaje ya viene en español (UX-001); `error_type` es estable para
+        el frontend (FR-011).
         """
         return _error_response(exc.status_code, exc.error_type, exc.message)
 
