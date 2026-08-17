@@ -130,23 +130,30 @@ export default function BuscarPage() {
             textAlign: "center",
           }}
         >
+          {/* PR-061: input DENTRO del label (patrón robusto) + sr-only clásico (clip):
+              Safari/macOS no abren el selector con el input fuera del label a 1px+opacity:0.
+              El sr-only sin opacity:0 mantiene el foco de teclado (accesibilidad). */}
+          <input
+            id="search-file-input"
+            data-testid="search-file-input"
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            onChange={(e) => handleFiles(e.target.files)}
+            style={{
+              position: "absolute",
+              width: 1,
+              height: 1,
+              margin: -1,
+              padding: 0,
+              border: 0,
+              clipPath: "inset(50%)",
+              overflow: "hidden",
+              whiteSpace: "nowrap",
+            }}
+          />
           <span>Arrastra una imagen aquí o haz clic para seleccionarla</span>
           <span style={{ fontSize: "0.85rem", color: "#666" }}>JPEG, PNG o WebP · máx. 10 MB</span>
         </label>
-        <input
-          id="search-file-input"
-          data-testid="search-file-input"
-          type="file"
-          accept="image/jpeg,image/png,image/webp"
-          onChange={(e) => handleFiles(e.target.files)}
-          style={{
-            position: "absolute",
-            width: 1,
-            height: 1,
-            opacity: 0,
-            overflow: "hidden",
-          }}
-        />
         {file && (
           <p
             data-testid="search-file-name"
