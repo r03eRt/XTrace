@@ -190,7 +190,7 @@ continúan tras PR-053 (fix del crawler, fase 2, ya mergeado a `main`).
 ## Fase 3 — E2E y cierre
 
 ### PR-058 · E2E WebdriverIO (smoke, API stubeada) + cierre de la fase
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase)
 - **Prioridad**: P1 · **Complejidad**: S · **Rol**: QA (wdio) + orchestrator (cierre) ·
   **Riesgo**: medio (puerta SC-002)
 - **Spec/Req**: SC-002/004/005 · NFR-004 · cierre spec 003 (`IMPLEMENTING` → `IMPLEMENTED`
