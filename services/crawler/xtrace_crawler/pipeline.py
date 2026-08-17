@@ -96,17 +96,20 @@ del job (p. ej. el registry de PR-028). Añadir una fuente no toca este módulo
 
 from __future__ import annotations
 
+import hashlib
 import io
+import json
 import logging
+import math
 import shutil
 import tempfile
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol, TypedDict
+from typing import Any, Protocol, TypedDict, cast
 
 import httpx
 import numpy as np
@@ -114,6 +117,10 @@ from PIL import Image
 from xtrace_spike.embeddings.fake import FakeEmbeddingProvider  # type: ignore[import-untyped]
 from xtrace_spike.hashing.phash import compute_phash  # type: ignore[import-untyped]
 from xtrace_spike.indexing.pipeline import frame_id_for  # type: ignore[import-untyped]
+from xtrace_spike.sampling import (  # type: ignore[import-untyped]
+    AdaptiveSamplingPolicy,
+    select_representative_frames,
+)
 from xtrace_spike.vectorstore.base import VectorStore  # type: ignore[import-untyped]
 from xtrace_spike.vectorstore.pgvector import (  # type: ignore[import-untyped]
     EMBEDDING_DIMENSION,
@@ -147,14 +154,80 @@ from xtrace_crawler.jobs.types import Job, JobType
 from xtrace_crawler.jobs.worker import DEFAULT_DISCOVER_LIMIT, JobHandler, JobWorker
 from xtrace_crawler.repo import (
     RateLimitStatsRecord,
+    ReindexOutcome,
     SourceRecord,
     VideoRecord,
+    VideoStateSnapshot,
     VideoStatus,
     parse_uuid,
     rate_limit_stats_record,
 )
 
 logger = logging.getLogger(__name__)
+
+# REINDEX is deliberately stricter than the opt-in sampling hook used by the
+# asset-selection tests.  Keeping the profile here gives the queue payload one
+# canonical representation that both the CLI and the worker can validate.
+REINDEX_SAMPLING_MODE = "adaptive"
+REINDEX_TARGET_INTERVAL_SECONDS = 120
+REINDEX_MAX_FRAMES = 8
+REINDEX_ELIGIBLE_STATUSES: frozenset[VideoStatus] = frozenset({"indexed", "failed"})
+
+
+def reindex_sampling_profile() -> dict[str, int | str]:
+    """Return the only sampling profile accepted by the reproducible REINDEX."""
+    return {
+        "mode": REINDEX_SAMPLING_MODE,
+        "target_interval_seconds": REINDEX_TARGET_INTERVAL_SECONDS,
+        "max_frames": REINDEX_MAX_FRAMES,
+    }
+
+
+def validate_reindex_sampling_profile(value: object) -> AdaptiveSamplingPolicy:
+    """Validate a REINDEX payload profile and convert it to the shared policy.
+
+    REINDEX must never inherit a process-level default: its profile is part of
+    the job payload and is validated again by the worker.  Extra or missing
+    fields are rejected so the dedupe hash describes exactly what was run.
+    """
+    if not isinstance(value, Mapping):
+        raise ValueError("payload['sampling'] debe ser un objeto")
+    expected = reindex_sampling_profile()
+    if set(value) != set(expected):
+        raise ValueError(
+            "payload['sampling'] debe contener exactamente "
+            "mode, target_interval_seconds y max_frames"
+        )
+    mode = value.get("mode")
+    interval = value.get("target_interval_seconds")
+    max_frames = value.get("max_frames")
+    if mode != REINDEX_SAMPLING_MODE:
+        raise ValueError("REINDEX solo admite sampling.mode='adaptive'")
+    if isinstance(interval, bool) or not isinstance(interval, int):
+        raise ValueError("sampling.target_interval_seconds debe ser un entero")
+    if isinstance(max_frames, bool) or not isinstance(max_frames, int):
+        raise ValueError("sampling.max_frames debe ser un entero")
+    if interval != REINDEX_TARGET_INTERVAL_SECONDS:
+        raise ValueError("REINDEX exige sampling.target_interval_seconds=120")
+    if max_frames != REINDEX_MAX_FRAMES:
+        raise ValueError("REINDEX exige sampling.max_frames=8")
+    return AdaptiveSamplingPolicy(
+        target_interval_ms=interval * 1000,
+        max_frames=max_frames,
+    )
+
+
+def reindex_profile_hash(value: object) -> str:
+    """Hash the validated canonical profile for the job dedupe key."""
+    validate_reindex_sampling_profile(value)
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def reindex_dedupe_key(source: str, external_id: str, profile: object) -> str:
+    """Build a stable source+video+profile key for concurrent REINDEX jobs."""
+    return f"reindex:{source}:{external_id}:{reindex_profile_hash(profile)}"
+
 
 #: Tamaño de lote del embedding (paridad con el pipeline del spike, PR-010).
 DEFAULT_BATCH_SIZE: int = 64
@@ -214,6 +287,23 @@ class CrawlerRepoProtocol(Protocol):
 
     async def get_web_video(self, source_name: str, external_id: str) -> VideoRecord | None: ...
 
+    async def list_reindex_candidates(self, source_name: str, limit: int) -> list[VideoRecord]: ...
+
+    async def set_reindex_result(
+        self,
+        job_id: uuid.UUID,
+        *,
+        outcome: ReindexOutcome,
+        frames: int,
+        reason: str | None,
+    ) -> bool: ...
+
+    async def snapshot_video_state(self, video_id: str) -> VideoStateSnapshot | None: ...
+
+    async def restore_video_state(
+        self, video_id: str, snapshot: VideoStateSnapshot | None
+    ) -> None: ...
+
     async def set_video_status(self, video_id: str, status: VideoStatus) -> bool: ...
 
     async def exclude(self, video_id: str, *, excluded: bool = True) -> bool: ...
@@ -265,10 +355,24 @@ class FrameRecord(TypedDict):
 
 @dataclass(frozen=True)
 class IndexedFrame:
-    """Frame en memoria (imagen PIL abierta) con su timestamp aproximado (ms)."""
+    """Frame en memoria con posición/timestamp de la fuente cuando existen.
+
+    ``position`` identifica la posición declarada por el asset (por ejemplo,
+    una tile de storyboard). No se infiere para frames extraídos de un preview:
+    esos frames solo conservan el timestamp que proporciona el extractor.
+    """
 
     image: Image.Image
     timestamp_ms: int | None
+    position: int | None = None
+
+
+@dataclass(frozen=True)
+class _ReindexRollback:
+    """Snapshots required when a store publishes frames separately from state."""
+
+    store: object
+    video_state: VideoStateSnapshot | None
 
 
 def video_source_from_record(record: VideoRecord, *, source: str) -> VideoSource:
@@ -322,6 +426,7 @@ class CrawlerPipeline:
         settings: Settings | None = None,
         limiter_factory: Callable[[SourceAdapter], RateLimiter] | None = None,
         storyboard_grid: Callable[[VisualAsset], tuple[int, int] | None] | None = None,
+        sampling_policy: AdaptiveSamplingPolicy | None = None,
         batch_size: int = DEFAULT_BATCH_SIZE,
         preview_interval_s: float = DEFAULT_PREVIEW_INTERVAL_S,
         max_image_pixels: int | None = None,
@@ -352,6 +457,9 @@ class CrawlerPipeline:
                 sin `position`/`timestamp_ms` (sprites de un solo asset, p. ej.
                 xvideos); `None` (default) indexa el sprite como un único frame
                 (degradación, nunca falla el vídeo).
+            sampling_policy: política adaptativa aplicada después de expandir y
+                deduplicar los assets. `None` conserva el comportamiento legacy;
+                la selección adaptativa solo se activa con una política explícita.
             batch_size: lote del embedding (paridad spike).
             preview_interval_s: intervalo de frames de previews (PR-029).
             max_image_pixels: presupuesto de píxeles al abrir imágenes
@@ -380,6 +488,7 @@ class CrawlerPipeline:
         self._settings = settings if settings is not None else Settings()
         self._limiter_factory = limiter_factory
         self._storyboard_grid = storyboard_grid
+        self._sampling_policy = sampling_policy
         self._batch_size = batch_size
         self._preview_interval_s = preview_interval_s
         self._preview_extractor = PreviewFrameExtractor()
@@ -397,6 +506,7 @@ class CrawlerPipeline:
             JobType.FETCH_METADATA: self._fetch_metadata,
             JobType.INDEX_VIDEO: self._index_video,
             JobType.CHECK_AVAILABILITY: self._check_availability,
+            JobType.REINDEX: self._reindex,
         }
 
     def register_handlers(self, worker: JobWorker) -> None:
@@ -667,7 +777,12 @@ class CrawlerPipeline:
         assets = await adapter.get_visual_assets(video)
         await self._repo.set_video_status(record.id, "indexing")
 
-        frames = await self._collect_frames(assets, video, adapter)
+        # INDEX_VIDEO is intentionally legacy until the benchmark authorizes a
+        # default change.  Only the explicit REINDEX handler below can apply
+        # the adaptive profile.
+        frames = await self._collect_frames(
+            assets, video, adapter, sampling_policy=None, use_default_sampling=False
+        )
         logger.info(
             "etapa=assets source=%s external_id=%s job=%s duration_ms=%.1f assets=%d frames=%d",
             source,
@@ -705,6 +820,169 @@ class CrawlerPipeline:
             for frame in frames:
                 frame.image.close()
 
+    async def _reindex(self, job: Job) -> None:
+        """REINDEX one eligible video with the validated adaptive profile.
+
+        Eligibility is checked twice: the CLI filters candidates before enqueue,
+        and this handler rechecks the source gate, exclusion flag and recoverable
+        video state immediately before reading any assets.  Preparation and
+        embedding happen before ``replace_video_index``; no ``indexing`` state is
+        published, so a failed replacement leaves the prior complete index intact.
+        """
+        source = self._source_name(job)
+        external_id = self._external_id(job)
+        run_id, policy = self._validated_reindex_payload(job)
+        source_record = await self._repo.get_source(source)
+        if source_record is None or not source_record.enabled:
+            reason = "source_missing" if source_record is None else "source_disabled"
+            await self._record_reindex_result(job, outcome="skipped", frames=0, reason=reason)
+            logger.info(
+                "REINDEX omitido run_id=%s source=%s external_id=%s: fuente no habilitada",
+                run_id,
+                source,
+                external_id,
+            )
+            return
+        record = await self._repo.get_web_video(source, external_id)
+        if record is None:
+            await self._record_reindex_result(
+                job, outcome="skipped", frames=0, reason="video_missing"
+            )
+            logger.info(
+                "REINDEX omitido run_id=%s source=%s external_id=%s: vídeo ausente",
+                run_id,
+                source,
+                external_id,
+            )
+            return
+        if record.excluded or record.status not in REINDEX_ELIGIBLE_STATUSES:
+            reason = "video_excluded" if record.excluded else "video_ineligible"
+            await self._record_reindex_result(job, outcome="skipped", frames=0, reason=reason)
+            logger.info(
+                "REINDEX omitido run_id=%s source=%s external_id=%s: estado=%s excluded=%s",
+                run_id,
+                source,
+                external_id,
+                record.status,
+                record.excluded,
+            )
+            return
+
+        frames: list[IndexedFrame] = []
+        rollback: _ReindexRollback | None = None
+        replacement_committed = False
+        try:
+            video = video_source_from_record(record, source=source)
+            adapter = self._adapter_for(job)
+            await self._acquire(adapter)
+            assets = await adapter.get_visual_assets(video)
+            frames = await self._collect_frames(
+                assets,
+                video,
+                adapter,
+                sampling_policy=policy,
+                use_default_sampling=False,
+            )
+            if not frames:
+                raise ValueError(
+                    f"no se obtuvieron frames de ningún asset de {external_id!r} para REINDEX"
+                )
+            records = self._embed_frames(video_id=record.id, frames=frames)
+            # The store owns the complete replacement boundary.  In particular,
+            # do not call set_video_status('indexing') before this point.
+            rollback = await self._prepare_reindex_rollback(record)
+            await self._store.replace_video_index(record.id, records, duration_ms=video.duration_ms)
+            # PostgreSQL (and any store advertising this capability) commits the
+            # video state in the same transaction as the frame replacement.  A
+            # store without that capability needs the explicit test/double
+            # boundary below to publish the state after a successful replacement.
+            if not getattr(self._store, "handles_video_state", False):
+                await self._repo.set_video_status(record.id, "indexed")
+            # From here onward frames and video state are confirmed.  A later
+            # observability failure (for example persisting the job outcome)
+            # must not invalidate or relabel the committed representation.
+            replacement_committed = True
+            await self._record_reindex_result(
+                job,
+                outcome="completed",
+                frames=len(records),
+                reason=None,
+            )
+            logger.info(
+                "REINDEX completado run_id=%s source=%s external_id=%s frames=%d",
+                run_id,
+                source,
+                external_id,
+                len(records),
+            )
+        except Exception:
+            # Restore the complete prior representation whenever a non-atomic
+            # store has published frames before state publication failed.
+            if rollback is not None and not replacement_committed:
+                await self._rollback_reindex(record.id, rollback)
+            # A video with no committed representation needs an observable
+            # failed state.  Once a representation exists, its prior state is
+            # authoritative and the queue job records only the new failure.
+            if record.frame_count == 0 and not replacement_committed:
+                await self._repo.set_video_status(record.id, "failed")
+            raise
+        finally:
+            self._close_frames(frames)
+
+    async def _record_reindex_result(
+        self,
+        job: Job,
+        *,
+        outcome: ReindexOutcome,
+        frames: int,
+        reason: str | None,
+    ) -> None:
+        """Persist the terminal outcome before the worker can mark the job done."""
+        updated = await self._repo.set_reindex_result(
+            job.id,
+            outcome=outcome,
+            frames=frames,
+            reason=reason,
+        )
+        if not updated:
+            raise RuntimeError(f"no se pudo persistir el resultado durable de REINDEX {job.id}")
+
+    async def _prepare_reindex_rollback(self, record: VideoRecord) -> _ReindexRollback | None:
+        """Require public snapshots before using a store without atomic state."""
+        if getattr(self._store, "handles_video_state", False):
+            return None
+        snapshot_store = getattr(self._store, "snapshot_video_index", None)
+        restore_store = getattr(self._store, "restore_video_index", None)
+        if not callable(snapshot_store) or not callable(restore_store):
+            raise RuntimeError(
+                "REINDEX requiere un store atómico o snapshot_video_index/"
+                "restore_video_index para coordinar el estado del vídeo"
+            )
+        try:
+            store_snapshot = await snapshot_store()
+            state_snapshot = await self._repo.snapshot_video_state(record.id)
+        except Exception as exc:
+            raise RuntimeError("no se pudo preparar el rollback coordinado de REINDEX") from exc
+        return _ReindexRollback(store=store_snapshot, video_state=state_snapshot)
+
+    async def _rollback_reindex(self, video_id: str, rollback: _ReindexRollback) -> None:
+        """Restore store and repository state, surfacing any lost atomicity."""
+        errors: list[Exception] = []
+        restore_store = getattr(self._store, "restore_video_index", None)
+        if not callable(restore_store):
+            errors.append(RuntimeError("el store perdió restore_video_index durante REINDEX"))
+        else:
+            try:
+                await restore_store(rollback.store)
+            except Exception as exc:
+                errors.append(exc)
+        try:
+            await self._repo.restore_video_state(video_id, rollback.video_state)
+        except Exception as exc:
+            errors.append(exc)
+        if errors:
+            raise RuntimeError("falló el rollback coordinado de REINDEX") from errors[0]
+
     async def _check_availability(self, job: Job) -> None:
         """CHECK_AVAILABILITY (FR-013): estado del vídeo + exclusión del índice.
 
@@ -741,7 +1019,13 @@ class CrawlerPipeline:
     # -- Assets → frames (FR-005/FR-011/FR-015) ---------------------------------
 
     async def _collect_frames(
-        self, assets: list[VisualAsset], video: VideoSource, adapter: SourceAdapter
+        self,
+        assets: list[VisualAsset],
+        video: VideoSource,
+        adapter: SourceAdapter,
+        *,
+        sampling_policy: AdaptiveSamplingPolicy | None = None,
+        use_default_sampling: bool = True,
     ) -> list[IndexedFrame]:
         """Obtiene los bytes de los assets y los convierte en frames; degradación por asset.
 
@@ -781,7 +1065,123 @@ class CrawlerPipeline:
                 logger.warning(
                     "asset %s (%s) omitido por degradación: %s", asset.url, asset.kind, exc
                 )
-        return frames
+        policy = self._sampling_policy if use_default_sampling else sampling_policy
+        if policy is None:
+            return frames
+        return self._select_representative_frames(
+            frames, duration_ms=video.duration_ms, policy=policy
+        )
+
+    def _select_representative_frames(
+        self,
+        frames: Sequence[IndexedFrame],
+        *,
+        duration_ms: int | None,
+        policy: AdaptiveSamplingPolicy | None = None,
+    ) -> list[IndexedFrame]:
+        """Deduplicate expanded assets and select the adaptive representatives.
+
+        The order is intentional and auditable: source position/timestamp are
+        normalized first, then duplicate positions/timestamps are removed, then
+        exact pHashes are removed, and only then the shared sampling policy is
+        applied. Every image that does not reach the selected result is closed
+        here; selected images are closed by ``_index_video`` after embedding.
+        """
+        try:
+            effective_policy = policy if policy is not None else self._sampling_policy
+            if effective_policy is None:
+                raise ValueError(
+                    "sampling_policy explícita requerida para seleccionar frames adaptativos"
+                )
+            deduplicated = self._deduplicate_frames(frames, duration_ms=duration_ms)
+            selected = cast(
+                list[IndexedFrame],
+                select_representative_frames(
+                    deduplicated,
+                    duration_ms=duration_ms,
+                    timestamp=lambda frame: frame.timestamp_ms,
+                    policy=effective_policy,
+                ),
+            )
+        except Exception:
+            self._close_frames(frames)
+            raise
+
+        selected_images = {id(frame.image) for frame in selected}
+        for frame in deduplicated:
+            if id(frame.image) not in selected_images:
+                frame.image.close()
+        return selected
+
+    def _deduplicate_frames(
+        self, frames: Sequence[IndexedFrame], *, duration_ms: int | None
+    ) -> list[IndexedFrame]:
+        """Keep the first stable representative for each position/timestamp/pHash."""
+        kept: list[IndexedFrame] = []
+        seen_positions: set[int] = set()
+        seen_timestamps: set[int] = set()
+        seen_phashes: set[int] = set()
+
+        for frame in frames:
+            normalized_timestamp = self._normalize_timestamp(frame.timestamp_ms, duration_ms)
+            normalized_position = self._normalize_position(frame.position)
+            normalized = frame
+            if normalized_timestamp != frame.timestamp_ms or normalized_position != frame.position:
+                normalized = IndexedFrame(
+                    image=frame.image,
+                    timestamp_ms=normalized_timestamp,
+                    position=normalized_position,
+                )
+
+            if (normalized_position is not None and normalized_position in seen_positions) or (
+                normalized_timestamp is not None and normalized_timestamp in seen_timestamps
+            ):
+                frame.image.close()
+                continue
+
+            frame_phash = compute_phash(frame.image)
+            if frame_phash in seen_phashes:
+                frame.image.close()
+                continue
+
+            if normalized_position is not None:
+                seen_positions.add(normalized_position)
+            if normalized_timestamp is not None:
+                seen_timestamps.add(normalized_timestamp)
+            seen_phashes.add(frame_phash)
+            kept.append(normalized)
+
+        return kept
+
+    @staticmethod
+    def _normalize_timestamp(value: int | float | None, duration_ms: int | None) -> int | None:
+        """Retain only timestamp precision supported by the source metadata."""
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, float):
+            if not math.isfinite(value) or not value.is_integer():
+                return None
+            value = int(value)
+        if not isinstance(value, int) or value < 0:
+            return None
+        if duration_ms is not None and duration_ms > 0 and value >= duration_ms:
+            return None
+        return value
+
+    @staticmethod
+    def _normalize_position(value: int | None) -> int | None:
+        """Normalize a declared asset position without inventing one."""
+        if value is None or isinstance(value, bool):
+            return None
+        if not isinstance(value, int) or value < 0:
+            return None
+        return value
+
+    @staticmethod
+    def _close_frames(frames: Sequence[IndexedFrame]) -> None:
+        """Close all image handles, tolerating repeated cleanup after an error."""
+        for frame in frames:
+            frame.image.close()
 
     async def _in_process_bytes(self, adapter: SourceAdapter, asset: VisualAsset) -> bytes | None:
         """Bytes del asset servidos por el propio adapter (PR-034 · contracts §1).
@@ -878,6 +1278,9 @@ class CrawlerPipeline:
                     frames.append(
                         IndexedFrame(image=image.copy(), timestamp_ms=preview_frame.timestamp_ms)
                     )
+        except Exception:
+            self._close_frames(frames)
+            raise
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
         return frames
@@ -923,7 +1326,11 @@ class CrawlerPipeline:
             if grid is not None:
                 cols, rows = grid
                 return [
-                    IndexedFrame(image=tile.image.copy(), timestamp_ms=tile.timestamp_ms)
+                    IndexedFrame(
+                        image=tile.image.copy(),
+                        timestamp_ms=tile.timestamp_ms,
+                        position=tile.position,
+                    )
                     for tile in split_storyboard(
                         image,
                         cols=cols,
@@ -932,7 +1339,13 @@ class CrawlerPipeline:
                         max_pixels=self._max_image_pixels,
                     )
                 ]
-        return [IndexedFrame(image=image.copy(), timestamp_ms=asset.timestamp_ms)]
+        return [
+            IndexedFrame(
+                image=image.copy(),
+                timestamp_ms=asset.timestamp_ms,
+                position=asset.position,
+            )
+        ]
 
     async def _preview_frames(
         self, fetcher: AssetFetcher, asset: VisualAsset
@@ -945,17 +1358,23 @@ class CrawlerPipeline:
         **PR-036**: los JPEGs extraídos pasan por `open_image_limited`.
         """
         frames: list[IndexedFrame] = []
-        async with fetcher.fetch(asset) as path:
-            extracted = self._preview_extractor.extract_frames(
-                path, interval_s=self._preview_interval_s, out_dir=path.parent
-            )
-            for preview_frame in extracted:
-                with open_image_limited(
-                    preview_frame.path, max_pixels=self._max_image_pixels
-                ) as image:
-                    frames.append(
-                        IndexedFrame(image=image.copy(), timestamp_ms=preview_frame.timestamp_ms)
-                    )
+        try:
+            async with fetcher.fetch(asset) as path:
+                extracted = self._preview_extractor.extract_frames(
+                    path, interval_s=self._preview_interval_s, out_dir=path.parent
+                )
+                for preview_frame in extracted:
+                    with open_image_limited(
+                        preview_frame.path, max_pixels=self._max_image_pixels
+                    ) as image:
+                        frames.append(
+                            IndexedFrame(
+                                image=image.copy(), timestamp_ms=preview_frame.timestamp_ms
+                            )
+                        )
+        except Exception:
+            self._close_frames(frames)
+            raise
         return frames
 
     def _embed_frames(self, *, video_id: str, frames: Sequence[IndexedFrame]) -> list[FrameRecord]:
@@ -1051,6 +1470,18 @@ class CrawlerPipeline:
         if not isinstance(value, str) or not value:
             raise ValueError(f"payload['external_id'] requerido (str no vacío); recibido {value!r}")
         return value
+
+    def _validated_reindex_payload(self, job: Job) -> tuple[str, AdaptiveSamplingPolicy]:
+        """Validate run identity and the explicit adaptive profile in a job."""
+        raw_run_id = job.payload.get("run_id")
+        if not isinstance(raw_run_id, str) or not raw_run_id:
+            raise ValueError("payload['run_id'] requerido (UUID en formato texto)")
+        try:
+            run_id = str(uuid.UUID(raw_run_id))
+        except (ValueError, AttributeError) as exc:
+            raise ValueError(f"payload['run_id'] no es un UUID válido: {raw_run_id!r}") from exc
+        policy = validate_reindex_sampling_profile(job.payload.get("sampling"))
+        return run_id, policy
 
     async def _mark_unavailable(self, source: str, external_id: str) -> None:
         """Marca el vídeo `unavailable` + exclusión del índice si su fila existe (FR-012/013)."""

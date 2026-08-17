@@ -29,6 +29,25 @@ STATUS_INDEXED = "indexed"
 STATUS_FAILED = "failed"
 
 
+def _validate_index_metadata(frame_count: int, duration_ms: int | None) -> None:
+    """Validate metadata crossing the public state-reconciliation boundary."""
+    if frame_count < 0:
+        raise ValueError("frame_count debe ser >= 0")
+    if duration_ms is not None and duration_ms < 0:
+        raise ValueError("duration_ms debe ser >= 0 o None")
+
+
+@dataclass(frozen=True, slots=True)
+class VideoStateSnapshot:
+    """Public snapshot used to make index replacement rollbackable."""
+
+    local_ref: str
+    status: str
+    frame_count: int
+    duration_ms: int | None
+    error: str | None
+
+
 class VideoStateStore(Protocol):
     """Estado por vídeo (FR-007): transiciones y consulta, idempotente.
 
@@ -43,6 +62,16 @@ class VideoStateStore(Protocol):
     ) -> None: ...
     async def mark_failed(self, video_id: str, error: str) -> None: ...
     async def status(self, video_id: str) -> str | None: ...
+    async def reconcile_index_metadata(
+        self,
+        video_id: str,
+        local_ref: str,
+        *,
+        frame_count: int,
+        duration_ms: int | None,
+    ) -> None: ...
+    async def snapshot(self, video_id: str) -> VideoStateSnapshot | None: ...
+    async def restore(self, video_id: str, snapshot: VideoStateSnapshot | None) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,8 +89,8 @@ class InMemoryVideoStateStore:
     """Estado del vídeo en memoria (dict) para tests sin DB (PR-010 · FR-007).
 
     Semántica documentada (paridad con `PgVideoStateStore`):
-    - `mark_discovered` crea/resetea la entrada (estado `discovered`,
-      error a None): es el inicio de un ciclo de indexación.
+    - `mark_discovered` crea o inicia un ciclo (estado `discovered`, error a
+      None) preservando `frame_count` y `duration_ms` de un índice previo.
     - `mark_indexing`/`mark_indexed`/`mark_failed` transicionan el estado;
       `mark_indexed` registra `frame_count` y `duration_ms`; `mark_failed`
       registra el error del último intento.
@@ -72,11 +101,21 @@ class InMemoryVideoStateStore:
         self._videos: dict[str, _VideoStateRecord] = {}
 
     async def mark_discovered(self, video_id: str, local_ref: str) -> None:
-        self._videos[video_id] = _VideoStateRecord(local_ref=local_ref, status=STATUS_DISCOVERED)
+        previous = self._videos.get(video_id)
+        self._videos[video_id] = _VideoStateRecord(
+            local_ref=local_ref,
+            status=STATUS_DISCOVERED,
+            frame_count=previous.frame_count if previous is not None else 0,
+            duration_ms=previous.duration_ms if previous is not None else None,
+        )
 
     async def mark_indexing(self, video_id: str) -> None:
+        previous = self._videos.get(video_id)
         self._videos[video_id] = _VideoStateRecord(
-            local_ref=self._local_ref_of(video_id), status=STATUS_INDEXING
+            local_ref=self._local_ref_of(video_id),
+            status=STATUS_INDEXING,
+            frame_count=previous.frame_count if previous is not None else 0,
+            duration_ms=previous.duration_ms if previous is not None else None,
         )
 
     async def mark_indexed(
@@ -90,15 +129,70 @@ class InMemoryVideoStateStore:
         )
 
     async def mark_failed(self, video_id: str, error: str) -> None:
+        previous = self._videos.get(video_id)
         self._videos[video_id] = _VideoStateRecord(
             local_ref=self._local_ref_of(video_id),
             status=STATUS_FAILED,
+            frame_count=previous.frame_count if previous is not None else 0,
+            duration_ms=previous.duration_ms if previous is not None else None,
             error=error,
         )
 
     async def status(self, video_id: str) -> str | None:
         record = self._videos.get(video_id)
         return record.status if record is not None else None
+
+    async def reconcile_index_metadata(
+        self,
+        video_id: str,
+        local_ref: str,
+        *,
+        frame_count: int,
+        duration_ms: int | None,
+    ) -> None:
+        """Hydrate metadata from an existing index before a new transition.
+
+        A pipeline may be recreated with a fresh state double while reusing a
+        populated in-memory vector store.  Reconciliation makes a subsequent
+        ``mark_failed`` retain the committed representation's count/duration.
+        The status is intentionally set to ``indexed`` only when no state
+        exists yet; the caller immediately performs its normal transition.
+        """
+        _validate_index_metadata(frame_count, duration_ms)
+        previous = self._videos.get(video_id)
+        self._videos[video_id] = _VideoStateRecord(
+            local_ref=local_ref,
+            status=previous.status if previous is not None else STATUS_INDEXED,
+            frame_count=frame_count,
+            duration_ms=duration_ms,
+            error=previous.error if previous is not None else None,
+        )
+
+    async def snapshot(self, video_id: str) -> VideoStateSnapshot | None:
+        """Capture the complete public state without exposing the backing dict."""
+        record = self._videos.get(video_id)
+        if record is None:
+            return None
+        return VideoStateSnapshot(
+            local_ref=record.local_ref,
+            status=record.status,
+            frame_count=record.frame_count,
+            duration_ms=record.duration_ms,
+            error=record.error,
+        )
+
+    async def restore(self, video_id: str, snapshot: VideoStateSnapshot | None) -> None:
+        """Restore a prior state, including absence, for atomic rollback."""
+        if snapshot is None:
+            self._videos.pop(video_id, None)
+            return
+        self._videos[video_id] = _VideoStateRecord(
+            local_ref=snapshot.local_ref,
+            status=snapshot.status,
+            frame_count=snapshot.frame_count,
+            duration_ms=snapshot.duration_ms,
+            error=snapshot.error,
+        )
 
     def _local_ref_of(self, video_id: str) -> str:
         """local_ref conocido o respaldo (mismo criterio que repo.py)."""
@@ -162,6 +256,84 @@ class PgVideoStateStore:
                     "update public.videos set status = 'failed', error = %s where id = %s",
                     (error, video_uuid),
                 )
+
+    async def reconcile_index_metadata(
+        self,
+        video_id: str,
+        _local_ref: str,
+        *,
+        frame_count: int,
+        duration_ms: int | None,
+    ) -> None:
+        """Reconcile explicit external metadata without changing video status.
+
+        The indexing pipeline never calls this for PostgreSQL: its vector-store
+        replacement updates the same ``videos`` row in one transaction.  The
+        method exists for parity with the public state contract and explicit
+        recovery callers.
+        """
+        _validate_index_metadata(frame_count, duration_ms)
+        video_uuid = parse_uuid(video_id, "video_id")
+        async with await self._repo.connect() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "update public.videos set frame_count = %s, duration_ms = %s where id = %s",
+                    (frame_count, duration_ms, video_uuid),
+                )
+
+    async def snapshot(self, video_id: str) -> VideoStateSnapshot | None:
+        video_uuid = parse_uuid(video_id, "video_id")
+        async with await self._repo.connect() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "select local_ref, status, frame_count, duration_ms, error "
+                    "from public.videos where id = %s",
+                    (video_uuid,),
+                )
+                row = await cur.fetchone()
+        if row is None:
+            return None
+        return VideoStateSnapshot(
+            local_ref=str(row[0]),
+            status=str(row[1]),
+            frame_count=int(row[2]),
+            duration_ms=row[3],
+            error=row[4],
+        )
+
+    async def restore(self, video_id: str, snapshot: VideoStateSnapshot | None) -> None:
+        video_uuid = parse_uuid(video_id, "video_id")
+        async with await self._repo.connect() as conn:
+            async with conn.cursor() as cur:
+                if snapshot is None:
+                    await cur.execute("delete from public.videos where id = %s", (video_uuid,))
+                    return
+                await cur.execute(
+                    "update public.videos set local_ref = %s, status = %s, "
+                    "frame_count = %s, duration_ms = %s, error = %s where id = %s",
+                    (
+                        snapshot.local_ref,
+                        snapshot.status,
+                        snapshot.frame_count,
+                        snapshot.duration_ms,
+                        snapshot.error,
+                        video_uuid,
+                    ),
+                )
+                if cur.rowcount == 0:
+                    await cur.execute(
+                        "insert into public.videos "
+                        "(id, local_ref, status, frame_count, duration_ms, error) "
+                        "values (%s, %s, %s, %s, %s, %s)",
+                        (
+                            video_uuid,
+                            snapshot.local_ref,
+                            snapshot.status,
+                            snapshot.frame_count,
+                            snapshot.duration_ms,
+                            snapshot.error,
+                        ),
+                    )
 
     async def status(self, video_id: str) -> str | None:
         video_uuid = parse_uuid(video_id, "video_id")

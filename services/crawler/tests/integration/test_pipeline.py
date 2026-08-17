@@ -55,18 +55,22 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 import tempfile
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 
 import httpx
+import numpy as np
 import psycopg
 import pytest
 from PIL import Image
 from xtrace_spike.embeddings.fake import FakeEmbeddingProvider
 from xtrace_spike.hashing.phash import compute_phash
+from xtrace_spike.sampling import AdaptiveSamplingPolicy
 from xtrace_spike.vectorstore.pgvector import EMBEDDING_DIMENSION, PgVectorStore, phash_to_db
 
 from tests.fixtures.assets.preview_factory import ffmpeg_available, make_preview_mp4
@@ -86,12 +90,13 @@ from xtrace_crawler.adapters.models import (
     VideoSource,
     VisualAsset,
 )
+from xtrace_crawler.assets.preview import PreviewFrame
 from xtrace_crawler.crawling.http import SafeHTTPClient
 from xtrace_crawler.crawling.ratelimit import RateLimiter
 from xtrace_crawler.jobs.repo import JobsRepo
 from xtrace_crawler.jobs.types import JobStatus, JobType
 from xtrace_crawler.jobs.worker import JobWorker
-from xtrace_crawler.pipeline import CrawlerPipeline
+from xtrace_crawler.pipeline import CrawlerPipeline, IndexedFrame
 from xtrace_crawler.repo import CrawlerRepo, RateLimitStatsRecord, resolve_dsn
 
 #: Duración de los previews sintéticos (FFmpeg lavfi, tests sin red).
@@ -113,16 +118,18 @@ def _db_available() -> bool:
         return False
 
 
+_DESTRUCTIVE_DB_TESTS_ENABLED = os.environ.get("XTRACE_CRAWLER_ALLOW_DB_RESET") == "1"
+
 pytestmark = pytest.mark.skipif(
-    not _db_available(),
-    reason="Supabase local no alcanzable o sin migración PR-025 (CI sin DB): "
-    "integration pipeline saltada",
+    not _DESTRUCTIVE_DB_TESTS_ENABLED or not _db_available(),
+    reason="integration pipeline destructiva deshabilitada: define "
+    "XTRACE_CRAWLER_ALLOW_DB_RESET=1 contra una BD desechable",
 )
 
 
 @pytest.fixture(autouse=True)
 def _clean_tables() -> None:
-    """Estado DB limpio por test (jobs→videos→sources; cascade alcanza frames)."""
+    """Limpia solo la BD desechable autorizada explícitamente por el operador."""
     with psycopg.connect(resolve_dsn(), autocommit=True) as conn:
         with conn.cursor() as cur:
             cur.execute("truncate table public.jobs, public.videos, public.sources cascade")
@@ -1174,3 +1181,185 @@ def test_in_process_preview_bytes_are_extracted(
     if ffmpeg_available():
         assert _total_frames() > 3 * _MOCK_THUMBNAILS + 2 * _MOCK_STORYBOARD_TILES
     assert _leftover_asset_dirs() == []
+
+
+# ---------------------------------------------------------------------------
+# TASK-005-002 · selección adaptativa tras expandir y deduplicar assets
+# ---------------------------------------------------------------------------
+
+
+def _sampling_image(seed: int) -> Image.Image:
+    """Imagen determinista con pHash distinto para los casos de selección."""
+    values = np.random.default_rng(seed).integers(0, 256, size=(64, 64, 3), dtype=np.uint8)
+    return Image.fromarray(values)
+
+
+def _sampling_pipeline() -> CrawlerPipeline:
+    """Pipeline mínimo para probar la frontera de selección sin ejecutar jobs."""
+    adapter = MockAdapter(seed=42, catalog_size=1)
+    return CrawlerPipeline(
+        repo=CrawlerRepo(),
+        jobs=JobsRepo(),
+        adapter_for=lambda _job: adapter,
+        sampling_policy=AdaptiveSamplingPolicy(),
+    )
+
+
+def test_adaptive_selection_deduplicates_position_timestamp_and_exact_phash() -> None:
+    """FR-006: posición/timestamp y pHash exacto se deduplican antes de seleccionar."""
+    pipeline = _sampling_pipeline()
+    first = _sampling_image(1)
+    repeated_position = _sampling_image(2)
+    repeated_timestamp = _sampling_image(3)
+    repeated_phash = first.copy()
+    frames = [
+        IndexedFrame(image=first, timestamp_ms=100_000, position=10),
+        IndexedFrame(image=repeated_position, timestamp_ms=200_000, position=10),
+        IndexedFrame(image=repeated_timestamp, timestamp_ms=100_000, position=11),
+        IndexedFrame(image=repeated_phash, timestamp_ms=300_000, position=12),
+    ]
+
+    selected = pipeline._select_representative_frames(frames, duration_ms=600_000)
+
+    assert [(frame.timestamp_ms, frame.position) for frame in selected] == [(100_000, 10)]
+    assert first.load() is not None
+    for discarded in (repeated_position, repeated_timestamp, repeated_phash):
+        with pytest.raises(ValueError, match="closed image"):
+            discarded.load()
+    for frame in selected:
+        frame.image.close()
+
+
+def test_adaptive_selection_caps_at_eight_and_closes_discarded_images() -> None:
+    """FR-005/SC-001: muchos assets disponibles producen como máximo 8 frames."""
+    pipeline = _sampling_pipeline()
+    frames = [
+        IndexedFrame(
+            image=_sampling_image(seed),
+            timestamp_ms=seed * 100_000,
+            position=seed,
+        )
+        for seed in range(10)
+    ]
+
+    selected = pipeline._select_representative_frames(frames, duration_ms=960_000)
+
+    assert 1 <= len(selected) <= 8
+    assert [frame.timestamp_ms for frame in selected] == sorted(
+        frame.timestamp_ms for frame in selected if frame.timestamp_ms is not None
+    )
+    selected_images = {id(frame.image) for frame in selected}
+    discarded = [frame.image for frame in frames if id(frame.image) not in selected_images]
+    assert len(discarded) == len(frames) - len(selected)
+    for image in discarded:
+        with pytest.raises(ValueError, match="closed image"):
+            image.load()
+    for frame in selected:
+        frame.image.close()
+
+
+def test_adaptive_selection_preserves_unknown_timestamps() -> None:
+    """FR-007: assets sin posición fiable conservan ``None`` sin interpolación."""
+    pipeline = _sampling_pipeline()
+    frames = [
+        IndexedFrame(image=_sampling_image(20), timestamp_ms=None, position=None),
+        IndexedFrame(image=_sampling_image(21), timestamp_ms=None, position=None),
+    ]
+
+    selected = pipeline._select_representative_frames(frames, duration_ms=None)
+
+    assert len(selected) == 2
+    assert [frame.timestamp_ms for frame in selected] == [None, None]
+    assert [frame.position for frame in selected] == [None, None]
+    for frame in selected:
+        frame.image.close()
+
+
+@pytest.mark.parametrize(
+    ("timestamp_ms", "position", "expected_timestamp", "expected_position"),
+    [
+        (-1, 3, None, 3),
+        (1_000, 3, None, 3),
+        (12.5, 3, None, 3),
+        (100, -1, 100, None),
+    ],
+)
+def test_adaptive_selection_normalizes_unreliable_timestamp_and_position_metadata(
+    timestamp_ms: int | float,
+    position: int,
+    expected_timestamp: int | None,
+    expected_position: int | None,
+) -> None:
+    """FR-007: evidencia inválida se degrada sin inventar precisión temporal."""
+    pipeline = _sampling_pipeline()
+    frame = IndexedFrame(
+        image=_sampling_image(100 + abs(position)),
+        timestamp_ms=timestamp_ms,  # type: ignore[arg-type]
+        position=position,
+    )
+
+    selected = pipeline._select_representative_frames([frame], duration_ms=1_000)
+
+    assert len(selected) == 1
+    assert selected[0].timestamp_ms == expected_timestamp
+    assert selected[0].position == expected_position
+    selected[0].image.close()
+
+
+@pytest.mark.parametrize("from_bytes", [False, True])
+def test_preview_failure_closes_frames_created_before_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    from_bytes: bool,
+) -> None:
+    """FR-015: un fallo tras el primer frame no deja imágenes PIL abiertas."""
+    pipeline = _sampling_pipeline()
+    asset = VisualAsset(
+        kind="preview",
+        url="http://mock.local/assets/mock-vid-0000/preview.mp4",
+    )
+    first_source = _sampling_image(300)
+    partial: list[IndexedFrame] = []
+    original_close = CrawlerPipeline._close_frames
+
+    def close_partial(frames: Sequence[IndexedFrame]) -> None:
+        partial.extend(frames)
+        original_close(frames)
+
+    monkeypatch.setattr(pipeline, "_close_frames", close_partial)
+
+    opened = 0
+
+    def open_image(_source: object, *, max_pixels: int) -> Any:
+        nonlocal opened
+        opened += 1
+        if opened == 1:
+            return nullcontext(first_source)
+        raise RuntimeError("preview corrupto tras el primer frame")
+
+    monkeypatch.setattr("xtrace_crawler.pipeline.open_image_limited", open_image)
+    monkeypatch.setattr(
+        pipeline._preview_extractor,
+        "extract_frames",
+        lambda _source, *, interval_s, out_dir: [
+            PreviewFrame(path=Path("first.jpg"), timestamp_ms=0),
+            PreviewFrame(path=Path("second.jpg"), timestamp_ms=1_000),
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="preview corrupto"):
+        if from_bytes:
+            _run(pipeline._preview_frames_from_bytes(b"preview", asset))
+        else:
+
+            class _Fetcher:
+                @asynccontextmanager
+                async def fetch(self, _asset: VisualAsset):
+                    yield Path("preview.mp4")
+
+            _run(pipeline._preview_frames(_Fetcher(), asset))
+
+    assert opened == 2
+    assert len(partial) == 1
+    with pytest.raises(ValueError, match="closed image"):
+        partial[0].image.load()
+    first_source.close()

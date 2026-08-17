@@ -84,6 +84,47 @@ def test_index_accepts_batch_size_option(dataset_dir: Path) -> None:
     assert payload["videos_indexed"] == 2
 
 
+def test_index_accepts_explicit_adaptive_sampling(dataset_dir: Path) -> None:
+    """FR-009: el modo adaptativo se activa explícitamente y mantiene JSON estable."""
+    result = CliRunner().invoke(
+        app,
+        [
+            "index",
+            "--dataset",
+            str(dataset_dir),
+            "--sampling",
+            "adaptive",
+            "--max-frames",
+            "8",
+            "--target-interval-seconds",
+            "120",
+        ],
+    )
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert list(payload) == ["videos_indexed", "videos_failed", "frames", "vectors"]
+    assert payload["videos_indexed"] == 2
+    assert 2 <= payload["frames"] <= 16
+
+
+def test_index_rejects_adaptive_max_frames_above_global_limit(dataset_dir: Path) -> None:
+    """FR-002: el índice base nunca acepta más de ocho frames adaptativos."""
+    result = CliRunner().invoke(
+        app,
+        [
+            "index",
+            "--dataset",
+            str(dataset_dir),
+            "--sampling",
+            "adaptive",
+            "--max-frames",
+            "9",
+        ],
+    )
+    assert result.exit_code == 2
+    assert json.loads(result.stdout)["error_type"] == "ValueError"
+
+
 def test_stats_reports_totals_after_index(dataset_dir: Path) -> None:
     """`stats` tras `index` reporta los totales del índice (observabilidad)."""
     index_result = CliRunner().invoke(

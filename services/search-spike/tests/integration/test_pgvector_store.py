@@ -13,12 +13,15 @@ limpia las tablas al inicio (constitución §6: tests independientes y
 reproducibles).
 """
 
+from __future__ import annotations
+
 import asyncio
 from typing import Any
 
 import psycopg
 import pytest
 
+import xtrace_spike.vectorstore.pgvector as pgvector_module
 from xtrace_spike.repo import resolve_dsn
 from xtrace_spike.vectorstore.base import FrameRecord, VectorStore
 from xtrace_spike.vectorstore.in_memory import InMemoryVectorStore
@@ -198,6 +201,121 @@ def test_upsert_is_idempotent() -> None:
     ]
     assert _run(store.upsert_frames(frames2)) == 2
     assert _run(store.stats()) == stats1 == {"videos": 1, "frames": 2, "vectors": 2}
+
+
+def test_replace_video_index_removes_stale_rows_and_commits_metadata() -> None:
+    """TASK-005-001/FR-010: frames + estado + conteo se publican juntos."""
+    store = PgVectorStore()
+    v1 = _uuid(1)
+    old = [
+        _record(_uuid(11), v1, 0, _unit(0)),
+        _record(_uuid(12), v1, 1000, _unit(1)),
+    ]
+    _run(store.upsert_frames(old))
+
+    replacement = [_record(_uuid(13), v1, 500, _unit(0))]
+    _run(store.replace_video_index(v1, replacement, duration_ms=12_345))
+
+    assert _run(store.stats()) == {"videos": 1, "frames": 1, "vectors": 1}
+    hits = _run(store.ann_search(_unit(0), k=10))
+    assert [hit["frame_id"] for hit in hits] == [_uuid(13)]
+    with psycopg.connect(resolve_dsn(), autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "select status, frame_count, duration_ms, excluded "
+                "from public.videos where id = %s",
+                (v1,),
+            )
+            row = cur.fetchone()
+    assert row == ("indexed", 1, 12_345, False)
+
+
+def test_replace_video_index_rejects_invalid_batch_without_mutating_previous_rows() -> None:
+    """FR-010: una sustitución inválida conserva la representación anterior."""
+    store = PgVectorStore()
+    v1 = _uuid(1)
+    previous = [_record(_uuid(11), v1, 0, _unit(0))]
+    _run(store.upsert_frames(previous))
+
+    with pytest.raises(ValueError, match="posiciones duplicadas"):
+        _run(
+            store.replace_video_index(
+                v1,
+                [
+                    _record(_uuid(12), v1, 100, _unit(0)),
+                    _record(_uuid(13), v1, 100, _unit(1)),
+                ],
+                duration_ms=2_000,
+            )
+        )
+
+    assert _run(store.stats()) == {"videos": 1, "frames": 1, "vectors": 1}
+    assert [hit["frame_id"] for hit in _run(store.ann_search(_unit(0), k=10))] == [_uuid(11)]
+
+
+def test_replace_video_index_rolls_back_when_commit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-010: un fallo real dentro de commit ejecuta rollback de la transacción."""
+
+    class _FakeCursor:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        async def __aenter__(self) -> _FakeCursor:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def execute(self, sql: str, _params: object = None) -> None:
+            self.statements.append(sql)
+
+        async def executemany(self, sql: str, _params: object) -> None:
+            self.statements.append(sql)
+
+    class _FakeConnection:
+        def __init__(self) -> None:
+            self.cursor_obj = _FakeCursor()
+            self.commit_called = False
+            self.rollback_called = False
+
+        async def __aenter__(self) -> _FakeConnection:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        def cursor(self) -> _FakeCursor:
+            return self.cursor_obj
+
+        async def commit(self) -> None:
+            self.commit_called = True
+            raise RuntimeError("commit failure")
+
+        async def rollback(self) -> None:
+            self.rollback_called = True
+
+    connection = _FakeConnection()
+
+    class _FakeAsyncConnection:
+        @classmethod
+        async def connect(cls, _dsn: str, *, autocommit: bool) -> _FakeConnection:
+            assert not autocommit
+            return connection
+
+    monkeypatch.setattr(pgvector_module.psycopg, "AsyncConnection", _FakeAsyncConnection)
+
+    with pytest.raises(RuntimeError, match="commit failure"):
+        _run(
+            PgVectorStore(dsn="postgresql://fake").replace_video_index(
+                _uuid(1), [_record(_uuid(11), _uuid(1), 100, _unit(0))], duration_ms=2_000
+            )
+        )
+
+    assert connection.commit_called is True
+    assert connection.rollback_called is True
+    assert any("delete from public.frames" in sql for sql in connection.cursor_obj.statements)
 
 
 # ---------------------------------------------------------------------------

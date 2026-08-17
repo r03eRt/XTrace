@@ -32,6 +32,7 @@ from typing import Any
 
 from xtrace_spike.ingest import IngestError
 from xtrace_spike.ingest.dataset import DatasetVideo
+from xtrace_spike.sampling import AdaptiveSamplingPolicy
 
 DEFAULT_FRAMES_PER_VIDEO: int = 30
 DEFAULT_SCALE_WIDTH: int = 256
@@ -156,8 +157,9 @@ def extract_frames(
     video: DatasetVideo,
     *,
     work_root: str | Path,
-    frames_per_video: int = DEFAULT_FRAMES_PER_VIDEO,
+    frames_per_video: int | None = DEFAULT_FRAMES_PER_VIDEO,
     scale_width: int | None = DEFAULT_SCALE_WIDTH,
+    sampling_policy: AdaptiveSamplingPolicy | None = None,
     ffmpeg_bin: str = "ffmpeg",
 ) -> Iterator[ExtractionResult]:
     """Extrae frames representativos del vídeo en un dir temporal (FR-002).
@@ -169,15 +171,18 @@ def extract_frames(
     Args:
         video: vídeo del dataset (de "scan_dataset" o construido por el test).
         work_root: directorio base para los temporales (se crea si falta).
-        frames_per_video: nº de frames a extraer por vídeo (> 0).
+        frames_per_video: nº de frames a extraer por vídeo (> 0) en modo
+            histórico. Se ignora cuando se proporciona ``sampling_policy``.
         scale_width: anchura de salida (preserva proporción); None = sin escala.
+        sampling_policy: política adaptativa explícita. Calcula el objetivo tras
+            obtener la duración y usa centros de intervalo.
 
     Raises:
         ValueError: configuración inválida (frames_per_video <= 0, scale_width <= 0).
         ProbeError: fichero corrupto o sin stream de vídeo (FR-001 US1 esc. 3).
         FramesExtractionError: fallo de FFmpeg o cero frames extraídos.
     """
-    if frames_per_video <= 0:
+    if frames_per_video is not None and frames_per_video <= 0:
         raise ValueError(f"frames_per_video debe ser > 0 (recibido {frames_per_video})")
     if scale_width is not None and scale_width <= 0:
         raise ValueError(f"scale_width debe ser > 0 o None (recibido {scale_width})")
@@ -188,12 +193,20 @@ def extract_frames(
     out_dir = Path(tempfile.mkdtemp(prefix=f"xtrace-frames-{slug}-", dir=work_dir))
     try:
         probe = probe_video(video.path)
+        effective_frames = (
+            sampling_policy.target_count(probe.duration_ms)
+            if sampling_policy is not None
+            else frames_per_video
+        )
+        if effective_frames is None or effective_frames <= 0:
+            raise ValueError("frames_per_video debe ser > 0 o proporcionar sampling_policy")
         frames = _run_ffmpeg_extraction(
             video=video,
             probe=probe,
             out_dir=out_dir,
-            frames_per_video=frames_per_video,
+            frames_per_video=effective_frames,
             scale_width=scale_width,
+            centered=sampling_policy is not None,
             ffmpeg_bin=ffmpeg_bin,
         )
         yield ExtractionResult(probe=probe, out_dir=out_dir, frames=frames)
@@ -208,6 +221,7 @@ def _run_ffmpeg_extraction(
     out_dir: Path,
     frames_per_video: int,
     scale_width: int | None,
+    centered: bool = False,
     ffmpeg_bin: str,
 ) -> tuple[ExtractedFrame, ...]:
     """Ejecuta FFmpeg y devuelve los frames extraídos con su timestamp."""
@@ -218,23 +232,27 @@ def _run_ffmpeg_extraction(
     if scale_width is not None:
         filters.append(f"scale={scale_width}:-2")
 
-    cmd = [
-        ffmpeg_bin,
-        "-y",
-        "-v",
-        "error",
-        "-i",
-        str(video.path),
-        "-vf",
-        ",".join(filters),
-        "-fps_mode",
-        "vfr",
-        "-frames:v",
-        str(frames_per_video),
-        "-f",
-        "image2",
-        str(out_dir / _FRAME_PATTERN),
-    ]
+    cmd = [ffmpeg_bin, "-y", "-v", "error"]
+    interval_ms = probe.duration_ms / frames_per_video
+    if centered:
+        # Align the first decoded image with the first interval center.  The
+        # legacy path below intentionally retains its historical start at 0.
+        cmd.extend(["-ss", f"{interval_ms / 2000.0:.9f}"])
+    cmd.extend(
+        [
+            "-i",
+            str(video.path),
+            "-vf",
+            ",".join(filters),
+            "-fps_mode",
+            "vfr",
+            "-frames:v",
+            str(frames_per_video),
+            "-f",
+            "image2",
+            str(out_dir / _FRAME_PATTERN),
+        ]
+    )
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         detail = proc.stderr.strip() or f"exit {proc.returncode}"
@@ -246,12 +264,13 @@ def _run_ffmpeg_extraction(
     if not paths:
         raise FramesExtractionError(f"no se extrajo ningún frame de '{video.path}'")
 
-    interval_ms = probe.duration_ms / frames_per_video
     width, height = _scaled_dimensions(probe, scale_width)
     return tuple(
         ExtractedFrame(
             path=path,
-            timestamp_ms=round(index * interval_ms),
+            timestamp_ms=(
+                round((index + 0.5) * interval_ms) if centered else round(index * interval_ms)
+            ),
             width=width,
             height=height,
         )

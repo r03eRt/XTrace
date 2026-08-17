@@ -30,6 +30,35 @@ uv run mypy xtrace_spike tests
 uv run pytest
 ```
 
+## Benchmark de muestreo adaptativo (TASK-005-004)
+
+El spike conserva `legacy_fixed` y sus 30 frames por vídeo como referencia. La
+política adaptativa se ejecuta de forma explícita (`--sampling adaptive`) y no
+se convierte en default por el resultado de una medición aislada.
+
+El benchmark reproducible compara las mismas consultas conocidas contra dos
+ficheros de observaciones (`dense` y `adaptive`). El sidecar de casos debe
+incluir `case_id`, `source` (`local`/`web`), `duration_ms`,
+`timestamp_ms`/`truth_timestamp_ms` y `expected_video_ref`:
+
+```bash
+uv run xtrace-spike sampling-benchmark \
+  --cases benchmark/sidecar.json \
+  --dense-results benchmark/dense.json \
+  --adaptive-results benchmark/adaptive.json \
+  --out benchmark/report.json
+```
+
+La orden exige al menos 30 casos positivos únicos, ambas fuentes, los tramos
+`<5m`, `5-15m` y `>15m`, y tres positivos por segmento no vacío. Los casos
+negativos pueden omitir duración/timestamp y siguen requiriendo observación
+pareada exacta, pero no cuentan para esos mínimos. Informa Top-1/Top-5,
+error temporal mediano/p95, error normalizado, frames/reducción y resultados
+por fuente/tramo, conservando métricas separadas para dense y adaptive en cada
+segmento. Los mínimos (`30` casos, `3` por segmento) no se pueden rebajar.
+Si falla SC-004..SC-008 imprime `accepted=false` y termina
+con código 2; nunca autoriza por sí sola el cambio del default.
+
 ## Docker
 
 ```bash

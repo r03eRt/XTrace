@@ -6,6 +6,20 @@
 
 **Última actualización**: 2026-08-17 · por DeepSeek V4 Flash (implementador PR-058, cierre).
 
+> 🧪 **Feature 005 en implementación**: el benchmark de muestreo adaptativo ya
+> dispone de sidecar con fuente/duración/timestamp, comparación pareada adaptive
+> vs dense, métricas Top-1/Top-5, error temporal y puertas SC-004..SC-008
+> fail-closed. El default histórico de 30 frames no cambia hasta validar una
+> ejecución con cobertura local + web y los tres tramos de duración.
+
+> **Prueba local adaptativa (2026-08-17)**: REINDEX explícito completado sobre
+> los 104 vídeos de `/tags/buttfucking` con SigLIP: 104 completados, 0 fallos y
+> 224 frames (11×1, 66×2, 27×3). XVIDEOS solo expuso 1–3 thumbnails públicos
+> permitidos por vídeo en este corpus; el límite de 8 no inventa assets, por lo
+> que esta fuente no mejora todavía el caso de 07:24 sin una spec que autorice
+> otra evidencia pública. Los tests destructivos de BD requieren ahora el opt-in
+> `XTRACE_CRAWLER_ALLOW_DB_RESET=1` contra una base desechable.
+
 > ✅ **Fase 3 (MVP de Búsqueda) — implementación COMPLETADA (PR-054…PR-058)**: spec 003 en
 > **`IMPLEMENTING`**; SC-001/003/005/006 verdes por tests automatizados. **SC-002 (captura
 > real → Top-5 vía API) queda como puerta manual del operador** en local (quickstart §Notas

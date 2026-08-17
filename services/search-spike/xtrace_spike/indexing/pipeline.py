@@ -4,7 +4,7 @@ Orquesta, por vídeo del dataset, la cadena completa:
 
     scan (ingest/dataset.py, llamador) -> extract_frames (PR-008)
     -> dedupe_frames (PR-009) -> pHash + embed_images en batches (FR-004/FR-005)
-    -> VectorStore.upsert_frames (FR-006) -> estado del vídeo (FR-007)
+    -> VideoIndexWriter.replace_video_index (FR-006/FR-007/FR-010)
 
 El pHash de cada frame representativo (FR-004) se calcula con
 hashing.phash.compute_phash — la misma función que usa el dedupe (PR-009) —
@@ -58,6 +58,7 @@ from xtrace_spike.indexing.state import (
     InMemoryVideoStateStore,
     VideoStateStore,
 )
+from xtrace_spike.indexing.writer import VideoIndexWriter
 from xtrace_spike.ingest.dataset import DatasetVideo
 from xtrace_spike.ingest.dedupe import DEFAULT_HAMMING_THRESHOLD, dedupe_frames
 from xtrace_spike.ingest.frames import (
@@ -66,7 +67,12 @@ from xtrace_spike.ingest.frames import (
     ExtractedFrame,
     extract_frames,
 )
-from xtrace_spike.vectorstore.base import FrameRecord, VectorStore
+from xtrace_spike.sampling import AdaptiveSamplingPolicy, select_representative_frames
+from xtrace_spike.vectorstore.base import (
+    FrameRecord,
+    VectorStore,
+    VideoIndexMetadataProvider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,12 +121,34 @@ class IndexingConfig:
         dedupe_threshold: umbral de Hamming del dedupe (FR-003, ADR-0005).
         batch_size: tamaño de lote del embedding (FR-005).
         scale_width: anchura de los frames extraídos; None = sin escalar.
+        sampling: ``legacy_fixed`` (30) o ``adaptive`` (1..8).
+        max_frames: techo adaptativo (1..8).
+        target_interval_ms: intervalo objetivo adaptativo.
     """
 
     frames_per_video: int = DEFAULT_FRAMES_PER_VIDEO
     dedupe_threshold: int = DEFAULT_HAMMING_THRESHOLD
     batch_size: int = 64
     scale_width: int | None = DEFAULT_SCALE_WIDTH
+    sampling: str = "legacy_fixed"
+    sampling_mode: str | None = None
+    max_frames: int = 8
+    target_interval_ms: int = 120_000
+
+    @property
+    def mode(self) -> str:
+        """Effective policy mode; ``sampling_mode`` is a compatibility alias."""
+        return self.sampling_mode or self.sampling
+
+    @property
+    def adaptive_policy(self) -> AdaptiveSamplingPolicy | None:
+        """Return the validated adaptive policy, or ``None`` for legacy mode."""
+        if self.mode != "adaptive":
+            return None
+        return AdaptiveSamplingPolicy(
+            target_interval_ms=self.target_interval_ms,
+            max_frames=self.max_frames,
+        )
 
     def validate(self) -> None:
         """Configuración inválida -> ValueError (falla pronto, antes de FFmpeg)."""
@@ -135,6 +163,14 @@ class IndexingConfig:
             raise ValueError(f"batch_size debe ser > 0 (recibido {self.batch_size})")
         if self.scale_width is not None and self.scale_width <= 0:
             raise ValueError(f"scale_width debe ser > 0 o None (recibido {self.scale_width})")
+        if self.mode not in {"legacy_fixed", "adaptive"}:
+            raise ValueError("sampling debe ser 'legacy_fixed' o 'adaptive'")
+        if not 1 <= self.max_frames <= 8:
+            raise ValueError("max_frames debe estar en [1, 8]")
+        if self.target_interval_ms <= 0:
+            raise ValueError("target_interval_ms debe ser > 0")
+        if self.mode == "adaptive":
+            _ = self.adaptive_policy  # force policy validation
 
 
 @dataclass(frozen=True)
@@ -185,6 +221,7 @@ class IndexingPipeline:
         self._embeddings = embeddings
         self._video_states = video_states or InMemoryVideoStateStore()
         self._config = config
+        self._writer = VideoIndexWriter(store=store, video_states=self._video_states)
 
     async def index_dataset(
         self, videos: Sequence[DatasetVideo], *, work_root: str | Path
@@ -202,6 +239,9 @@ class IndexingPipeline:
         results: list[VideoIndexingResult] = []
         try:
             for video in videos:
+                await self._reconcile_state_from_index(
+                    video_id_for(video.local_ref), video.local_ref
+                )
                 await self._video_states.mark_discovered(
                     video_id_for(video.local_ref), video.local_ref
                 )
@@ -224,8 +264,29 @@ class IndexingPipeline:
         self, video: DatasetVideo, *, work_root: str | Path
     ) -> VideoIndexingResult:
         """Indexa un vídeo individual (discovered -> indexing -> indexed|failed)."""
-        await self._video_states.mark_discovered(video_id_for(video.local_ref), video.local_ref)
+        video_id = video_id_for(video.local_ref)
+        await self._reconcile_state_from_index(video_id, video.local_ref)
+        await self._video_states.mark_discovered(video_id, video.local_ref)
         return await self._index_video(video, work_root=Path(work_root))
+
+    async def _reconcile_state_from_index(self, video_id: str, local_ref: str) -> None:
+        """Hydrate a fresh local state store from an existing public index API.
+
+        PostgreSQL does not expose this optional capability because its writer
+        commits frames and video metadata together; skipping the read-back
+        keeps that path transactionally single-source and query-free.
+        """
+        if not isinstance(self._store, VideoIndexMetadataProvider):
+            return
+        metadata = await self._store.get_video_index_metadata(video_id)
+        if metadata is None:
+            return
+        await self._video_states.reconcile_index_metadata(
+            video_id,
+            local_ref,
+            frame_count=metadata["frame_count"],
+            duration_ms=metadata["duration_ms"],
+        )
 
     async def _index_video(self, video: DatasetVideo, *, work_root: Path) -> VideoIndexingResult:
         """Cadena por vídeo: extract -> dedupe -> embed(batch) -> upsert.
@@ -246,15 +307,23 @@ class IndexingPipeline:
                 work_root=work_root,
                 frames_per_video=self._config.frames_per_video,
                 scale_width=self._config.scale_width,
+                sampling_policy=self._config.adaptive_policy,
             ) as extraction:
                 duration_ms = extraction.probe.duration_ms
                 deduped = dedupe_frames(extraction.frames, threshold=self._config.dedupe_threshold)
-                kept_count = len(deduped)
-                records = self._embed_frames(video_id, deduped)
-                await self._store.upsert_frames(records)
-            await self._video_states.mark_indexed(
-                video_id, frame_count=kept_count, duration_ms=duration_ms
-            )
+                representative_frames = deduped
+                if self._config.adaptive_policy is not None:
+                    representative_frames = tuple(
+                        select_representative_frames(
+                            deduped,
+                            duration_ms=duration_ms,
+                            timestamp=lambda frame: frame.timestamp_ms,
+                            policy=self._config.adaptive_policy,
+                        )
+                    )
+                kept_count = len(representative_frames)
+                records = self._embed_frames(video_id, representative_frames)
+            await self._writer.replace_video_index(video_id, records, duration_ms=duration_ms)
             logger.info("vídeo indexado local_ref=%s frames=%d", video.local_ref, kept_count)
             return VideoIndexingResult(
                 local_ref=video.local_ref, status=STATUS_INDEXED, frame_count=kept_count
@@ -264,6 +333,9 @@ class IndexingPipeline:
             logger.warning("vídeo fallido local_ref=%s error=%s", video.local_ref, error)
             try:
                 await self._video_states.mark_failed(video_id, error)
+                mark_store_failed = getattr(self._store, "mark_video_failed", None)
+                if callable(mark_store_failed):
+                    await mark_store_failed(video_id)
             except Exception as state_exc:
                 raise exc from state_exc
             return VideoIndexingResult(

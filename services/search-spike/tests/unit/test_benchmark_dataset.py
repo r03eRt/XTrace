@@ -28,6 +28,7 @@ from xtrace_spike.benchmark import (
     BenchmarkError,
     SourceFrame,
     generate_benchmark_dataset,
+    load_benchmark_sidecar,
     load_manifest,
     scan_frames_root,
 )
@@ -389,3 +390,68 @@ def test_generator_works_without_db_or_torch(
     newly_imported = {name.split(".")[0] for name in set(sys.modules) - before}
     assert not newly_imported & {"torch", "psycopg", "sqlalchemy"}
     assert len(dataset.cases) == 6 * 2 + 1
+
+
+def test_sidecar_preserves_source_duration_and_truth_timestamp(tmp_path: Path) -> None:
+    """FR-012/FR-013: sidecar local/web conserva metadatos temporales reales."""
+    sidecar = tmp_path / "cases.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {
+                        "case_id": "local-001",
+                        "query_image_path": "queries/local.png",
+                        "expected_video_ref": "local-video",
+                        "source": "local",
+                        "duration_ms": 240_000,
+                        "timestamp_ms": 120_000,
+                    },
+                    {
+                        "case_id": "web-001",
+                        "query_image_path": "queries/web.png",
+                        "expected_video_ref": "web-video",
+                        "source": "web",
+                        "duration_ms": 1_200_000,
+                        "truth_timestamp_ms": 600_000,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cases = load_benchmark_sidecar(sidecar)
+
+    assert [case.case_id for case in cases] == ["local-001", "web-001"]
+    assert cases[0].source == "local"
+    assert cases[0].duration_ms == 240_000
+    assert cases[0].timestamp_ms == 120_000
+    assert cases[1].source == "web"
+    assert cases[1].truth_timestamp_ms == 600_000
+
+
+def test_generated_cases_inherit_frame_sidecar_metadata(tmp_path: Path) -> None:
+    """FR-013: las consultas derivadas mantienen fuente/duración/timestamp del frame."""
+    frame_path = tmp_path / "frame.png"
+    Image.new("RGB", (16, 16), (20, 30, 40)).save(frame_path)
+    source = SourceFrame(
+        video_ref="web-video",
+        path=frame_path,
+        source="web",
+        duration_ms=900_000,
+        timestamp_ms=450_000,
+    )
+
+    dataset = generate_benchmark_dataset(
+        (source,),
+        tmp_path / "generated",
+        cases_per_variant=1,
+        negative_cases=0,
+        variants=("exact",),
+    )
+
+    case = dataset.cases[0]
+    assert case.source == "web"
+    assert case.duration_ms == 900_000
+    assert case.timestamp_ms == 450_000

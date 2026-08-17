@@ -16,8 +16,22 @@ from xtrace_spike.benchmark.dataset import (
     BenchmarkError,
     SourceFrame,
     generate_benchmark_dataset,
+    load_benchmark_sidecar,
+    load_case_sidecar,
+    load_frame_sidecar,
     load_manifest,
+    load_sidecar,
     scan_frames_root,
+)
+from xtrace_spike.benchmark.sampling import (
+    BenchmarkObservation,
+    CoverageReport,
+    PolicyMetrics,
+    SamplingComparisonReport,
+    SegmentComparison,
+    SegmentMetrics,
+    compare_sampling_policies,
+    validate_benchmark_coverage,
 )
 
 __all__ = [
@@ -31,6 +45,18 @@ __all__ = [
     "BenchmarkError",
     "SourceFrame",
     "generate_benchmark_dataset",
+    "load_benchmark_sidecar",
+    "load_case_sidecar",
+    "load_frame_sidecar",
     "load_manifest",
+    "load_sidecar",
     "scan_frames_root",
+    "BenchmarkObservation",
+    "CoverageReport",
+    "PolicyMetrics",
+    "SamplingComparisonReport",
+    "SegmentComparison",
+    "SegmentMetrics",
+    "compare_sampling_policies",
+    "validate_benchmark_coverage",
 ]

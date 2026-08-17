@@ -49,8 +49,12 @@ import typer
 from PIL import Image, UnidentifiedImageError
 
 from xtrace_spike import __version__
-from xtrace_spike.benchmark import load_manifest
+from xtrace_spike.benchmark import BenchmarkError, load_benchmark_sidecar, load_manifest
 from xtrace_spike.benchmark.runner import BenchmarkRunner
+from xtrace_spike.benchmark.sampling import (
+    compare_sampling_policies,
+    load_policy_observations,
+)
 from xtrace_spike.embeddings.fake import FakeEmbeddingProvider
 from xtrace_spike.embeddings.provider import EmbeddingProvider
 from xtrace_spike.embeddings.siglip_local import SiglipLocalProvider
@@ -267,6 +271,24 @@ def index(
         int,
         typer.Option("--frames-per-video", help="Frames representativos por vídeo (FR-002)."),
     ] = DEFAULT_FRAMES_PER_VIDEO,
+    sampling: Annotated[
+        str,
+        typer.Option(
+            "--sampling",
+            help="Política de muestreo: legacy_fixed (30) o adaptive (1–8).",
+        ),
+    ] = "legacy_fixed",
+    max_frames: Annotated[
+        int,
+        typer.Option("--max-frames", help="Máximo adaptativo de frames por vídeo (1–8)."),
+    ] = 8,
+    target_interval_seconds: Annotated[
+        int,
+        typer.Option(
+            "--target-interval-seconds",
+            help="Intervalo objetivo del muestreo adaptativo en segundos.",
+        ),
+    ] = 120,
     dedupe_threshold: Annotated[
         int,
         typer.Option("--dedupe-threshold", help="Umbral de Hamming del dedupe (FR-003)."),
@@ -291,6 +313,9 @@ def index(
         embeddings = resolve_embedding_provider(provider)
         config = IndexingConfig(
             frames_per_video=frames_per_video,
+            sampling=sampling,
+            max_frames=max_frames,
+            target_interval_ms=target_interval_seconds * 1000,
             dedupe_threshold=dedupe_threshold,
             batch_size=batch_size,
         )
@@ -520,6 +545,75 @@ def benchmark(
         report = asyncio.run(runner.run(benchmark_cases))
         _emit_json(report.to_dict())
     except ValueError as exc:
+        _fail(str(exc), type(exc).__name__, exit_code=2)
+    except Exception as exc:
+        _fail(str(exc), type(exc).__name__, exit_code=1)
+
+
+@app.command("sampling-benchmark", help="Compara adaptive frente a dense con casos pareados.")
+def sampling_benchmark(
+    cases: Annotated[
+        Path,
+        typer.Option(
+            "--cases",
+            help="Sidecar JSON con casos, fuente, duración y timestamp de verdad.",
+        ),
+    ],
+    dense_results: Annotated[
+        Path,
+        typer.Option(
+            "--dense-results",
+            "--dense",
+            help="JSON de observaciones de la referencia densa (>=30 frames/vídeo).",
+        ),
+    ],
+    adaptive_results: Annotated[
+        Path,
+        typer.Option(
+            "--adaptive-results",
+            "--adaptive",
+            help="JSON de observaciones de la política adaptativa.",
+        ),
+    ],
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Ruta opcional para guardar el informe JSON canónico."),
+    ] = None,
+    min_cases: Annotated[
+        int,
+        typer.Option("--min-cases", help="Mínimo de casos únicos requeridos (default: 30)."),
+    ] = 30,
+    min_per_segment: Annotated[
+        int,
+        typer.Option("--min-per-segment", help="Mínimo por segmento no vacío (default: 3)."),
+    ] = 3,
+) -> None:
+    """Ejecuta el benchmark de adopción sin cambiar el default legacy de 30.
+
+    El sidecar se carga una sola vez y las dos listas de observaciones deben
+    referirse a los mismos ``case_id``. Un informe que no supera alguna puerta
+    se imprime completo con ``accepted=false`` y termina con código 2: nunca se
+    interpreta una medición incompleta como autorización de adopción.
+    """
+    try:
+        benchmark_cases = load_benchmark_sidecar(cases)
+        report = compare_sampling_policies(
+            benchmark_cases,
+            dense=load_policy_observations(dense_results),
+            adaptive=load_policy_observations(adaptive_results),
+            min_cases=min_cases,
+            min_per_segment=min_per_segment,
+        )
+        payload = report.to_json()
+        if out is not None:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(payload, encoding="utf-8")
+        typer.echo(payload, nl=False)
+        if not report.accepted:
+            raise typer.Exit(code=2)
+    except typer.Exit:
+        raise
+    except (BenchmarkError, ValueError) as exc:
         _fail(str(exc), type(exc).__name__, exit_code=2)
     except Exception as exc:
         _fail(str(exc), type(exc).__name__, exit_code=1)

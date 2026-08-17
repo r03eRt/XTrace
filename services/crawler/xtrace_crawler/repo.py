@@ -28,7 +28,7 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -54,6 +54,8 @@ VideoStatus = Literal[
     "unavailable",
     "removed",
 ]
+VideoStateSnapshot = tuple[VideoStatus, int, int | None, str | None]
+ReindexOutcome = Literal["completed", "skipped"]
 VIDEO_STATUSES: frozenset[str] = frozenset(
     {"discovered", "pending", "indexing", "indexed", "failed", "unavailable", "removed"}
 )
@@ -370,6 +372,194 @@ class CrawlerRepo:
         if row is None:
             return None
         return VideoRecord(**dict(zip(_VIDEO_COLUMNS, row, strict=True)))
+
+    async def list_reindex_candidates(self, source_name: str, limit: int) -> list[VideoRecord]:
+        """List eligible videos for an explicit adaptive REINDEX.
+
+        The source gate and video eligibility are enforced in SQL as well as by
+        the CLI/handler.  This closes the enqueue race without introducing a
+        new table or changing the existing ``videos`` schema.
+        """
+        if limit < 1:
+            raise ValueError(f"limit debe ser >= 1; recibido {limit}")
+        async with await self.connect() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "select v.id::text, v.source_id::text, v.external_id, v.local_ref, "
+                    "v.status, v.excluded, v.error, v.frame_count, v.title, v.page_url, "
+                    "v.duration_ms, v.thumbnail_url, v.preview_url, v.storyboard_urls, "
+                    "v.tags, v.published_at, v.created_at, v.updated_at "
+                    "from public.videos v "
+                    "join public.sources s on s.id = v.source_id "
+                    "where s.name = %s and s.enabled = true "
+                    "and v.excluded = false "
+                    "and v.status in ('indexed', 'failed') "
+                    "and v.external_id is not null "
+                    "order by v.external_id, v.id "
+                    "limit %s",
+                    (source_name, limit),
+                )
+                rows = await cur.fetchall()
+        return [VideoRecord(**dict(zip(_VIDEO_COLUMNS, row, strict=True))) for row in rows]
+
+    async def set_reindex_result(
+        self,
+        job_id: uuid.UUID,
+        *,
+        outcome: ReindexOutcome,
+        frames: int,
+        reason: str | None,
+    ) -> bool:
+        """Persist a terminal REINDEX outcome in the existing JSONB payload."""
+        if outcome == "completed":
+            if frames < 1 or reason is not None:
+                raise ValueError("completed requiere frames >= 1 y reason=None")
+        elif outcome == "skipped":
+            if frames != 0 or not isinstance(reason, str) or not reason:
+                raise ValueError("skipped requiere frames=0 y reason no vacío")
+        else:
+            raise ValueError(f"resultado REINDEX inválido: {outcome!r}")
+        async with await self.connect() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "update public.jobs set payload = payload || jsonb_build_object("
+                    "'result_outcome', %s::text, 'result_frames', %s::int, "
+                    "'result_reason', %s::text) "
+                    "where id = %s and job_type = 'REINDEX'",
+                    (outcome, frames, reason, job_id),
+                )
+                return cur.rowcount == 1
+
+    async def reindex_status(self, run_id: str) -> dict[str, Any]:
+        """Aggregate the durable per-job REINDEX outcome without schema changes."""
+        try:
+            run_uuid = uuid.UUID(run_id)
+        except (ValueError, AttributeError) as exc:
+            raise ValueError(f"run_id no es un UUID válido: {run_id!r}") from exc
+        canonical_run_id = str(run_uuid)
+        async with await self.connect() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "select j.id::text, j.status, j.error, "
+                    "j.payload ->> 'result_outcome', "
+                    "j.payload ->> 'result_frames', "
+                    "j.payload ->> 'result_reason', "
+                    "coalesce(s.name, j.payload ->> 'source'), "
+                    "coalesce(v.external_id, j.payload ->> 'external_id') "
+                    "from public.jobs j "
+                    "left join public.videos v on v.id = j.video_id "
+                    "left join public.sources s on s.id = j.source_id "
+                    "where j.job_type = 'REINDEX' and j.payload ->> 'run_id' = %s "
+                    "order by j.created_at, j.id",
+                    (canonical_run_id,),
+                )
+                rows = await cur.fetchall()
+
+        counts = {"pending": 0, "completed": 0, "skipped": 0, "failed": 0}
+        frames_total = 0
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            (
+                job_id,
+                job_status,
+                error,
+                result_outcome,
+                raw_result_frames,
+                result_reason,
+                source,
+                external_id,
+            ) = row
+            result_frames: int | None = None
+            if isinstance(raw_result_frames, str):
+                try:
+                    result_frames = int(raw_result_frames)
+                except ValueError:
+                    pass
+            effective_error = error
+            if job_status in ("pending", "running"):
+                result_status = "pending"
+            elif job_status in ("failed", "unavailable"):
+                result_status = "failed"
+            elif job_status == "done":
+                if (
+                    result_outcome == "completed"
+                    and result_frames is not None
+                    and result_frames > 0
+                    and result_reason is None
+                ):
+                    result_status = "completed"
+                elif (
+                    result_outcome == "skipped"
+                    and result_frames == 0
+                    and isinstance(result_reason, str)
+                    and bool(result_reason)
+                ):
+                    result_status = "skipped"
+                else:
+                    result_status = "failed"
+                    effective_error = (
+                        effective_error or "resultado durable REINDEX ausente o inválido"
+                    )
+            else:
+                result_status = "failed"
+            counts[result_status] += 1
+            effective_frames = int(result_frames or 0) if result_status == "completed" else 0
+            frames_total += effective_frames
+            results.append(
+                {
+                    "job_id": str(job_id),
+                    "source": source,
+                    "external_id": external_id,
+                    "status": result_status,
+                    "frames": effective_frames,
+                    "reason": result_reason,
+                    "error": effective_error,
+                }
+            )
+        return {
+            "run_id": canonical_run_id,
+            **counts,
+            "frames": frames_total,
+            "results": results,
+        }
+
+    async def snapshot_video_state(self, video_id: str) -> VideoStateSnapshot | None:
+        """Capture mutable video metadata for a coordinated index rollback."""
+        video_uuid = parse_uuid(video_id, "video_id")
+        async with await self.connect() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "select status, frame_count, duration_ms, error "
+                    "from public.videos where id = %s",
+                    (video_uuid,),
+                )
+                row = await cur.fetchone()
+        if row is None:
+            return None
+        status, frame_count, duration_ms, error = row
+        if status not in VIDEO_STATUSES:
+            raise ValueError(f"estado de vídeo inválido en BD: {status!r}")
+        return cast(
+            VideoStateSnapshot,
+            (status, int(frame_count or 0), duration_ms, error),
+        )
+
+    async def restore_video_state(self, video_id: str, snapshot: VideoStateSnapshot | None) -> None:
+        """Restore video metadata after a non-atomic store publication failure."""
+        if snapshot is None:
+            return
+        status, frame_count, duration_ms, error = snapshot
+        if status not in VIDEO_STATUSES:
+            raise ValueError(f"estado de vídeo inválido en snapshot: {status!r}")
+        video_uuid = parse_uuid(video_id, "video_id")
+        async with await self.connect() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "update public.videos set status = %s, frame_count = %s, "
+                    "duration_ms = %s, error = %s "
+                    "where id = %s",
+                    (status, frame_count, duration_ms, error, video_uuid),
+                )
 
     async def set_video_status(self, video_id: str, status: VideoStatus) -> bool:
         """Transición de estado del vídeo (FR-012, incl. `unavailable`/`removed`).

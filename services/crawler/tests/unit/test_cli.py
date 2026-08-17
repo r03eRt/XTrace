@@ -49,6 +49,7 @@ import pytest
 from PIL import Image
 from pydantic import ValidationError
 from typer.testing import CliRunner
+from xtrace_spike.sampling import AdaptiveSamplingPolicy
 
 from xtrace_crawler.adapters.base import AdapterManifest
 from xtrace_crawler.adapters.mock import MockAdapter
@@ -59,14 +60,16 @@ from xtrace_crawler.cli import CliContext, _default_context, app
 from xtrace_crawler.config import Settings
 from xtrace_crawler.jobs.types import Job, JobStatus, JobType
 from xtrace_crawler.jobs.worker import JobWorker
-from xtrace_crawler.pipeline import CrawlerPipeline
+from xtrace_crawler.pipeline import CrawlerPipeline, reindex_dedupe_key
 from xtrace_crawler.repo import (
     DEFAULT_RECENT_ERRORS_LIMIT,
+    CrawlerRepo,
     CrawlerStats,
     JobErrorRecord,
     RateLimitStatsRecord,
     SourceRecord,
     VideoRecord,
+    VideoStateSnapshot,
     VideoStatus,
 )
 
@@ -121,6 +124,7 @@ class FakeRepo:
         sources: list[SourceRecord] | None = None,
         videos: list[VideoRecord] | None = None,
         stats: CrawlerStats | None = None,
+        reindex_status_result: dict[str, Any] | None = None,
     ) -> None:
         self.sources: dict[str, SourceRecord] = {record.name: record for record in (sources or [])}
         self.videos: dict[str, VideoRecord] = {
@@ -130,7 +134,9 @@ class FakeRepo:
         self.upserted_sources: list[SourceRecord] = []
         self.upserted_videos: list[VideoRecord] = []
         self.status_changes: list[tuple[str, str]] = []
+        self.reindex_results: list[tuple[uuid.UUID, str, int, str | None]] = []
         self.excluded: list[str] = []
+        self.reindex_status_result = reindex_status_result
 
     async def get_source(self, name: str) -> SourceRecord | None:
         return self.sources.get(name)
@@ -187,6 +193,43 @@ class FakeRepo:
     async def get_web_video(self, source_name: str, external_id: str) -> VideoRecord | None:
         return self.videos.get(external_id)
 
+    async def list_reindex_candidates(self, source_name: str, limit: int) -> list[VideoRecord]:
+        source = self.sources.get(source_name)
+        if source is None or not source.enabled:
+            return []
+        return [
+            record
+            for record in sorted(self.videos.values(), key=lambda item: item.external_id or "")
+            if record.source_id == source.id
+            and record.external_id is not None
+            and not record.excluded
+            and record.status in {"indexed", "failed"}
+        ][:limit]
+
+    async def reindex_status(self, run_id: str) -> dict[str, Any]:
+        if self.reindex_status_result is None:
+            return {
+                "run_id": run_id,
+                "pending": 0,
+                "completed": 0,
+                "skipped": 0,
+                "failed": 0,
+                "frames": 0,
+                "results": [],
+            }
+        return self.reindex_status_result
+
+    async def set_reindex_result(
+        self,
+        job_id: uuid.UUID,
+        *,
+        outcome: str,
+        frames: int,
+        reason: str | None,
+    ) -> bool:
+        self.reindex_results.append((job_id, outcome, frames, reason))
+        return True
+
     async def set_video_status(self, video_id: str, status: VideoStatus) -> bool:
         for external_id, record in self.videos.items():
             if record.id == video_id:
@@ -194,6 +237,31 @@ class FakeRepo:
                 self.status_changes.append((video_id, status))
                 return True
         return False
+
+    async def snapshot_video_state(self, video_id: str) -> VideoStateSnapshot | None:
+        """Public state snapshot used by the non-atomic store test boundary."""
+        record = next((record for record in self.videos.values() if record.id == video_id), None)
+        if record is None:
+            return None
+        return record.status, record.frame_count, record.duration_ms, record.error
+
+    async def restore_video_state(self, video_id: str, snapshot: VideoStateSnapshot | None) -> None:
+        """Restore the complete fake row after a publication failure."""
+        for external_id, record in list(self.videos.items()):
+            if record.id == video_id:
+                if snapshot is None:
+                    del self.videos[external_id]
+                else:
+                    status, frame_count, duration_ms, error = snapshot
+                    self.videos[external_id] = record.model_copy(
+                        update={
+                            "status": status,
+                            "frame_count": frame_count,
+                            "duration_ms": duration_ms,
+                            "error": error,
+                        }
+                    )
+                return
 
     async def exclude(self, video_id: str, *, excluded: bool = True) -> bool:
         for external_id, record in self.videos.items():
@@ -340,10 +408,31 @@ class FakeVectorStore:
 
     def __init__(self) -> None:
         self.frames: list[Any] = []
+        self.replacements: list[tuple[str, list[Any], int | None]] = []
+        self.fail_replacement = False
 
     async def upsert_frames(self, frames: Sequence[Any]) -> int:
         self.frames.extend(frames)
         return len(frames)
+
+    async def replace_video_index(
+        self, video_id: str, frames: Sequence[Any], *, duration_ms: int | None
+    ) -> None:
+        if self.fail_replacement:
+            raise RuntimeError("fallo de reemplazo de prueba")
+        self.frames = [frame for frame in self.frames if frame["video_id"] != video_id]
+        self.frames.extend(frames)
+        self.replacements.append((video_id, list(frames), duration_ms))
+
+    async def snapshot_video_index(self) -> object:
+        """Public snapshot used by the non-atomic store test boundary."""
+        return list(self.frames)
+
+    async def restore_video_index(self, snapshot: object) -> None:
+        """Restore frames after a state-publication failure."""
+        if not isinstance(snapshot, list):
+            raise ValueError("snapshot de índice fake inválido")
+        self.frames = list(snapshot)
 
     async def ann_search(
         self, embedding: Sequence[float], k: int, exclude_videos: bool = True
@@ -359,6 +448,52 @@ class FakeVectorStore:
             "frames": len(self.frames),
             "vectors": len(self.frames),
         }
+
+
+class _StaticCursor:
+    """Cursor async sin BD para verificar SQL parametrizado del repo."""
+
+    def __init__(self, rows: list[tuple[Any, ...]], *, rowcount: int = 1) -> None:
+        self.rows = rows
+        self.rowcount = rowcount
+        self.executed: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def __aenter__(self) -> _StaticCursor:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    async def execute(self, query: str, params: tuple[Any, ...]) -> None:
+        self.executed.append((query, params))
+
+    async def fetchall(self) -> list[tuple[Any, ...]]:
+        return self.rows
+
+
+class _StaticConnection:
+    def __init__(self, cursor: _StaticCursor) -> None:
+        self._cursor = cursor
+
+    async def __aenter__(self) -> _StaticConnection:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    def cursor(self) -> _StaticCursor:
+        return self._cursor
+
+
+class _StaticCrawlerRepo(CrawlerRepo):
+    """CrawlerRepo con conexión estática para unitarios SQL no destructivos."""
+
+    def __init__(self, rows: list[tuple[Any, ...]], *, rowcount: int = 1) -> None:
+        self.cursor_double = _StaticCursor(rows, rowcount=rowcount)
+        self.connection_double = _StaticConnection(self.cursor_double)
+
+    async def connect(self) -> Any:
+        return self.connection_double
 
 
 def _make_job(
@@ -1548,3 +1683,540 @@ def test_run_worker_uses_injected_embeddings_provider(
     assert _stdout_json(result) == {"processed": 3}  # DISCOVER + FETCH + INDEX
     assert all(record.status == "indexed" for record in repo.videos.values())
     assert provider.embedded_images > 0  # el proveedor inyectado fue usado por el pipeline
+
+
+# ---------------------------------------------------------------------------
+# TASK-005-003 · REINDEX reproducible y estado agregado (FR-009/010/011)
+# ---------------------------------------------------------------------------
+
+
+def _seed_reindex_video(
+    repo: FakeRepo,
+    adapter: MockAdapter,
+    external_id: str,
+    *,
+    status: VideoStatus = "indexed",
+    excluded: bool = False,
+    frame_count: int | None = None,
+) -> VideoRecord:
+    """Siembra un vídeo elegible/no elegible sin BD ni corpus real."""
+    record = asyncio.run(repo.upsert_web_video(SOURCE_ID, adapter.catalog_snapshot()[external_id]))
+    update: dict[str, Any] = {"status": status, "excluded": excluded}
+    if frame_count is not None:
+        update["frame_count"] = frame_count
+    updated = record.model_copy(update=update)
+    repo.videos[external_id] = updated
+    return updated
+
+
+def _reindex_payload(
+    *, run_id: str, source: str = "mock", external_id: str = "mock-vid-0000"
+) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "source": source,
+        "external_id": external_id,
+        "sampling": {
+            "mode": "adaptive",
+            "target_interval_seconds": 120,
+            "max_frames": 8,
+        },
+    }
+
+
+def test_reindex_cli_filters_eligible_videos_and_emits_canonical_profile() -> None:
+    """FR-009/SEC-005: solo indexed/failed, no excluidos, con perfil explícito."""
+    adapter = MockAdapter(seed=42, catalog_size=3)
+    repo = FakeRepo(sources=[_mock_source_record(enabled=True)])
+    eligible = _seed_reindex_video(repo, adapter, "mock-vid-0000", status="indexed")
+    failed = _seed_reindex_video(repo, adapter, "mock-vid-0001", status="failed")
+    _seed_reindex_video(repo, adapter, "mock-vid-0002", status="discovered")
+    excluded = _seed_reindex_video(repo, adapter, "mock-vid-0002", status="indexed", excluded=True)
+    assert eligible.excluded is False and failed.status == "failed" and excluded.excluded is True
+    jobs = FakeJobs()
+
+    result = _invoke(
+        [
+            "reindex",
+            "--source",
+            "mock",
+            "--limit",
+            "10",
+            "--sampling",
+            "adaptive",
+        ],
+        _base_context(repo=repo, jobs=jobs, registry=_registry_with_mock(catalog_size=3)),
+    )
+
+    data = _stdout_json(result)
+    assert data["source"] == "mock"
+    assert data["selected"] == 2
+    assert data["enqueued"] == 2
+    assert data["sampling"] == {
+        "mode": "adaptive",
+        "target_interval_seconds": 120,
+        "max_frames": 8,
+    }
+    assert uuid.UUID(data["run_id"])
+    assert len({job.payload["run_id"] for job in jobs.enqueued}) == 1
+    assert {job.payload["external_id"] for job in jobs.enqueued} == {
+        "mock-vid-0000",
+        "mock-vid-0001",
+    }
+    dedupe_keys = {job.payload["dedupe_key"] for job in jobs.enqueued}
+    assert len(dedupe_keys) == 2
+    assert all(key.startswith("reindex:mock:mock-vid-") for key in dedupe_keys)
+    assert all(len(key.rsplit(":", 1)[-1]) == 64 for key in dedupe_keys)
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [("--sampling", "legacy_fixed"), ("--max-frames", "7"), ("--target-interval-seconds", "60")],
+)
+def test_reindex_cli_rejects_non_explicit_adaptive_profile(flag: str, value: str) -> None:
+    """FR-009: REINDEX no acepta perfiles distintos de adaptive/120s/8."""
+    repo = FakeRepo(sources=[_mock_source_record(enabled=True)])
+    result = _invoke(
+        ["reindex", "--source", "mock", flag, value],
+        _base_context(repo=repo, registry=_registry_with_mock()),
+    )
+    assert result.exit_code == 1
+    assert "adaptive" in result.stderr or "120" in result.stderr or "8" in result.stderr
+
+
+def test_reindex_handler_revalidates_source_and_replaces_complete_index() -> None:
+    """FR-010/SEC-005: handler valida elegibilidad y publica un reemplazo completo."""
+    adapter = MockAdapter(seed=42, catalog_size=1)
+    repo = FakeRepo(sources=[_mock_source_record(enabled=True)])
+    record = _seed_reindex_video(repo, adapter, "mock-vid-0000")
+    jobs = FakeJobs()
+    store = FakeVectorStore()
+    pipeline = CrawlerPipeline(
+        repo=repo,
+        jobs=jobs,
+        adapter_for=lambda _job: adapter,
+        store=store,
+        sampling_policy=AdaptiveSamplingPolicy(),
+    )
+    worker = JobWorker(jobs, concurrency=1)
+    pipeline.register_handlers(worker)
+    run_id = str(uuid.uuid4())
+
+    async def scenario() -> int:
+        await jobs.enqueue(
+            JobType.REINDEX,
+            payload=_reindex_payload(run_id=run_id, external_id="mock-vid-0000"),
+            video_id=uuid.UUID(record.id),
+        )
+        return await worker.run_once()
+
+    assert asyncio.run(scenario()) == 1
+    assert all(job.status is JobStatus.DONE for job in jobs.jobs.values())
+    assert repo.videos["mock-vid-0000"].status == "indexed"
+    assert len(store.replacements) == 1
+    video_id, frames, duration_ms = store.replacements[0]
+    assert video_id == record.id
+    assert 1 <= len(frames) <= 8
+    assert duration_ms == record.duration_ms
+    assert (record.id, "indexing") not in repo.status_changes
+    job = next(iter(jobs.jobs.values()))
+    assert repo.reindex_results == [(job.id, "completed", len(frames), None)]
+
+
+@pytest.mark.parametrize(
+    ("initial_status", "frame_count", "expected_status", "marks_failed"),
+    [
+        ("indexed", 3, "indexed", False),
+        ("indexed", 0, "failed", True),
+        ("failed", 0, "failed", True),
+    ],
+)
+def test_reindex_failure_preserves_previous_index_and_video_status(
+    initial_status: VideoStatus,
+    frame_count: int,
+    expected_status: VideoStatus,
+    marks_failed: bool,
+) -> None:
+    """FR-010/FR-011: falla conserva estado con índice o marca failed sin índice."""
+    adapter = MockAdapter(seed=42, catalog_size=1)
+    repo = FakeRepo(sources=[_mock_source_record(enabled=True)])
+    record = _seed_reindex_video(
+        repo,
+        adapter,
+        "mock-vid-0000",
+        status=initial_status,
+        frame_count=frame_count,
+    )
+    jobs = FakeJobs()
+    store = FakeVectorStore()
+    previous = [{"video_id": record.id, "frame_id": "old", "timestamp_ms": 1}]
+    store.frames = list(previous) if frame_count else []
+    store.fail_replacement = True
+    pipeline = CrawlerPipeline(
+        repo=repo,
+        jobs=jobs,
+        adapter_for=lambda _job: adapter,
+        store=store,
+    )
+    worker = JobWorker(jobs, concurrency=1)
+    pipeline.register_handlers(worker)
+    run_id = str(uuid.uuid4())
+
+    async def scenario() -> int:
+        await jobs.enqueue(
+            JobType.REINDEX,
+            payload=_reindex_payload(run_id=run_id),
+            video_id=uuid.UUID(record.id),
+            max_attempts=1,
+        )
+        return await worker.run_once()
+
+    assert asyncio.run(scenario()) == 1
+    assert store.frames == (previous if frame_count else [])
+    assert repo.videos["mock-vid-0000"].status == expected_status
+    assert repo.status_changes == ([(record.id, "failed")] if marks_failed else [])
+    assert repo.reindex_results == []
+    assert (record.id, "indexing") not in repo.status_changes
+    assert next(iter(jobs.jobs.values())).status is JobStatus.FAILED
+
+
+class _StateAwareVectorStore(FakeVectorStore):
+    """Store double que confirma que frames y estado se publican juntos."""
+
+    handles_video_state = True
+
+
+class _IndexedStatusFailureRepo(FakeRepo):
+    """Repo double que publica indexed y falla para probar rollback coordinado."""
+
+    async def set_video_status(self, video_id: str, status: VideoStatus) -> bool:
+        changed = await super().set_video_status(video_id, status)
+        if status == "indexed":
+            for external_id, record in self.videos.items():
+                if record.id == video_id:
+                    self.videos[external_id] = record.model_copy(update={"duration_ms": 999_999})
+            raise RuntimeError("fallo posterior a publicar estado indexed")
+        return changed
+
+
+class _ReindexResultFailureRepo(FakeRepo):
+    """Repo double que falla al persistir el outcome tras el commit del índice."""
+
+    async def set_reindex_result(
+        self,
+        job_id: uuid.UUID,
+        *,
+        outcome: str,
+        frames: int,
+        reason: str | None,
+    ) -> bool:
+        raise RuntimeError("fallo al persistir resultado durable")
+
+
+class _PostCommitFailureVectorStore(FakeVectorStore):
+    """Store double que falla después de confirmar frames para probar la frontera."""
+
+    handles_video_state = True
+
+    async def replace_video_index(
+        self, video_id: str, frames: Sequence[Any], *, duration_ms: int | None
+    ) -> None:
+        await super().replace_video_index(video_id, frames, duration_ms=duration_ms)
+        raise RuntimeError("fallo posterior al commit de prueba")
+
+
+def test_reindex_store_owned_state_does_not_call_repo_after_commit() -> None:
+    """FR-010: un store que maneja estado no recibe una segunda transición."""
+    adapter = MockAdapter(seed=42, catalog_size=1)
+    repo = FakeRepo(sources=[_mock_source_record(enabled=True)])
+    record = _seed_reindex_video(repo, adapter, "mock-vid-0000")
+    jobs = FakeJobs()
+    store = _StateAwareVectorStore()
+    pipeline = CrawlerPipeline(repo=repo, jobs=jobs, adapter_for=lambda _job: adapter, store=store)
+    worker = JobWorker(jobs, concurrency=1)
+    pipeline.register_handlers(worker)
+
+    async def scenario() -> int:
+        await jobs.enqueue(
+            JobType.REINDEX,
+            payload=_reindex_payload(run_id=str(uuid.uuid4())),
+            video_id=uuid.UUID(record.id),
+        )
+        return await worker.run_once()
+
+    assert asyncio.run(scenario()) == 1
+    assert repo.status_changes == []
+    assert store.replacements
+
+
+def test_reindex_result_failure_preserves_confirmed_atomic_replacement() -> None:
+    """FR-010/SC-007: fallo del outcome no invalida un reemplazo ya confirmado."""
+    adapter = MockAdapter(seed=42, catalog_size=1)
+    repo = _ReindexResultFailureRepo(sources=[_mock_source_record(enabled=True)])
+    record = _seed_reindex_video(repo, adapter, "mock-vid-0000", frame_count=0)
+    jobs = FakeJobs()
+    store = _StateAwareVectorStore()
+    pipeline = CrawlerPipeline(repo=repo, jobs=jobs, adapter_for=lambda _job: adapter, store=store)
+    worker = JobWorker(jobs, concurrency=1)
+    pipeline.register_handlers(worker)
+
+    async def scenario() -> int:
+        await jobs.enqueue(
+            JobType.REINDEX,
+            payload=_reindex_payload(run_id=str(uuid.uuid4())),
+            video_id=uuid.UUID(record.id),
+            max_attempts=1,
+        )
+        return await worker.run_once()
+
+    assert asyncio.run(scenario()) == 1
+    assert next(iter(jobs.jobs.values())).status is JobStatus.FAILED
+    assert store.frames
+    assert store.replacements
+    assert repo.videos["mock-vid-0000"].status == "indexed"
+    assert repo.status_changes == []
+
+
+def test_reindex_non_state_store_rolls_back_when_indexed_status_fails() -> None:
+    """FR-010: falla de estado posterior al reemplazo restaura índice y estado."""
+    adapter = MockAdapter(seed=42, catalog_size=1)
+    repo = _IndexedStatusFailureRepo(sources=[_mock_source_record(enabled=True)])
+    record = _seed_reindex_video(
+        repo,
+        adapter,
+        "mock-vid-0000",
+        status="failed",
+        frame_count=3,
+    )
+    jobs = FakeJobs()
+    store = FakeVectorStore()
+    previous = [{"video_id": record.id, "frame_id": "old", "timestamp_ms": 1}]
+    store.frames = list(previous)
+    pipeline = CrawlerPipeline(repo=repo, jobs=jobs, adapter_for=lambda _job: adapter, store=store)
+    worker = JobWorker(jobs, concurrency=1)
+    pipeline.register_handlers(worker)
+
+    async def scenario() -> int:
+        await jobs.enqueue(
+            JobType.REINDEX,
+            payload=_reindex_payload(run_id=str(uuid.uuid4())),
+            video_id=uuid.UUID(record.id),
+            max_attempts=1,
+        )
+        return await worker.run_once()
+
+    assert asyncio.run(scenario()) == 1
+    assert store.frames == previous
+    assert repo.videos["mock-vid-0000"].status == "failed"
+    assert repo.videos["mock-vid-0000"].duration_ms == record.duration_ms
+    assert next(iter(jobs.jobs.values())).status is JobStatus.FAILED
+
+
+def test_reindex_post_commit_failure_does_not_mark_video_failed() -> None:
+    """FR-010: un fallo reportado tras commit no deja estado failed con frames nuevos."""
+    adapter = MockAdapter(seed=42, catalog_size=1)
+    repo = FakeRepo(sources=[_mock_source_record(enabled=True)])
+    record = _seed_reindex_video(repo, adapter, "mock-vid-0000", frame_count=3)
+    jobs = FakeJobs()
+    store = _PostCommitFailureVectorStore()
+    pipeline = CrawlerPipeline(repo=repo, jobs=jobs, adapter_for=lambda _job: adapter, store=store)
+    worker = JobWorker(jobs, concurrency=1)
+    pipeline.register_handlers(worker)
+
+    async def scenario() -> int:
+        await jobs.enqueue(
+            JobType.REINDEX,
+            payload=_reindex_payload(run_id=str(uuid.uuid4())),
+            video_id=uuid.UUID(record.id),
+            max_attempts=1,
+        )
+        return await worker.run_once()
+
+    assert asyncio.run(scenario()) == 1
+    assert repo.videos["mock-vid-0000"].status == "indexed"
+    assert store.frames
+    assert repo.status_changes == []
+
+
+def test_reindex_handler_skips_video_that_becomes_ineligible_after_enqueue() -> None:
+    """SEC-005/FR-011: el handler falla cerrado si la fuente se deshabilita."""
+    adapter = MockAdapter(seed=42, catalog_size=1)
+    repo = FakeRepo(sources=[_mock_source_record(enabled=True)])
+    record = _seed_reindex_video(repo, adapter, "mock-vid-0000")
+    jobs = FakeJobs()
+    store = FakeVectorStore()
+    pipeline = CrawlerPipeline(
+        repo=repo,
+        jobs=jobs,
+        adapter_for=lambda _job: adapter,
+        store=store,
+    )
+    worker = JobWorker(jobs, concurrency=1)
+    pipeline.register_handlers(worker)
+    run_id = str(uuid.uuid4())
+
+    async def scenario() -> int:
+        await jobs.enqueue(
+            JobType.REINDEX,
+            payload=_reindex_payload(run_id=run_id),
+            video_id=uuid.UUID(record.id),
+        )
+        repo.sources["mock"] = repo.sources["mock"].model_copy(update={"enabled": False})
+        return await worker.run_once()
+
+    assert asyncio.run(scenario()) == 1
+    assert next(iter(jobs.jobs.values())).status is JobStatus.DONE
+    assert store.replacements == []
+    assert repo.videos["mock-vid-0000"].status == "indexed"
+    job = next(iter(jobs.jobs.values()))
+    assert repo.reindex_results == [(job.id, "skipped", 0, "source_disabled")]
+
+
+def test_reindex_status_returns_aggregated_counts_and_results() -> None:
+    """FR-011/SC-007: `reindex-status --run-id` emite el agregado estable."""
+    run_id = str(uuid.uuid4())
+    expected = {
+        "run_id": run_id,
+        "pending": 1,
+        "completed": 2,
+        "skipped": 1,
+        "failed": 1,
+        "frames": 9,
+        "results": [
+            {"external_id": "mock-vid-0000", "status": "completed", "frames": 4},
+        ],
+    }
+    repo = FakeRepo(sources=[_mock_source_record(enabled=True)], reindex_status_result=expected)
+    result = _invoke(
+        ["reindex-status", "--run-id", run_id],
+        _base_context(repo=repo),
+    )
+    assert _stdout_json(result) == expected
+
+
+def test_crawler_repo_reindex_status_uses_durable_results_and_fails_closed() -> None:
+    """FR-011/SC-007: status usa payload durable y no el estado actual del vídeo."""
+    run_id = str(uuid.uuid4())
+    rows = [
+        (str(uuid.uuid4()), "pending", None, None, None, None, "mock", "pending"),
+        (str(uuid.uuid4()), "done", None, "completed", "3", None, "mock", "completed"),
+        (
+            str(uuid.uuid4()),
+            "done",
+            None,
+            "skipped",
+            "0",
+            "source_disabled",
+            "mock",
+            "skipped",
+        ),
+        (str(uuid.uuid4()), "failed", "asset corrupto", None, None, None, "mock", "failed"),
+        (str(uuid.uuid4()), "done", None, None, None, None, "mock", "legacy"),
+        (str(uuid.uuid4()), "done", None, "completed", "-1", None, "mock", "invalid"),
+    ]
+    repo = _StaticCrawlerRepo(rows)
+
+    result = asyncio.run(repo.reindex_status(run_id))
+
+    assert result["pending"] == 1
+    assert result["completed"] == 1
+    assert result["skipped"] == 1
+    assert result["failed"] == 3
+    assert result["frames"] == 3
+    by_external_id = {row["external_id"]: row for row in result["results"]}
+    assert by_external_id["skipped"]["reason"] == "source_disabled"
+    assert by_external_id["legacy"]["status"] == "failed"
+    assert "durable" in by_external_id["legacy"]["error"]
+    query, params = repo.cursor_double.executed[0]
+    assert "payload ->> 'result_outcome'" in query
+    assert "v.status" not in query
+    assert params == (run_id,)
+
+
+def test_crawler_repo_set_reindex_result_uses_parameterized_jsonb_update() -> None:
+    """FR-011: el outcome durable se escribe parametrizado en jobs.payload."""
+    repo = _StaticCrawlerRepo([])
+    job_id = uuid.uuid4()
+
+    updated = asyncio.run(
+        repo.set_reindex_result(
+            job_id,
+            outcome="completed",
+            frames=4,
+            reason=None,
+        )
+    )
+
+    assert updated is True
+    query, params = repo.cursor_double.executed[0]
+    assert "jsonb_build_object" in query
+    assert params == ("completed", 4, None, job_id)
+
+
+def test_reindex_cli_reports_reused_jobs_and_excludes_them_from_new_run() -> None:
+    """FR-009/SC-003: jobs activos de otro run no cuentan como enqueued nuevos."""
+    adapter = MockAdapter(seed=42, catalog_size=2)
+    repo = FakeRepo(sources=[_mock_source_record(enabled=True)])
+    records = [
+        _seed_reindex_video(repo, adapter, "mock-vid-0000"),
+        _seed_reindex_video(repo, adapter, "mock-vid-0001", status="failed"),
+    ]
+    jobs = FakeJobs()
+    old_run_id = str(uuid.uuid4())
+
+    async def seed_active_jobs() -> None:
+        for record in records:
+            assert record.external_id is not None
+            await jobs.enqueue(
+                JobType.REINDEX,
+                source_id=uuid.UUID(SOURCE_ID),
+                video_id=uuid.UUID(record.id),
+                payload=_reindex_payload(run_id=old_run_id, external_id=record.external_id),
+                dedupe_key=reindex_dedupe_key(
+                    "mock", record.external_id, _reindex_payload(run_id=old_run_id)["sampling"]
+                ),
+            )
+
+    asyncio.run(seed_active_jobs())
+    jobs.enqueued.clear()
+    result = _invoke(
+        ["reindex", "--source", "mock"],
+        _base_context(repo=repo, jobs=jobs, registry=_registry_with_mock(catalog_size=2)),
+    )
+
+    data = _stdout_json(result)
+    assert data["selected"] == 2
+    assert data["enqueued"] == 0
+    assert data["job_ids"] == []
+    assert len(data["reused_job_ids"]) == 2
+    assert data["reused_run_ids"] == [old_run_id]
+    assert len(jobs.enqueued) == 0
+
+
+def test_index_video_remains_legacy_when_pipeline_has_adaptive_policy() -> None:
+    """Compatibilidad: solo REINDEX activa el perfil adaptativo explícito."""
+    adapter = MockAdapter(seed=42, catalog_size=2)
+    repo = FakeRepo(sources=[_mock_source_record(enabled=True)])
+    record = _seed_reindex_video(repo, adapter, "mock-vid-0001", status="discovered")
+    jobs = FakeJobs()
+    store = FakeVectorStore()
+    pipeline = CrawlerPipeline(
+        repo=repo,
+        jobs=jobs,
+        adapter_for=lambda _job: adapter,
+        store=store,
+        sampling_policy=AdaptiveSamplingPolicy(),
+    )
+    worker = JobWorker(jobs, concurrency=1)
+    pipeline.register_handlers(worker)
+
+    async def scenario() -> int:
+        await jobs.enqueue(
+            JobType.INDEX_VIDEO,
+            payload={"source": "mock", "external_id": "mock-vid-0001"},
+            video_id=uuid.UUID(record.id),
+        )
+        return await worker.run_once()
+
+    assert asyncio.run(scenario()) == 1
+    assert len(store.frames) > 8

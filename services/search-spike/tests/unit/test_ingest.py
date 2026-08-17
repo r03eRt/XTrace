@@ -12,6 +12,7 @@ Criterios verificables (tasks.md PR-008 · spec 001):
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,13 @@ from PIL import Image
 from tests.fixtures import make_audio_video, make_corrupt_video, make_test_video
 from xtrace_spike.ingest import IngestError
 from xtrace_spike.ingest.dataset import DatasetError, DatasetVideo, scan_dataset
-from xtrace_spike.ingest.frames import ProbeError, extract_frames, probe_video
+from xtrace_spike.ingest.frames import (
+    ProbeError,
+    VideoProbe,
+    extract_frames,
+    probe_video,
+)
+from xtrace_spike.sampling import AdaptiveSamplingPolicy
 
 
 def _require_ffmpeg() -> None:
@@ -236,3 +243,73 @@ def test_extract_frames_invalid_config_raises_value_error(tmp_path: Path) -> Non
     with pytest.raises(ValueError, match="scale_width"):
         with extract_frames(video, work_root=work_root, frames_per_video=5, scale_width=0):
             pass
+
+
+def test_extract_frames_adaptive_uses_centered_policy(tmp_path: Path) -> None:
+    """FR-001/003: FFmpeg recibe el objetivo adaptativo y timestamps centrados."""
+    _require_ffmpeg()
+    video = _dataset_video(make_test_video(tmp_path / "clip.mp4", duration_s=2.0))
+
+    with extract_frames(
+        video,
+        work_root=tmp_path / "work",
+        sampling_policy=AdaptiveSamplingPolicy(),
+    ) as result:
+        assert len(result.frames) == 1
+        timestamps = [frame.timestamp_ms for frame in result.frames]
+        assert timestamps == [1_000]
+        assert all(0 <= timestamp < result.probe.duration_ms for timestamp in timestamps)
+
+
+def test_extract_frames_adaptive_centers_multiple_points_and_legacy_stays_at_30(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-001/003: objetivo y comando FFmpeg son centrados; legacy sigue en 30."""
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"fixture")
+    video = _dataset_video(video_path)
+    probe = VideoProbe(
+        duration_ms=360_000,
+        width=320,
+        height=240,
+        avg_fps=25.0,
+        codec="h264",
+    )
+    commands: list[list[str]] = []
+
+    def fake_probe(path: Path) -> VideoProbe:
+        assert path == video_path
+        return probe
+
+    def fake_run(
+        command: list[str], *, capture_output: bool, text: bool, check: bool
+    ) -> subprocess.CompletedProcess[str]:
+        assert capture_output and text and not check
+        commands.append(command)
+        frame_count = int(command[command.index("-frames:v") + 1])
+        output_pattern = Path(command[-1])
+        output_pattern.parent.mkdir(parents=True, exist_ok=True)
+        for index in range(frame_count):
+            output_pattern.parent.joinpath(f"frame_{index + 1:06d}.png").touch()
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("xtrace_spike.ingest.frames.probe_video", fake_probe)
+    monkeypatch.setattr("xtrace_spike.ingest.frames.subprocess.run", fake_run)
+
+    with extract_frames(
+        video,
+        work_root=tmp_path / "adaptive-work",
+        sampling_policy=AdaptiveSamplingPolicy(),
+    ) as adaptive:
+        assert len(adaptive.frames) == 3
+        assert [frame.timestamp_ms for frame in adaptive.frames] == [60_000, 180_000, 300_000]
+
+    with extract_frames(video, work_root=tmp_path / "legacy-work") as legacy:
+        assert len(legacy.frames) == 30
+        assert [frame.timestamp_ms for frame in legacy.frames[:3]] == [0, 12_000, 24_000]
+
+    adaptive_command, legacy_command = commands
+    assert adaptive_command[adaptive_command.index("-frames:v") + 1] == "3"
+    assert "-ss" in adaptive_command
+    assert legacy_command[legacy_command.index("-frames:v") + 1] == "30"
+    assert "-ss" not in legacy_command
