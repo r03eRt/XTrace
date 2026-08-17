@@ -4,7 +4,13 @@
 > orquestador tras cada PR. Fuente de verdad de requisitos: `docs/PRODUCT_IDEA.md` y
 > `specs/`. Contrato: `AGENTS.md` + `.specify/memory/constitution.md`.
 
-**Última actualización**: 2026-08-16 · por DeepSeek V4 Pro (orquestador).
+**Última actualización**: 2026-08-17 · por DeepSeek V4 Flash (implementador PR-058, cierre).
+
+> ✅ **Fase 3 (MVP de Búsqueda) — implementación COMPLETADA (PR-054…PR-058)**: spec 003 en
+> **`IMPLEMENTING`**; SC-001/003/005/006 verdes por tests automatizados. **SC-002 (captura
+> real → Top-5 vía API) queda como puerta manual del operador** en local (quickstart §Notas
+> operativas) y SC-004 (p95) se reporta como objetivo en el handoff PR-058 — no bloquean el
+> resto de la fase. Pendiente: revisión del PR-058 y merge de la rama de fase.
 
 > ✅ **Fase 2 MERGEADA a `main`** (PR #3, 2026-08-16, aprobación humana; CI 6/6 verde:
 > python-crawler-quality, quality, e2e, security, spec-compliance, GitGuardian).
@@ -64,7 +70,19 @@
 
 ## Fase actual
 
-**Fase 2 — Source SDK + Primer Crawler** (`specs/002-source-sdk-crawler`).
+**Fase 3 — MVP de Búsqueda: API REST + Frontend mínimo** (`specs/003-search-mvp`).
+Estado spec: **IMPLEMENTING** (cierre PR-058; no pasa a `IMPLEMENTED` hasta la validación
+manual del operador de **SC-002** — captura real → su vídeo en el Top-5 vía API — y el
+reporte de **SC-004**, ver `docs/handoffs/PR-058.md`).
+
+**PRs de la fase (5/5)**: PR-054 (bootstrap `services/api/` + CI python), PR-055
+(`POST /search` con validación de media, borrado inmediato y paridad CLI — SC-001/003/006),
+PR-056 (`GET /stats` + `GET /videos/{id}` + TTL de `searches`), PR-057 (página `/buscar` +
+cliente API zod), PR-058 (E2E WebdriverIO smoke de `/buscar` con API **stubbeada** — SC-005
+verde en CI sin API real — + cierre de la fase). SC-002 es puerta manual del operador en
+local (quickstart) y no bloquea el resto de SC.
+
+**Fase 2 (anterior) — Source SDK + Primer Crawler** (`specs/002-source-sdk-crawler`).
 Estado spec: **IMPLEMENTED** (2026-08-16; aprobación humana 2026-08-15; validación real
 con xvideos completada). Documentación de diseño **completa**: `plan.md`, `data-model.md`,
 `contracts/`, `quickstart.md`, `tasks.md`, ADR-0009..0011.
@@ -82,7 +100,7 @@ FIX-phash implementados, revisados (APPROVED) y **mergeados a `main`**. **US1/US
 funcionales** (CLI: index/stats/search/exclude/benchmark). **Puerta SC-001/SC-002 SUPERADA
 con el dataset real del operador (43 vídeos).**
 
-## Roadmap de la fase
+## Roadmap de la fase 2 (completada)
 
 15 PRs (PR-019 … PR-033), ninguno XL. Ver `specs/002-source-sdk-crawler/tasks.md` para
 objetivos, dependencias, `allowed_paths`, tests y criterios. Grafo de dependencias y plan

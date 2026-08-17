@@ -4,7 +4,7 @@
 
 **Created**: 2026-08-16
 
-**Status**: APPROVED
+**Status**: IMPLEMENTING
 
 **Input**: User description: "Fase 3 — MVP de búsqueda USABLE: API REST de búsqueda por
 imagen + frontend mínimo Next.js (subir imagen → ver resultados) contra el índice real
@@ -358,6 +358,16 @@ preguntas abiertas capaces de cambiar la implementación._
 
 **Estado**: `APPROVED` — aprobada por el humano responsable el 2026-08-16 (frase exacta
 "Especificación aprobada"). Habilitado el paso a `technical-planning`.
+
+**Cierre de la implementación (2026-08-17, PR-054…PR-058)**: la implementación está
+completa y **SC-001/SC-003/SC-005/SC-006 quedan verdes** por tests automatizados (paridad
+CLI-API, borrado inmediato, E2E WebdriverIO en la smoke suite de CI y validación 4xx sin
+ejecutar búsqueda). La spec pasa a **`IMPLEMENTING`** (no a `IMPLEMENTED`) porque
+**SC-002** (captura real de un vídeo del corpus → su vídeo en el Top-5 vía API) y el
+reporte de **SC-004** (p95 de `processing_ms`, objetivo < 3 s, no garantía) son
+**validación manual del operador** en local (quickstart §4/§Notas operativas; puerta
+documentada en `docs/handoffs/PR-058.md`). El humano responsable la moverá a
+`IMPLEMENTED` tras superar esa puerta.
 
 ## Historial de decisiones
 
