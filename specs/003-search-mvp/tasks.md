@@ -119,7 +119,7 @@ continúan tras PR-053 (fix del crawler, fase 2, ya mergeado a `main`).
 - **Paralelizable con**: PR-057
 
 ### PR-056 · `GET /stats` + `GET /videos/{id}` + TTL de `searches` sin migración
-- **Estado**: READY
+- **Estado**: DONE (implementado + revisado APPROVED + mergeado a la rama de fase, Ola C)
 - **Prioridad**: P1 · **Complejidad**: M · **Rol**: implementer · **Riesgo**: bajo
 - **Spec/Req**: FR-007/008, FR-011 (404/400 `invalid_uuid`) · SEC-004/005 · DATA-001 ·
   SC-004 · contracts §3/§4/§5
