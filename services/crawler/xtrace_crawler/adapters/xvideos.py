@@ -83,8 +83,9 @@ fixtures anonimizados en `tests/fixtures/xvideos/`):
 
 Sin red en tests: toda petición pasa por `SafeHTTPClient` (PR-024, allowlist
 `xvideos.com`/`www.xvideos.com`, SEC-001) con un `httpx.MockTransport`
-inyectable; el adapter nunca construye URLs de assets propios más allá de lo
-parseado (anti-SSRF).
+inyectable. El flujo legacy usa solo URLs parseadas; el hook explícito de
+REINDEX puede construir un conjunto acotado de variantes `xv_N_t.jpg` del mismo
+path CDN ya observado, que después sigue pasando por la allowlist de assets.
 """
 
 from __future__ import annotations
@@ -97,6 +98,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from selectolax.parser import HTMLParser
+from xtrace_spike.sampling import AdaptiveSamplingPolicy  # type: ignore[import-untyped]
 
 from xtrace_crawler.adapters.base import AdapterManifest, RateLimitSpec
 from xtrace_crawler.adapters.models import (
@@ -265,6 +267,16 @@ def _resolve_listing_href(href: str) -> str | None:
     if parsed.scheme in ("http", "https") and parsed.netloc in XV_VIDEO_HOSTS:
         return href
     return None
+
+
+def _video_page_url(video: VideoSource) -> str:
+    """Return the canonical page URL accepted by the source (PR-047)."""
+    url = XV_VIDEO_URL_TEMPLATE.format(external_id=video.external_id)
+    if video.page_url:
+        resolved = _resolve_listing_href(video.page_url)
+        if resolved is not None:
+            url = resolved
+    return url
 
 
 def _meta_content(tree: HTMLParser, selector: str) -> str | None:
@@ -481,9 +493,10 @@ def _thumb_gallery(
     dispersas o un subconjunto conservado producía `timestamp_ms` que
     excedían la duración hasta 5x (p. ej. ts=2.400.000ms en un vídeo de
     480.000ms). `timestamp_ms = round(N / K * duration_ms)`, **clamp** a
-    `[0, duration_ms]` (si N==K → la duración exacta, defensivo); sin
-    duración o con `K <= 0` → `timestamp_ms=None` (defensivo, la fuente no
-    expone una referencia temporal fiable por thumb).
+    `[0, duration_ms)` para respetar el contrato interno de timestamps (el
+    thumbnail final se representa en `duration_ms - 1`); sin duración o con
+    `K <= 0` → `timestamp_ms=None` (defensivo, la fuente no expone una
+    referencia temporal fiable por thumb).
 
     `thumbnail_url` sin el patrón `xv_<N>_t.jpg` o sin galería → lista vacía
     (el llamador degrada a la miniatura única).
@@ -505,13 +518,28 @@ def _thumb_gallery(
 
     # PR-053: K = máxima posición de la galería (no el nº de assets conservados).
     gallery_max = max(by_position)
+    return _gallery_assets_from_positions(
+        by_position, positions=sorted(by_position), gallery_max=gallery_max, duration_ms=duration_ms
+    )
+
+
+def _gallery_assets_from_positions(
+    by_position: dict[int, str],
+    *,
+    positions: list[int],
+    gallery_max: int,
+    duration_ms: int | None,
+) -> list[VisualAsset]:
+    """Build thumbnail assets with the source's uniform position semantics."""
     assets: list[VisualAsset] = []
-    for position in sorted(by_position):
+    for position in positions:
         timestamp_ms: int | None = None
-        if duration_ms is not None and gallery_max > 0:
+        if duration_ms is not None and duration_ms > 0 and gallery_max > 0:
             timestamp_ms = round(position / gallery_max * duration_ms)
-            # Clamp defensivo: nunca fuera de [0, duration_ms] (N==K → duración).
-            timestamp_ms = max(0, min(timestamp_ms, duration_ms))
+            # Clamp defensivo: nunca fuera de [0, duration_ms).  El punto
+            # N==K se aproxima al último milisegundo válido, porque el
+            # pipeline reserva duration_ms como límite superior exclusivo.
+            timestamp_ms = max(0, min(timestamp_ms, duration_ms - 1))
         assets.append(
             VisualAsset(
                 kind="thumbnail",
@@ -521,6 +549,131 @@ def _thumb_gallery(
             )
         )
     return assets
+
+
+def _gallery_positions_for_sampling(
+    observed_positions: list[int],
+    *,
+    gallery_max: int,
+    duration_ms: int | None,
+    policy: AdaptiveSamplingPolicy,
+) -> list[int]:
+    """Choose at most the adaptive target, using public positions from the gallery.
+
+    The page establishes the gallery's CDN path and maximum position.  For a
+    reliable duration, positions between the declared ones are deterministic
+    public thumbnail variants of that same path; the eventual asset fetch is
+    still authoritative (404/corrupt responses are degraded by the pipeline).
+    Without duration, no temporal position is invented and only declared assets
+    are retained.
+    """
+    if not observed_positions or gallery_max <= 0:
+        return []
+    if duration_ms is None or duration_ms <= 0:
+        target = policy.target_count(None, len(observed_positions))
+        return sorted(observed_positions)[:target]
+
+    target = min(policy.target_count(duration_ms), gallery_max)
+    if target <= 0:
+        return []
+
+    # Round the centered points while reserving enough positions for the
+    # remaining points.  Plain ``round`` can collapse adjacent points for
+    # small galleries (Python's bankers rounding makes K=3/T=3 become
+    # [1, 2, 2]); the monotonic bounds below guarantee exactly ``target``
+    # distinct positions whenever target <= gallery_max.
+    ideal_positions: list[int] = []
+    previous = 0
+    for index in range(target):
+        min_allowed = previous + 1
+        max_allowed = gallery_max - (target - index - 1)
+        centered = round((index + 0.5) * gallery_max / target)
+        position = min(max(centered, min_allowed), max_allowed)
+        ideal_positions.append(position)
+        previous = position
+    if len(observed_positions) >= target:
+        remaining = set(observed_positions)
+        selected: list[int] = []
+        for ideal in ideal_positions:
+            if not remaining:
+                break
+            nearest = min(
+                remaining,
+                key=lambda position: (abs(position - ideal), position),
+            )
+            selected.append(nearest)
+            remaining.remove(nearest)
+        return sorted(selected)
+
+    # There are fewer declared assets than the duration target.  Keep every
+    # declared position as a fallback: generated variants may be public but
+    # unavailable for a particular video, while the declared URLs are the
+    # source's strongest evidence.  Fill the remaining slots with centered
+    # variants from the same path; the downloader decides which generated
+    # variants are truly available.
+    selected = list(sorted(set(observed_positions)))
+    for position in ideal_positions:
+        if position not in selected and len(selected) < target:
+            selected.append(position)
+    if len(selected) < target:
+        # Defensive completion for malformed/non-contiguous input.  The
+        # normal path already has enough positions because target <= K.
+        for position in range(1, gallery_max + 1):
+            if position not in selected:
+                selected.append(position)
+            if len(selected) >= target:
+                break
+    return sorted(selected)
+
+
+def _thumbnail_variant_url(thumbnail_url: str, position: int) -> str | None:
+    """Replace only the final `xv_N_t.jpg` component, preserving its CDN path."""
+    parsed = urlsplit(thumbnail_url)
+    match = re.search(r"xv_\d+_t\.jpg$", parsed.path)
+    if match is None:
+        return None
+    path = f"{parsed.path[: match.start()]}xv_{position}_t.jpg"
+    return parsed._replace(path=path).geturl()
+
+
+def _thumb_gallery_for_sampling(
+    html: str,
+    *,
+    thumbnail_url: str | None,
+    duration_ms: int | None,
+    policy: AdaptiveSamplingPolicy,
+) -> list[VisualAsset]:
+    """Expand a declared gallery only for the explicit adaptive reindex path."""
+    observed = _thumb_gallery(html, thumbnail_url=thumbnail_url, duration_ms=duration_ms)
+    if not observed or thumbnail_url is None:
+        return observed
+    observed_by_position = {
+        asset.position: asset.url for asset in observed if asset.position is not None
+    }
+    if not observed_by_position:
+        return observed
+    gallery_max = max(observed_by_position)
+    positions = _gallery_positions_for_sampling(
+        list(observed_by_position),
+        gallery_max=gallery_max,
+        duration_ms=duration_ms,
+        policy=policy,
+    )
+    if not positions:
+        return []
+    urls: dict[int, str] = {}
+    for position in positions:
+        url = observed_by_position.get(position)
+        if url is None:
+            url = _thumbnail_variant_url(thumbnail_url, position)
+        if url is not None:
+            urls[position] = url
+    return _gallery_assets_from_positions(
+        urls,
+        positions=sorted(urls),
+        gallery_max=gallery_max,
+        duration_ms=duration_ms,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -722,18 +875,36 @@ class XvideosAdapter:
         thumbs en el markup) los timestamps excedían la duración hasta 5x
         (p. ej. ts=2.400.000ms en un vídeo de 480.000ms). La semántica real
         es uniforme: `timestamp_ms = round(N / K * duration_ms)` con
-        `K = MÁXIMA posición observada`, clamp a `[0, duration_ms]` y `None`
+        `K = MÁXIMA posición observada`, clamp a `[0, duration_ms)` y `None`
         defensivo (sin duración o K<=0) — ver `_thumb_gallery`.
         """
-        url = XV_VIDEO_URL_TEMPLATE.format(external_id=video.external_id)
-        if video.page_url:
-            resolved = _resolve_listing_href(video.page_url)
-            if resolved is not None:
-                url = resolved
-        response = await self._client.get(url)
+        response = await self._client.get(_video_page_url(video))
         response.raise_for_status()
         assets = _thumb_gallery(
             response.text, thumbnail_url=video.thumbnail_url, duration_ms=video.duration_ms
+        )
+        if not assets and video.thumbnail_url is not None:
+            assets = [VisualAsset(kind="thumbnail", url=video.thumbnail_url)]
+        return assets
+
+    async def get_visual_assets_for_sampling(
+        self, video: VideoSource, *, policy: AdaptiveSamplingPolicy
+    ) -> list[VisualAsset]:
+        """Return centered public thumbnail variants for explicit adaptive REINDEX.
+
+        The ordinary ``get_visual_assets`` method remains legacy-compatible and
+        only returns URLs declared in the page.  REINDEX may use this optional
+        hook: the page's own `xv_N_t.jpg` path and maximum position authorize a
+        bounded set of same-path variants, while the normal asset fetcher still
+        decides whether each URL is actually usable.
+        """
+        response = await self._client.get(_video_page_url(video))
+        response.raise_for_status()
+        assets = _thumb_gallery_for_sampling(
+            response.text,
+            thumbnail_url=video.thumbnail_url,
+            duration_ms=video.duration_ms,
+            policy=policy,
         )
         if not assets and video.thumbnail_url is not None:
             assets = [VisualAsset(kind="thumbnail", url=video.thumbnail_url)]

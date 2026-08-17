@@ -64,6 +64,7 @@ escasas o `None` producen un resultado estable de 1–8 frames.
 - [x] T011 [US2] Añadir primero tests fallidos de pHash/posiciones duplicadas, timestamps inválidos/`None`, escasez y cierre de imágenes descartadas en `services/crawler/tests/integration/test_pipeline.py`
 - [x] T012 [US2] Normalizar posiciones, deduplicar por posición+pHash e integrar la selección compartida en `services/crawler/xtrace_crawler/pipeline.py`
 - [x] T013 [US2] Añadir aserciones de que no se acceden nuevos tipos de asset ni vídeos completos en `services/crawler/tests/integration/test_pipeline.py`
+- [x] T027 [US2] Ampliar la recolección adaptativa de XVIDEOS a posiciones `xv_N_t.jpg` públicas del mismo asset path, conservando el flujo legacy y sin acceder al vídeo completo en `services/crawler/xtrace_crawler/adapters/xvideos.py`, `services/crawler/xtrace_crawler/pipeline.py` y sus tests
 
 **Checkpoint**: El pipeline web limita evidencia permitida sin debilitar compliance.
 

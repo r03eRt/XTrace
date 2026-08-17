@@ -875,7 +875,7 @@ class CrawlerPipeline:
             video = video_source_from_record(record, source=source)
             adapter = self._adapter_for(job)
             await self._acquire(adapter)
-            assets = await adapter.get_visual_assets(video)
+            assets = await self._get_visual_assets_for_reindex(adapter, video, policy)
             frames = await self._collect_frames(
                 assets,
                 video,
@@ -1017,6 +1017,19 @@ class CrawlerPipeline:
         await self._store.delete_video(record.id)
 
     # -- Assets → frames (FR-005/FR-011/FR-015) ---------------------------------
+
+    async def _get_visual_assets_for_reindex(
+        self,
+        adapter: SourceAdapter,
+        video: VideoSource,
+        policy: AdaptiveSamplingPolicy,
+    ) -> list[VisualAsset]:
+        """Use an adapter's optional adaptive asset hook without changing legacy INDEX_VIDEO."""
+        provider = getattr(adapter, "get_visual_assets_for_sampling", None)
+        if provider is None:
+            return await adapter.get_visual_assets(video)
+        typed_provider = cast(Callable[..., Awaitable[list[VisualAsset]]], provider)
+        return await typed_provider(video, policy=policy)
 
     async def _collect_frames(
         self,
