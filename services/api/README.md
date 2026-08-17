@@ -49,14 +49,14 @@ debe ser un PR propio trazado a la spec 003.
 
 Sin secretos en el repositorio; todo se inyecta por env (ver `xtrace_api/config.py`):
 
-| Variable                           | Descripción                                            |
-| ---------------------------------- | ------------------------------------------------------ |
-| `XTRACE_API_HOST`                  | bind del servidor (default `127.0.0.1`, SEC-001)       |
-| `XTRACE_API_PORT`                  | puerto del servidor (default `8000`)                   |
-| `SUPABASE_DB_URL`                  | DSN de servidor (convenio spike/crawler; vacío → tests in-memory) |
-| `XTRACE_EMBEDDING_PROVIDER`        | `fake` (default) \| `siglip` (convenio del spike)      |
-| `XTRACE_API_WORK_ROOT`             | directorio de temporales de media (default `<tempdir>/xtrace-api`) |
-| `XTRACE_API_CORS_ORIGINS`          | allowlist CORS como JSON (default `["http://localhost:3000"]`) |
+| Variable                    | Descripción                                                        |
+| --------------------------- | ------------------------------------------------------------------ |
+| `XTRACE_API_HOST`           | bind del servidor (default `127.0.0.1`, SEC-001)                   |
+| `XTRACE_API_PORT`           | puerto del servidor (default `8000`)                               |
+| `SUPABASE_DB_URL`           | DSN de servidor (convenio spike/crawler; vacío → tests in-memory)  |
+| `XTRACE_EMBEDDING_PROVIDER` | `fake` (default) \| `siglip` (convenio del spike)                  |
+| `XTRACE_API_WORK_ROOT`      | directorio de temporales de media (default `<tempdir>/xtrace-api`) |
+| `XTRACE_API_CORS_ORIGINS`   | allowlist CORS como JSON (default `["http://localhost:3000"]`)     |
 
 ## Docker
 

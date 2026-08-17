@@ -4,15 +4,24 @@
 > probar la búsqueda con una captura contra el **índice real** (D5: 104 vídeos web
 > `indexed` del tag `buttfucking` + 43 del dataset local del spike). Solo local, sin auth,
 > sin exponer nada (SEC-001/D3).
+>
+> **Comandos validados contra la implementación** (PR-054..PR-058): los defaults de
+> configuración que se citan (`SUPABASE_DB_URL` vacío → backend in-memory,
+> `XTRACE_EMBEDDING_PROVIDER=fake|siglip`, bind `127.0.0.1:8000`,
+> `NEXT_PUBLIC_XTRACE_API_URL=http://127.0.0.1:8000`) son los de
+> `services/api/xtrace_api/config.py` y `src/lib/env.ts`.
 
 ## Prerrequisitos
 
 - `uv` (Python 3.11), Node ≥ 22 + `pnpm`, Docker + Supabase CLI (la misma instancia local
   de las fases 1-2, con el índice ya indexado — el corpus de la fase no se reindexa, FR-013).
-- Variables de entorno (mismas que el spike/crawler): `SUPABASE_DB_URL` (o default local
-  `postgresql://postgres:postgres@127.0.0.1:55322/postgres`) y, opcional,
-  `XTRACE_EMBEDDING_PROVIDER=fake|siglip` (default `fake`; **`siglip`** para búsqueda real
-  contra el índice real).
+- Variables de entorno (mismas que el spike/crawler):
+  - `SUPABASE_DB_URL` — DSN de servidor del índice real. **Sin esta variable la API
+    arranca con backend `in-memory`** (config.py: default `""`; útil para dev rápido, pero
+    **no** busca en el índice real). DSN de la instancia local de este repo
+    (`supabase/config.toml`, puerto 55322): `postgresql://postgres:postgres@127.0.0.1:55322/postgres`.
+  - `XTRACE_EMBEDDING_PROVIDER=fake|siglip` (default `fake`; **`siglip`** para búsqueda
+    real contra el índice real; requiere `uv sync --extra siglip`).
 
 ## 1. Base de datos
 
@@ -34,6 +43,7 @@ cd services/search-spike && uv run xtrace-spike stats
 cd services/api
 uv sync --locked                 # deps + xtrace_spike editable (ADR-0011/0012)
 uv sync --extra siglip           # SOLO si quieres embeddings reales (torch; opcional)
+export SUPABASE_DB_URL=postgresql://postgres:postgres@127.0.0.1:55322/postgres
 export XTRACE_EMBEDDING_PROVIDER=siglip   # fake (default) para dev rápido
 uv run uvicorn xtrace_api.main:app --host 127.0.0.1 --port 8000
 ```
@@ -97,9 +107,14 @@ imágenes en CI.
 ## 5. E2E (WebdriverIO) y calidad
 
 ```bash
-pnpm test:e2e:smoke   # smoke suite: incluye la página /buscar (stub del fetch, sin API real)
-pnpm verify           # puertas JS completas (format/lint/typecheck/test/test:db/e2e/build)
+pnpm build && pnpm start &        # la app en :3000 (mismo flujo que el CI e2e.yml)
+pnpm test:e2e:smoke               # smoke suite: home + /buscar (API stubbeada, sin API real)
+pnpm verify                       # puertas JS completas (format/lint/typecheck/test/test:db/e2e/build)
 ```
+
+> El E2E de `/buscar` **no necesita la API**: intercepta `POST **/search` en el nivel de
+> red (WebDriver BiDi) y responde los fixtures de `tests/e2e/fixtures/` (contrato §1) —
+> SC-005. Arranca solo la app Next.js.
 
 Calidad del servicio API (gate `python-api-quality`):
 
@@ -116,6 +131,10 @@ uv run pytest          # unit + integration (TestClient; los tests de DB saltan 
   configurable (`XTRACE_API_SEARCHES_TTL_DAYS`, default 30).
 - **Latencia (SC-004)**: con SigLIP en CPU local la búsqueda puede tardar 7-11 s (objetivo
   < 3 s p95, no garantía); `processing_ms` se reporta en la respuesta y en la analítica.
-- **Validación real (SC-002)**: una captura real de un vídeo del corpus debe devolver su
-  vídeo en el Top-5 vía API — prueba manual del operador (responsabilidad legal del
-  contenido de prueba, spec).
+  El cierre de la fase (PR-058) **reporta** el p95 medido en la validación local del
+  operador.
+- **Puerta manual del operador — SC-002**: una **captura real** de un vídeo del corpus
+  debe devolver **su vídeo en el Top-5 vía API** (con `siglip` + índice real). Es la
+  validación manual que cierra la fase (spec 003 queda `IMPLEMENTING` hasta superarla):
+  ejecuta el flujo de §2-§4 con una captura real y comprueba el Top-5. La responsabilidad
+  legal del contenido de prueba es del operador; el contenido real nunca se commitea.
