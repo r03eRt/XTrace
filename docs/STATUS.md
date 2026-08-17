@@ -130,7 +130,9 @@ paralelo). Es pequeño, de bajo riesgo y necesario antes de cualquier lógica de
 - **SC-001: Top-5 ≥ 80% → CUMPLE: 95,6%** (Top-1 = 93,9%) con umbral de match 0.8.
 - **SC-002: FPR ≤ 10% → CUMPLE: 0%** con umbral de match 0.8 (a 0.5-0.7 las negativas pasan; a 0.9 se pierde Top-5: 71,7%). **Umbral recomendado: 0.8.**
 - **SC-003: latencia < 3 s → OK** (p50/p95 reportados ≈ 0-2 ms de la consulta; el coste real está en el embedding ~0.25-0.4 s/imagen en CPU, throughput medido ~2.4-3.9 fps).
-- Conclusión: **VALIDATE SEARCH FIRST ✔ — se puede escalar el crawling** (decidir 30 vs 60 frames/vídeo en PR-017).
+- Conclusión: **VALIDATE SEARCH FIRST ✔ — se puede escalar el crawling**. PR-017 dejó
+  30 frames/vídeo como referencia del spike; para el catálogo global multi-proveedor se
+  adopta un índice base de **8 frames/vídeo** con refinamiento bajo demanda (ADR-0013).
 - **Validación manual del operador (2026-08-15):** un frame real subido por el operador fue buscado y el sistema devolvió el vídeo correcto (`4920517166559660298.mp4`) con timestamp acertado (~1,69 s) y score 0.872.
 - **Validación manual del operador (2026-08-15, 2ª ronda):** 3 capturas reales del operador
   (`capturas-test/`, gitignored — no commitear) → **3/3 Top-1 correctos** (confirmado por el
@@ -143,6 +145,13 @@ paralelo). Es pequeño, de bajo riesgo y necesario antes de cualquier lógica de
 
 - ~~Dataset local~~ → **RESUELTO**: el operador aportó 43 vídeos en `dataset/` (gitignored,
   nunca commitear).
+
+## Decisiones adoptadas recientemente
+
+- **Estrategia de muestreo global** → **DECIDIDA: 8 frames/vídeo** en el índice base para
+  el catálogo multi-proveedor; refinar solo los candidatos principales para mejorar el
+  timestamp (ADR-0013). No cambia todavía el default histórico del spike ni reindexa el
+  corpus existente.
 
 ## Decisiones pendientes
 
@@ -170,8 +179,8 @@ paralelo). Es pequeño, de bajo riesgo y necesario antes de cualquier lógica de
 | --- | --- | --- | --- |
 | **Desarrollo / spike** | Local + Docker + Supabase Free + embeddings CPU local | **~0 €** | 0 € (dataset local pequeño) |
 | **MVP** (~3k vídeos / 90k emb.) | Supabase Free/Pro, R2 free, crawler local/VPS ~5 €, GPU serverless por uso | **~0–25 €** | GPU serverless puntual (créditos Modal / bajo) |
-| **~100k vídeos** (~3M emb.) | Supabase Pro, pgvector (medir), VPS crawler, GPU por lotes | **~25–50 €+** | Indexación por lotes en GPU serverless |
-| **~1M vídeos** (~30M emb.) | Evaluar Qdrant / infra vectorial dedicada (ADR futuro) | según uso | mayor; planificar por lotes |
+| **~100k vídeos** (~0,8M emb. base) | Supabase Pro, pgvector (medir), VPS crawler, GPU por lotes | **~25–50 €+** | Indexación por lotes en GPU serverless |
+| **~1M vídeos** (~8M emb. base) | Evaluar Qdrant / infra vectorial dedicada (ADR futuro) | según uso | mayor; planificar por lotes |
 
 Principio: **cheap first, scale when proven**. No añadir servicios de pago sin ADR con
 coste estimado (AGENTS.md / prompt maestro §91).

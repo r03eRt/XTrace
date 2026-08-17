@@ -77,8 +77,10 @@ GENERATE_EMBEDDINGS/REINDEX/CHECK_AVAILABILITY), `searches`, `reports`.
 - Auth solo para admin (Supabase Auth). Monetización fuera de alcance pero no bloqueada.
 
 ### Éxito v1
-- Dataset de validación: ~3 fuentes, ~3.000 vídeos, ~30 frames/vídeo, ~90k embeddings
-  (objetivos de validación, no límites arquitectónicos).
+- Dataset de validación del spike: ~3 fuentes, ~3.000 vídeos, ~30 frames/vídeo, ~90k
+  embeddings (objetivos de validación, no límites arquitectónicos). Para el catálogo
+  global multi-proveedor, la política adoptada es un índice base de **8 frames/vídeo** y
+  refinamiento bajo demanda sobre candidatos (ADR-0013).
 - Búsqueda por imagen encuentra el vídeo entre los primeros resultados, muestra fuente y
   timestamp aproximado. Búsqueda por vídeo aprovecha consistencia temporal.
 - Añadir una fuente nueva no requiere tocar el core (solo un `SourceAdapter`).
