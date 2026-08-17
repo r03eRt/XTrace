@@ -1,4 +1,3 @@
-import { env } from "@/lib/env";
 import { searchResponseSchema } from "./schemas";
 import type { SearchResponse } from "./schemas";
 
@@ -6,6 +5,29 @@ import type { SearchResponse } from "./schemas";
  * Cliente de la API de búsqueda de XTrace (spec 003 · contracts/README.md §6).
  * Solo cliente, sin auth (SEC-001/D3). Base URL por env con default local.
  */
+
+/**
+ * Base URL de la API (spec 003 · contracts §6 · SEC-001): se lee
+ * `NEXT_PUBLIC_XTRACE_API_URL` directamente, SIN pasar por `@/lib/env` (PR-060).
+ * `env.ts` exige `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_ANON_KEY` del
+ * skeleton al evaluarse, y el job de calidad de CI no las define: el build de Next
+ * fallaba al prerenderizar `/buscar`. La búsqueda no necesita Supabase; si la env
+ * existe pero es inválida se lanza un error claro (y solo entonces).
+ */
+function resolveApiBaseUrl(): string {
+  const raw = process.env.NEXT_PUBLIC_XTRACE_API_URL ?? "http://127.0.0.1:8000";
+  try {
+    new URL(raw);
+  } catch {
+    throw new Error(
+      `NEXT_PUBLIC_XTRACE_API_URL inválida ("${raw}"): debe ser una URL absoluta válida. ` +
+        "Sin la variable se usa el default http://127.0.0.1:8000 (solo local, SEC-001).",
+    );
+  }
+  return raw;
+}
+
+const API_BASE_URL = resolveApiBaseUrl();
 
 export const MAX_QUERY_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB (FR-002, contracts §1)
 export const SEARCH_TIMEOUT_MS = 60_000; // contracts §6: timeout de 60 s con abort
@@ -82,7 +104,7 @@ export async function searchByImage(
   try {
     let res: Response;
     try {
-      res = await fetch(`${env.NEXT_PUBLIC_XTRACE_API_URL}/search`, {
+      res = await fetch(`${API_BASE_URL}/search`, {
         method: "POST",
         body: form,
         signal: controller.signal,
