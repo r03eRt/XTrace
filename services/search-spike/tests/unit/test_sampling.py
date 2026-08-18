@@ -70,9 +70,11 @@ def test_selection_uses_available_assets_once_and_keeps_temporal_order() -> None
     )
 
     assert len(selected) == 5
-    assert [frame.timestamp_ms for frame in selected] == sorted(
-        {frame.timestamp_ms for frame in selected}
-    )
+    selected_timestamps = [
+        timestamp for frame in selected if (timestamp := frame.timestamp_ms) is not None
+    ]
+    assert len(selected_timestamps) == len(selected)
+    assert selected_timestamps == sorted(set(selected_timestamps))
     assert len({frame.timestamp_ms for frame in selected}) == len(selected)
 
 
