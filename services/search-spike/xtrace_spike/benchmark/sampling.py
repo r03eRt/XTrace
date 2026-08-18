@@ -199,12 +199,8 @@ class SamplingComparisonReport:
         return {
             "cases": self.cases,
             "coverage": self.coverage.to_dict(),
-            "policies": {
-                name: self.policies[name].to_dict() for name in sorted(self.policies)
-            },
-            "segments": {
-                name: self.segments[name].to_dict() for name in sorted(self.segments)
-            },
+            "policies": {name: self.policies[name].to_dict() for name in sorted(self.policies)},
+            "segments": {name: self.segments[name].to_dict() for name in sorted(self.segments)},
             "top5_loss_percentage_points": self.top5_loss_percentage_points,
             "frames_reduction": self.frames_reduction,
             "gates": {name: self.gates[name] for name in sorted(self.gates)},
@@ -220,9 +216,7 @@ class SamplingComparisonReport:
     def to_json(self) -> str:
         """JSON canónico, ordenado y terminado en salto de línea."""
         return (
-            json.dumps(
-                self.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            )
+            json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             + "\n"
         )
 
@@ -303,9 +297,11 @@ def validate_benchmark_coverage(
         if case.timestamp_ms is not None and case.timestamp_ms >= (case.duration_ms or 0):
             errors.append(f"invalid_timestamp:{case_identity(case)}")
         segment_counts[f"{case.source}/{bucket}"] += 1
-    present_buckets = tuple(bucket for bucket in DURATION_BUCKETS if any(
-        key.endswith(f"/{bucket}") for key in segment_counts
-    ))
+    present_buckets = tuple(
+        bucket
+        for bucket in DURATION_BUCKETS
+        if any(key.endswith(f"/{bucket}") for key in segment_counts)
+    )
     missing_buckets = [bucket for bucket in DURATION_BUCKETS if bucket not in present_buckets]
     if missing_buckets:
         errors.append("missing_duration_buckets:" + ",".join(missing_buckets))
@@ -353,13 +349,9 @@ def compare_sampling_policies(
     mismatches = tuple(sorted(set(dense_mismatches + adaptive_mismatches)))
     expected_id_set = set(expected_ids)
     missing = tuple(
-        sorted(
-            (expected_id_set - set(dense_map)) | (expected_id_set - set(adaptive_map))
-        )
+        sorted((expected_id_set - set(dense_map)) | (expected_id_set - set(adaptive_map)))
     )
-    extras = tuple(
-        sorted((set(dense_map) | set(adaptive_map)) - expected_id_set)
-    )
+    extras = tuple(sorted((set(dense_map) | set(adaptive_map)) - expected_id_set))
     dense_metrics, dense_segments = _evaluate_policy("dense", cases_tuple, dense_map)
     adaptive_metrics, adaptive_segments = _evaluate_policy("adaptive", cases_tuple, adaptive_map)
     segments = _merge_segments(dense_segments, adaptive_segments)
@@ -459,8 +451,10 @@ def load_policy_observations(path: str | Path) -> tuple[BenchmarkObservation, ..
 def _observation_map(
     observations: Iterable[BenchmarkObservation] | Mapping[str, BenchmarkObservation],
 ) -> tuple[dict[str, BenchmarkObservation], tuple[str, ...], tuple[str, ...]]:
-    items = observations.items() if isinstance(observations, Mapping) else (
-        (item.case_id, item) for item in observations
+    items = (
+        observations.items()
+        if isinstance(observations, Mapping)
+        else ((item.case_id, item) for item in observations)
     )
     result: dict[str, BenchmarkObservation] = {}
     duplicates: list[str] = []
@@ -510,9 +504,7 @@ def _evaluate_policy(
             ):
                 error = abs(observation.predicted_timestamp_ms - case.timestamp_ms)
                 temporal_errors.append(error)
-                normalized_errors.append(
-                    error / (case.duration_ms / observation.frame_count)
-                )
+                normalized_errors.append(error / (case.duration_ms / observation.frame_count))
             elif case.timestamp_ms is not None:
                 failures.append(f"temporal:{identity}")
         video_ref = case.expected_video_ref
@@ -558,11 +550,7 @@ def _evaluate_segments(
     for case in cases:
         bucket = duration_bucket(case.duration_ms)
         observation = observations.get(case_identity(case))
-        if (
-            case.expected_video_ref is not None
-            and bucket is not None
-            and observation is not None
-        ):
+        if case.expected_video_ref is not None and bucket is not None and observation is not None:
             grouped[f"{case.source}/{bucket}"].append((case, observation))
     segments: dict[str, SegmentMetrics] = {}
     for name, values in grouped.items():
@@ -681,8 +669,7 @@ def _round(value: float, digits: int) -> float:
 def _validate_coverage_thresholds(min_cases: int, min_per_segment: int) -> None:
     if min_cases < MIN_BENCHMARK_CASES:
         raise ValueError(
-            f"min_cases no puede ser inferior a {MIN_BENCHMARK_CASES} "
-            f"(recibido {min_cases})"
+            f"min_cases no puede ser inferior a {MIN_BENCHMARK_CASES} (recibido {min_cases})"
         )
     if min_per_segment < MIN_CASES_PER_SEGMENT:
         raise ValueError(

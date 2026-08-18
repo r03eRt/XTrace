@@ -30,14 +30,16 @@ Trazabilidad (constitución §3): cada test marca el requisito que valida:
   (el enlace "Next" `no-page next-page` no cuenta); activo al final →
   `next_cursor=None`. `a.dir.next`, cuando existe, manda (prioridad).
 - PR-053 (8a validación real · hallazgo de la validación de capturas del
-  operador, 2026-08-16): los `timestamp_ms` de la galería usaban como
+  operador, 2026-08-16): los `timestamp_ms` legacy de la galería usaban como
   denominador el **número de assets conservados** (`total + 1`) y, con
   posiciones dispersas (galería real hasta `xv_30_t.jpg` con pocos thumbs en
   el markup), excedían la duración hasta 5x (p. ej. ts=2.400.000ms en un
   vídeo de 480.000ms). La galería está distribuida uniformemente sobre el
   vídeo: `timestamp_ms = round(N/K*duration_ms)` con `K = MÁXIMA posición
   observada`, **clamp** a `[0, duration_ms)` (N==K → último milisegundo válido)
-  y `None` defensivo (sin duración o K<=0).
+  y `None` defensivo (sin duración o K<=0). TASK-005-007 conserva esta
+  semántica en legacy y usa la cuadrícula pública de 30 slots en REINDEX
+  adaptativo cuando el HTML es disperso.
 - FR-002 (soporte): `VideoSource` normalizado poblado desde el parseo
   (og:*, JSON-LD).
 - FR-005/SC-006: `get_visual_assets` devuelve la galería de thumbnails
@@ -1157,8 +1159,9 @@ def test_get_visual_assets_for_sampling_expande_posiciones_publicas_del_mismo_pa
     """FR-001/FR-005: REINDEX puede pedir posiciones públicas no listadas en HTML.
 
     El flujo legacy sigue viendo solo las dos URLs declaradas (`xv_3`/`xv_18`),
-    mientras que la ruta adaptativa usa el máximo observado (18) para construir
-    los siete puntos centrados que necesita un vídeo de 758 s.
+    mientras que la ruta adaptativa usa la cuadrícula pública estándar de 30
+    posiciones para construir los siete puntos centrados que necesita un vídeo
+    de 758 s.
     """
     legacy_assets: list[VisualAsset] = []
     adaptive_assets: list[VisualAsset] = []
@@ -1175,12 +1178,21 @@ def test_get_visual_assets_for_sampling_expande_posiciones_publicas_del_mismo_pa
 
     _run(scenario)
     assert [asset.position for asset in legacy_assets] == [3, 18]
-    assert [asset.position for asset in adaptive_assets] == [1, 3, 4, 6, 9, 12, 18]
+    assert [asset.position for asset in adaptive_assets] == [3, 6, 11, 15, 18, 24, 28]
     assert [asset.kind for asset in adaptive_assets] == ["thumbnail"] * 7
     assert all(
         "11111111-2222-4333-8444-555555555555/3/xv_" in asset.url for asset in adaptive_assets
     )
     assert all(asset.timestamp_ms is not None for asset in adaptive_assets)
+    # La URL pública xv_18_t.jpg pertenece a la cuadrícula estándar de 30
+    # posiciones de XVIDEOS: en un vídeo de 758 s representa ~7:35, no el final
+    # del vídeo. La regresión evita volver a usar 18 como denominador implícito.
+    adaptive_by_position = {asset.position: asset for asset in adaptive_assets}
+    assert adaptive_by_position[18].timestamp_ms == round(18 / 30 * 758_000)
+    assert max(asset.position for asset in adaptive_assets if asset.position is not None) >= 28
+    assert max(
+        asset.timestamp_ms for asset in adaptive_assets if asset.timestamp_ms is not None
+    ) >= round(28 / 30 * 758_000)
 
 
 def test_gallery_positions_no_colapsa_por_redondeo() -> None:
@@ -1193,6 +1205,24 @@ def test_gallery_positions_no_colapsa_por_redondeo() -> None:
     assert _gallery_positions_for_sampling(
         [1, 8], gallery_max=8, duration_ms=960_000, policy=policy
     ) == list(range(1, 9))
+
+
+def test_gallery_positions_prioriza_el_extremo_final_con_presupuesto_pequeno() -> None:
+    """FR-003/SC-002: un solo hueco libre debe cubrir también el final."""
+    policy = AdaptiveSamplingPolicy()
+
+    assert _gallery_positions_for_sampling(
+        [2, 9], gallery_max=30, duration_ms=360_000, policy=policy
+    ) == [2, 9, 25]
+    assert _gallery_positions_for_sampling(
+        [1], gallery_max=30, duration_ms=240_000, policy=policy
+    ) == [1, 22]
+    assert _gallery_positions_for_sampling(
+        [25], gallery_max=30, duration_ms=240_000, policy=policy
+    ) == [8, 25]
+    assert _gallery_positions_for_sampling(
+        [22, 25], gallery_max=30, duration_ms=360_000, policy=policy
+    ) == [5, 22, 25]
 
 
 def test_get_visual_assets_galeria_posiciones_dispersas_timestamps_correctos() -> None:

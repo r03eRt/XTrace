@@ -73,9 +73,11 @@ fixtures anonimizados en `tests/fixtures/xvideos/`):
   carga una **galería de thumbnails** `xv_1_t.jpg … xv_K_t.jpg` (URLs del CDN
   `thumb-cdn77.xvideos-cdn.com`, `position=N`), distribuida uniformemente
   sobre el vídeo: el thumb N ≈ `N/K * duración`, con `K = máxima posición
-  observada` (**PR-053**, 8a validación real — hallazgo de la validación de
-  capturas del operador: el denominador era el nº de assets conservados y
-  los timestamps excedían la duración hasta 5x); existe mp4 completo
+  observada` en el flujo legacy. En REINDEX adaptativo, una galería HTML
+  dispersa usa la cuadrícula pública de 30 posiciones del mismo path
+  (**PR-053**, 8a validación real — hallazgo de la validación de capturas del
+  operador: el denominador era el nº de assets conservados y los timestamps
+  excedían la duración hasta 5x); existe mp4 completo
   (`html5player.setVideoUrlLow`) pero está **PROHIBIDO** exponerlo o
   descargarlo (SC-006) → `preview_url` queda siempre `None`. No se detectó
   sprite/storyboard real (solo `mozaique_*.jpg`, sin grid conocido) →
@@ -138,6 +140,12 @@ XV_ASSET_HOSTS: list[str] = [
 XV_BASE_URL = "https://www.xvideos.com"
 # El ID externo incluye el prefijo `video.` (p. ej. `video.abc12345`).
 XV_VIDEO_URL_TEMPLATE = "https://www.xvideos.com/{external_id}/"
+# XVIDEOS publica la galería de thumbnails como una cuadrícula de 30
+# posiciones (`xv_1_t.jpg` … `xv_30_t.jpg`). Algunas páginas solo declaran
+# dos posiciones en su HTML (por ejemplo `xv_3` y `xv_18`), pero las variantes
+# intermedias siguen siendo assets públicos del mismo path CDN. El valor solo
+# se usa en el REINDEX adaptativo; el flujo legacy conserva el máximo observado.
+XV_PUBLIC_GALLERY_SLOTS = 30
 
 # Selectores clave (regresión de estructura: si cambian, los tests de los
 # fixtures fallan con mensaje claro).
@@ -560,10 +568,12 @@ def _gallery_positions_for_sampling(
 ) -> list[int]:
     """Choose at most the adaptive target, using public positions from the gallery.
 
-    The page establishes the gallery's CDN path and maximum position.  For a
+    The page establishes the gallery's CDN path and observed positions. For a
     reliable duration, positions between the declared ones are deterministic
-    public thumbnail variants of that same path; the eventual asset fetch is
-    still authoritative (404/corrupt responses are degraded by the pipeline).
+    public thumbnail variants of that same path; the caller may pass the
+    source-backed grid size as ``gallery_max`` even when the HTML is sparse.
+    The eventual asset fetch is still authoritative (404/corrupt responses are
+    degraded by the pipeline).
     Without duration, no temporal position is invented and only declared assets
     are retained.
     """
@@ -611,19 +621,35 @@ def _gallery_positions_for_sampling(
     # source's strongest evidence.  Fill the remaining slots with centered
     # variants from the same path; the downloader decides which generated
     # variants are truly available.
-    selected = list(sorted(set(observed_positions)))
-    for position in ideal_positions:
-        if position not in selected and len(selected) < target:
-            selected.append(position)
-    if len(selected) < target:
+    selected_positions = set(observed_positions)
+    remaining_ideal = [
+        position for position in ideal_positions if position not in selected_positions
+    ]
+
+    # Add ideal points by farthest-point coverage.  This keeps declared
+    # positions mandatory while distributing generated requests into the
+    # largest uncovered gaps. In particular, it chooses the opposite end when
+    # all declared positions are clustered near one side instead of reserving
+    # a fixed endpoint that could leave the whole other side uncovered.
+    while remaining_ideal and len(selected_positions) < target:
+        next_position = max(
+            remaining_ideal,
+            key=lambda position: (
+                min(abs(position - current) for current in selected_positions),
+                position,
+            ),
+        )
+        selected_positions.add(next_position)
+        remaining_ideal.remove(next_position)
+    if len(selected_positions) < target:
         # Defensive completion for malformed/non-contiguous input.  The
         # normal path already has enough positions because target <= K.
         for position in range(1, gallery_max + 1):
-            if position not in selected:
-                selected.append(position)
-            if len(selected) >= target:
+            if position not in selected_positions:
+                selected_positions.add(position)
+            if len(selected_positions) >= target:
                 break
-    return sorted(selected)
+    return sorted(selected_positions)
 
 
 def _thumbnail_variant_url(thumbnail_url: str, position: int) -> str | None:
@@ -643,7 +669,13 @@ def _thumb_gallery_for_sampling(
     duration_ms: int | None,
     policy: AdaptiveSamplingPolicy,
 ) -> list[VisualAsset]:
-    """Expand a declared gallery only for the explicit adaptive reindex path."""
+    """Expand a declared gallery only for the explicit adaptive reindex path.
+
+    XVIDEOS' public thumbnail grid has 30 slots even when the page HTML only
+    declares a sparse subset. The adaptive path uses that source-backed grid
+    as a lower bound for centered selection and timestamp conversion; the
+    legacy path intentionally remains based on the observed subset.
+    """
     observed = _thumb_gallery(html, thumbnail_url=thumbnail_url, duration_ms=duration_ms)
     if not observed or thumbnail_url is None:
         return observed
@@ -653,9 +685,15 @@ def _thumb_gallery_for_sampling(
     if not observed_by_position:
         return observed
     gallery_max = max(observed_by_position)
+    # La página puede declarar un subconjunto (incluso solo og:image). Para
+    # REINDEX adaptativo usamos la cuadrícula pública estándar de XVIDEOS como
+    # denominador temporal; si una fuente futura expone una posición mayor, la
+    # respetamos. La descarga posterior sigue siendo la autoridad: un 404 de
+    # una variante se degrada sin fabricar un frame.
+    sampling_gallery_max = max(gallery_max, XV_PUBLIC_GALLERY_SLOTS)
     positions = _gallery_positions_for_sampling(
         list(observed_by_position),
-        gallery_max=gallery_max,
+        gallery_max=sampling_gallery_max,
         duration_ms=duration_ms,
         policy=policy,
     )
@@ -671,7 +709,7 @@ def _thumb_gallery_for_sampling(
     return _gallery_assets_from_positions(
         urls,
         positions=sorted(urls),
-        gallery_max=gallery_max,
+        gallery_max=sampling_gallery_max,
         duration_ms=duration_ms,
     )
 

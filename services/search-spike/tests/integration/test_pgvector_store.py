@@ -21,7 +21,6 @@ from typing import Any
 import psycopg
 import pytest
 
-import xtrace_spike.vectorstore.pgvector as pgvector_module
 from xtrace_spike.repo import resolve_dsn
 from xtrace_spike.vectorstore.base import FrameRecord, VectorStore
 from xtrace_spike.vectorstore.in_memory import InMemoryVectorStore
@@ -304,7 +303,7 @@ def test_replace_video_index_rolls_back_when_commit_fails(
             assert not autocommit
             return connection
 
-    monkeypatch.setattr(pgvector_module.psycopg, "AsyncConnection", _FakeAsyncConnection)
+    monkeypatch.setattr(psycopg, "AsyncConnection", _FakeAsyncConnection)
 
     with pytest.raises(RuntimeError, match="commit failure"):
         _run(

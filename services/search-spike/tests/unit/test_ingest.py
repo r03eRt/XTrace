@@ -11,6 +11,7 @@ Criterios verificables (tasks.md PR-008 · spec 001):
 
 from __future__ import annotations
 
+import math
 import shutil
 import subprocess
 from pathlib import Path
@@ -261,6 +262,145 @@ def test_extract_frames_adaptive_uses_centered_policy(tmp_path: Path) -> None:
         assert all(0 <= timestamp < result.probe.duration_ms for timestamp in timestamps)
 
 
+def test_extract_frames_adaptive_single_frame_survives_container_duration_mismatch(
+    tmp_path: Path,
+) -> None:
+    """FR-004: un contenedor con audio algo más largo no pierde su único frame."""
+    _require_ffmpeg()
+    ffmpeg = shutil.which("ffmpeg")
+    assert ffmpeg is not None
+    video_path = tmp_path / "audio-longer.mp4"
+    encoder = (
+        "libx264"
+        if "libx264"
+        in subprocess.run(
+            [ffmpeg, "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+        else "mpeg4"
+    )
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=duration=19.166:size=320x240:rate=30",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=19.202",
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            encoder,
+            "-g",
+            "999",
+            "-bf",
+            "0",
+            "-c:a",
+            "aac",
+            str(video_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    video = _dataset_video(video_path)
+    with extract_frames(
+        video,
+        work_root=tmp_path / "work",
+        sampling_policy=AdaptiveSamplingPolicy(),
+    ) as result:
+        assert len(result.frames) == 1
+        frame = result.frames[0]
+        assert frame.path.exists()
+        assert frame.timestamp_ms == round(result.probe.duration_ms / 2)
+        assert 0 <= frame.timestamp_ms < result.probe.duration_ms
+
+
+@pytest.mark.parametrize("target_count", range(1, 9))
+def test_extract_frames_adaptive_materializes_all_targets_on_long_gop(
+    tmp_path: Path, target_count: int
+) -> None:
+    """FR-003/004: 1..8 puntos reales sobreviven a un contenedor long-GOP."""
+    _require_ffmpeg()
+    ffmpeg = shutil.which("ffmpeg")
+    assert ffmpeg is not None
+    video_path = tmp_path / f"long-gop-{target_count}.mp4"
+    encoder = (
+        "libx264"
+        if "libx264"
+        in subprocess.run(
+            [ffmpeg, "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+        else "mpeg4"
+    )
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=duration=19.166:size=320x240:rate=30",
+            "-c:v",
+            encoder,
+            "-g",
+            "999",
+            "-bf",
+            "0",
+            str(video_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    video = _dataset_video(video_path)
+    probe = probe_video(video_path)
+    interval_ms = math.ceil(probe.duration_ms / target_count)
+    policy = AdaptiveSamplingPolicy(target_interval_ms=interval_ms, max_frames=8)
+    assert policy.target_count(probe.duration_ms) == target_count
+
+    with extract_frames(
+        video,
+        work_root=tmp_path / "work",
+        scale_width=None,
+        sampling_policy=policy,
+    ) as result:
+        assert len(result.frames) == target_count
+        timestamps = [frame.timestamp_ms for frame in result.frames]
+        expected = [
+            round((index + 0.5) * result.probe.duration_ms / target_count)
+            for index in range(target_count)
+        ]
+        assert timestamps == expected
+        assert timestamps == sorted(timestamps)
+        assert len(set(timestamps)) == target_count
+        assert all(0 <= timestamp < result.probe.duration_ms for timestamp in timestamps)
+
+        for frame in result.frames:
+            assert frame.path.exists()
+            assert frame.width == 320
+            assert frame.height == 240
+            with Image.open(frame.path) as image:
+                assert image.size == (320, 240)
+
+
 def test_extract_frames_adaptive_centers_multiple_points_and_legacy_stays_at_30(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -289,8 +429,11 @@ def test_extract_frames_adaptive_centers_multiple_points_and_legacy_stays_at_30(
         frame_count = int(command[command.index("-frames:v") + 1])
         output_pattern = Path(command[-1])
         output_pattern.parent.mkdir(parents=True, exist_ok=True)
-        for index in range(frame_count):
-            output_pattern.parent.joinpath(f"frame_{index + 1:06d}.png").touch()
+        if "%" in output_pattern.name:
+            for index in range(frame_count):
+                output_pattern.parent.joinpath(f"frame_{index + 1:06d}.png").touch()
+        else:
+            output_pattern.touch()
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr("xtrace_spike.ingest.frames.probe_video", fake_probe)
@@ -308,8 +451,10 @@ def test_extract_frames_adaptive_centers_multiple_points_and_legacy_stays_at_30(
         assert len(legacy.frames) == 30
         assert [frame.timestamp_ms for frame in legacy.frames[:3]] == [0, 12_000, 24_000]
 
-    adaptive_command, legacy_command = commands
-    assert adaptive_command[adaptive_command.index("-frames:v") + 1] == "3"
-    assert "-ss" in adaptive_command
+    adaptive_commands = commands[:3]
+    legacy_command = commands[-1]
+    assert len(adaptive_commands) == 3
+    assert all(command[command.index("-frames:v") + 1] == "1" for command in adaptive_commands)
+    assert all("-ss" in command for command in adaptive_commands)
     assert legacy_command[legacy_command.index("-frames:v") + 1] == "30"
     assert "-ss" not in legacy_command

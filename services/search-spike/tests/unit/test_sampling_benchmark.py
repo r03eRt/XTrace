@@ -77,7 +77,9 @@ def test_valid_comparison_is_paired_and_measures_all_gates() -> None:
     assert report.policies["dense"].top1 == 1.0
     assert report.policies["adaptive"].top5 == 1.0
     assert report.policies["adaptive"].temporal_error_ms["median"] == 1_000
-    assert report.policies["adaptive"].normalized_error["median"] < 0.5
+    normalized_median = report.policies["adaptive"].normalized_error["median"]
+    assert normalized_median is not None
+    assert normalized_median < 0.5
     assert report.frames_reduction == 0.7333
     assert report.gates == {
         "SC-004": True,
@@ -94,8 +96,11 @@ def test_valid_comparison_is_paired_and_measures_all_gates() -> None:
         "web/5-15m",
         "web/>15m",
     }
-    assert report.segments["local/<5m"].dense.top5 == 1.0
-    assert report.segments["local/<5m"].adaptive.top5 == 1.0
+    local_short = report.segments["local/<5m"]
+    assert local_short.dense is not None
+    assert local_short.adaptive is not None
+    assert local_short.dense.top5 == 1.0
+    assert local_short.adaptive.top5 == 1.0
 
 
 def test_comparison_fails_closed_for_missing_pair_and_insufficient_coverage() -> None:
@@ -248,8 +253,7 @@ def test_observation_ids_must_equal_cases_and_mapping_keys_must_match() -> None:
     mismatch_report = compare_sampling_policies(
         cases,
         dense={
-            case.case_id or "": observation
-            for case, observation in zip(cases, dense, strict=True)
+            case.case_id or "": observation for case, observation in zip(cases, dense, strict=True)
         },
         adaptive={
             "case-000": BenchmarkObservation(
@@ -391,9 +395,7 @@ def test_report_json_is_deterministic_and_cli_reads_sidecar_and_results(tmp_path
         (adaptive_path, _observations(cases, adaptive=True)),
     ):
         path.write_text(
-            json.dumps(
-                {"observations": [observation.to_dict() for observation in observations]}
-            ),
+            json.dumps({"observations": [observation.to_dict() for observation in observations]}),
             encoding="utf-8",
         )
 

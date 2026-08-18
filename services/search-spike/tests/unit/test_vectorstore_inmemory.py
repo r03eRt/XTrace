@@ -303,7 +303,9 @@ def test_video_state_snapshot_restore_is_public_and_preserves_metadata() -> None
     assert snapshot.duration_ms == 12_000
 
     asyncio.run(states.mark_failed("v1", "boom"))
-    assert asyncio.run(states.snapshot("v1")).status == "failed"
+    failed_snapshot = asyncio.run(states.snapshot("v1"))
+    assert failed_snapshot is not None
+    assert failed_snapshot.status == "failed"
     asyncio.run(states.restore("v1", snapshot))
     restored = asyncio.run(states.snapshot("v1"))
     assert restored == snapshot

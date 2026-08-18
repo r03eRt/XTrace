@@ -46,6 +46,7 @@ centrados; el modo histórico sigue produciendo 30 por defecto.
 
 - [x] T007 [US1] Añadir primero tests fallidos del modo adaptativo y compatibilidad legacy en `services/search-spike/tests/unit/test_ingest.py`
 - [x] T008 [US1] Adaptar extracción y configuración sin cambiar `DEFAULT_FRAMES_PER_VIDEO=30` en `services/search-spike/xtrace_spike/ingest/frames.py` y `services/search-spike/xtrace_spike/indexing/pipeline.py`
+- [x] T028 [US1] Corregir la extracción adaptativa cuando el objetivo sea 1–8 frames en `services/search-spike/xtrace_spike/ingest/frames.py` y añadir regresión en `services/search-spike/tests/unit/test_ingest.py`
 - [x] T009 [US1] Añadir primero tests fallidos del contrato CLI `--sampling adaptive` en `services/search-spike/tests/unit/test_cli_index.py`
 - [x] T010 [US1] Implementar flags validados y salida estable del CLI local en `services/search-spike/xtrace_spike/cli.py`
 
@@ -65,6 +66,7 @@ escasas o `None` producen un resultado estable de 1–8 frames.
 - [x] T012 [US2] Normalizar posiciones, deduplicar por posición+pHash e integrar la selección compartida en `services/crawler/xtrace_crawler/pipeline.py`
 - [x] T013 [US2] Añadir aserciones de que no se acceden nuevos tipos de asset ni vídeos completos en `services/crawler/tests/integration/test_pipeline.py`
 - [x] T027 [US2] Ampliar la recolección adaptativa de XVIDEOS a posiciones `xv_N_t.jpg` públicas del mismo asset path, conservando el flujo legacy y sin acceder al vídeo completo en `services/crawler/xtrace_crawler/adapters/xvideos.py`, `services/crawler/xtrace_crawler/pipeline.py` y sus tests
+- [x] T029 [US2] Corregir el denominador temporal de las variantes públicas `xv_N_t.jpg` de XVIDEOS y añadir regresión para galerías dispersas en `services/crawler/xtrace_crawler/adapters/xvideos.py` y `services/crawler/tests/unit/test_xvideos_adapter.py`
 
 **Checkpoint**: El pipeline web limita evidencia permitida sin debilitar compliance.
 
@@ -112,6 +114,14 @@ políticas al cruzar SC-004..SC-008.
 - [x] T025 [P] Ejecutar revisión estática de ausencia de reconocimiento facial y nuevos tipos de asset y registrarla en `docs/handoffs/TASK-005-SECURITY.md`
 - [x] T026 Como orquestador, ejecutar `speckit-analyze`, `speckit-converge` y revisión independiente; resolver hallazgos y actualizar `specs/005-adaptive-frame-sampling/tasks.md`
 
+## Phase 8: Convergence
+
+El código y los tests del benchmark están implementados, pero falta la evidencia
+operativa exigida por SC-004..SC-008 para decidir si se adopta una política más densa
+o se mantiene el intervalo actual. Esta tarea no cambia ningún default por sí sola.
+
+- [ ] T030 Ejecutar el benchmark real dense-vs-adaptive con al menos 30 casos positivos pareados, cobertura local + web permitida y los tres tramos de duración; registrar el informe fail-closed y la decisión de adopción en `docs/handoffs/TASK-005-030.md` (SC-004..SC-008)
+
 ---
 
 ## Dependencies & Execution Order
@@ -145,5 +155,5 @@ Setup → Foundation (policy + replace)
 
 ## Format Validation
 
-Las 26 tareas usan checkbox, ID secuencial, etiqueta `[P]` solo cuando procede, etiqueta
+Las 30 tareas usan checkbox, ID secuencial, etiqueta `[P]` solo cuando procede, etiqueta
 `[USn]` en fases de historias y rutas concretas.
