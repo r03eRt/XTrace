@@ -227,23 +227,29 @@ def _run_ffmpeg_extraction(
     """Ejecuta FFmpeg y devuelve los frames extraídos con su timestamp."""
     duration_s = probe.duration_ms / 1000.0
     interval_s = duration_s / frames_per_video
+    interval_ms = probe.duration_ms / frames_per_video
+
+    if centered:
+        return _run_centered_extraction(
+            video=video,
+            probe=probe,
+            out_dir=out_dir,
+            frames_per_video=frames_per_video,
+            scale_width=scale_width,
+            interval_ms=interval_ms,
+            ffmpeg_bin=ffmpeg_bin,
+        )
 
     filters = [f"fps=1/{interval_s:.9f}"]
     if scale_width is not None:
         filters.append(f"scale={scale_width}:-2")
 
     cmd = [ffmpeg_bin, "-y", "-v", "error"]
-    interval_ms = probe.duration_ms / frames_per_video
-    if centered:
-        # Align the first decoded image with the first interval center.  The
-        # legacy path below intentionally retains its historical start at 0.
-        cmd.extend(["-ss", f"{interval_ms / 2000.0:.9f}"])
+    cmd.extend(["-i", str(video.path)])
+    if filters:
+        cmd.extend(["-vf", ",".join(filters)])
     cmd.extend(
         [
-            "-i",
-            str(video.path),
-            "-vf",
-            ",".join(filters),
             "-fps_mode",
             "vfr",
             "-frames:v",
@@ -268,14 +274,67 @@ def _run_ffmpeg_extraction(
     return tuple(
         ExtractedFrame(
             path=path,
-            timestamp_ms=(
-                round((index + 0.5) * interval_ms) if centered else round(index * interval_ms)
-            ),
+            timestamp_ms=round(index * interval_ms),
             width=width,
             height=height,
         )
         for index, path in enumerate(paths)
     )
+
+
+def _run_centered_extraction(
+    *,
+    video: DatasetVideo,
+    probe: VideoProbe,
+    out_dir: Path,
+    frames_per_video: int,
+    scale_width: int | None,
+    interval_ms: float,
+    ffmpeg_bin: str,
+) -> tuple[ExtractedFrame, ...]:
+    """Extrae cada centro adaptativo para materializar siempre 1..8 frames.
+
+    Una única cadena ``fps=1/interval`` después de un seek centrado puede
+    emitir un frame menos en ficheros long-GOP. El modo adaptativo está
+    limitado a ocho puntos, por lo que un seek por punto es determinista y
+    acotado; el camino legacy sigue usando una única invocación de 30 frames.
+    """
+    filters = [f"scale={scale_width}:-2"] if scale_width is not None else []
+    frames: list[ExtractedFrame] = []
+    width, height = _scaled_dimensions(probe, scale_width)
+    for index in range(frames_per_video):
+        timestamp_ms = round((index + 0.5) * interval_ms)
+        output_path = out_dir / f"frame_{index + 1:06d}.png"
+        cmd = [
+            ffmpeg_bin,
+            "-y",
+            "-v",
+            "error",
+            "-ss",
+            f"{timestamp_ms / 1000.0:.9f}",
+            "-i",
+            str(video.path),
+        ]
+        if filters:
+            cmd.extend(["-vf", ",".join(filters)])
+        cmd.extend(["-frames:v", "1", "-f", "image2", str(output_path)])
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if proc.returncode != 0:
+            detail = proc.stderr.strip() or f"exit {proc.returncode}"
+            raise FramesExtractionError(
+                f"ffmpeg falló al extraer frame {index + 1} de '{video.path}': {detail[:300]}"
+            )
+        if not output_path.exists():
+            raise FramesExtractionError(f"no se extrajo el frame {index + 1} de '{video.path}'")
+        frames.append(
+            ExtractedFrame(
+                path=output_path,
+                timestamp_ms=timestamp_ms,
+                width=width,
+                height=height,
+            )
+        )
+    return tuple(frames)
 
 
 def _scaled_dimensions(probe: VideoProbe, scale_width: int | None) -> tuple[int, int]:
