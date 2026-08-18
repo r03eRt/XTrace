@@ -248,8 +248,7 @@ def test_observation_ids_must_equal_cases_and_mapping_keys_must_match() -> None:
     mismatch_report = compare_sampling_policies(
         cases,
         dense={
-            case.case_id or "": observation
-            for case, observation in zip(cases, dense, strict=True)
+            case.case_id or "": observation for case, observation in zip(cases, dense, strict=True)
         },
         adaptive={
             "case-000": BenchmarkObservation(
@@ -391,9 +390,7 @@ def test_report_json_is_deterministic_and_cli_reads_sidecar_and_results(tmp_path
         (adaptive_path, _observations(cases, adaptive=True)),
     ):
         path.write_text(
-            json.dumps(
-                {"observations": [observation.to_dict() for observation in observations]}
-            ),
+            json.dumps({"observations": [observation.to_dict() for observation in observations]}),
             encoding="utf-8",
         )
 
