@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
@@ -90,8 +91,8 @@ export default function BuscarPagePreview() {
           XTrace
         </div>
         <nav className={styles.navLinks}>
-          <a href="/">Inicio</a>
-          <a href="/buscar">Búsqueda clásica</a>
+          <Link href="/">Inicio</Link>
+          <Link href="/buscar">Búsqueda clásica</Link>
         </nav>
       </header>
 
