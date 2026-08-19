@@ -201,6 +201,150 @@ describe("BuscarPage — render de resultados (FR-009/010, UX-003)", () => {
     );
     expect(screen.queryByTestId("search-error")).not.toBeInTheDocument();
   });
+
+  it("muestra el badge de timestamp refinado cuando la evidencia procede de un asset público (UX-001)", async () => {
+    const refinedResponse: SearchResponse = {
+      ...SEARCH_RESPONSE_FIXTURE,
+      refinement: {
+        status: "completed",
+        candidates_requested: 3,
+        candidates_processed: 1,
+        assets_evaluated: 4,
+        assets_discarded: 0,
+        errors_count: 0,
+        bytes_downloaded: 4096,
+        embedding_count: 4,
+        embedding_elapsed_ms: 12,
+        improved_results: 1,
+        elapsed_ms: 80,
+      },
+      results: [
+        {
+          ...SEARCH_RESPONSE_FIXTURE.results[0]!,
+          timestamp_provenance: {
+            origin: "refined_asset",
+            status: "improved",
+            source: "xvideos",
+            asset_kind: "thumbnail",
+            asset_url: "https://thumb-cdn77.xvideos-cdn.com/xv_12_t.jpg",
+            asset_position: 12,
+          },
+        },
+      ],
+    };
+    fetchMock.mockResolvedValue(jsonResponse(refinedResponse));
+    const user = userEvent.setup();
+    render(<BuscarPage />);
+    await user.upload(screen.getByTestId("search-file-input"), pngFile());
+    await user.click(screen.getByTestId("search-submit"));
+
+    const result = await screen.findByTestId("search-result-0");
+    expect(within(result).getByText(/refinado/i)).toBeInTheDocument();
+    expect(within(result).queryByText(/índice base/i)).not.toBeInTheDocument();
+    expect(within(result).queryByText(/exact[oa]?/i)).not.toBeInTheDocument();
+  });
+
+  it("muestra el badge de índice base cuando no sustituye el timestamp (UX-001, UX-003)", async () => {
+    const baseResponse: SearchResponse = {
+      ...SEARCH_RESPONSE_FIXTURE,
+      refinement: {
+        status: "completed",
+        candidates_requested: 3,
+        candidates_processed: 1,
+        assets_evaluated: 2,
+        assets_discarded: 1,
+        errors_count: 0,
+        bytes_downloaded: 2048,
+        embedding_count: 2,
+        embedding_elapsed_ms: 8,
+        improved_results: 0,
+        elapsed_ms: 50,
+      },
+      results: [
+        {
+          ...SEARCH_RESPONSE_FIXTURE.results[0]!,
+          timestamp_provenance: {
+            origin: "base_index",
+            status: "unchanged",
+            source: null,
+            asset_kind: null,
+            asset_url: null,
+            asset_position: null,
+          },
+        },
+      ],
+    };
+    fetchMock.mockResolvedValue(jsonResponse(baseResponse));
+    const user = userEvent.setup();
+    render(<BuscarPage />);
+    await user.upload(screen.getByTestId("search-file-input"), pngFile());
+    await user.click(screen.getByTestId("search-submit"));
+
+    const result = await screen.findByTestId("search-result-0");
+    expect(within(result).getByText(/índice base/i)).toBeInTheDocument();
+    expect(within(result).queryByText(/refinado/i)).not.toBeInTheDocument();
+  });
+
+  it.each(["limited", "unavailable"] as const)(
+    "conserva el resultado base y muestra disponibilidad limitada cuando el refinamiento está %s (UX-002, UX-003)",
+    async (status) => {
+      const fallbackResponse: SearchResponse = {
+        ...SEARCH_RESPONSE_FIXTURE,
+        refinement: {
+          status,
+          candidates_requested: 3,
+          candidates_processed: status === "limited" ? 1 : 0,
+          assets_evaluated: 0,
+          assets_discarded: 0,
+          errors_count: status === "unavailable" ? 1 : 0,
+          bytes_downloaded: 0,
+          embedding_count: 0,
+          embedding_elapsed_ms: 0,
+          improved_results: 0,
+          elapsed_ms: 20,
+        },
+        results: [
+          {
+            ...SEARCH_RESPONSE_FIXTURE.results[0]!,
+            timestamp_provenance: {
+              origin: "base_index",
+              status,
+              source: null,
+              asset_kind: null,
+              asset_url: null,
+              asset_position: null,
+            },
+          },
+        ],
+      };
+      fetchMock.mockResolvedValue(jsonResponse(fallbackResponse));
+      const user = userEvent.setup();
+      render(<BuscarPage />);
+      await user.upload(screen.getByTestId("search-file-input"), pngFile());
+      await user.click(screen.getByTestId("search-submit"));
+
+      expect(await screen.findByText(/disponibilidad limitada/i)).toBeInTheDocument();
+      const result = screen.getByTestId("search-result-0");
+      expect(within(result).getByText(/índice base/i)).toBeInTheDocument();
+      expect(screen.queryByTestId("search-empty")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("search-error")).not.toBeInTheDocument();
+    },
+  );
+
+  it("mantiene la respuesta legacy sin badges ni mensaje de refinamiento (SC-008)", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(SEARCH_RESPONSE_FIXTURE));
+    const user = userEvent.setup();
+    render(<BuscarPage />);
+    await user.upload(screen.getByTestId("search-file-input"), pngFile());
+    await user.click(screen.getByTestId("search-submit"));
+
+    const result = await screen.findByTestId("search-result-0");
+    expect(within(result).getByTestId("search-result-timestamp")).toHaveTextContent("00:51");
+    expect(
+      within(result).queryByText(/refinado|índice base|disponibilidad limitada/i),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/disponibilidad limitada/i)).not.toBeInTheDocument();
+  });
 });
 
 describe("BuscarPage — errores (FR-011 UI, UX-001)", () => {

@@ -88,6 +88,61 @@ class Settings(BaseSettings):
     # default 60 — data-model.md).
     searches_ttl_cleanup_min: int = Field(default=60, ge=1, le=10080)
 
+    # Refinamiento temporal (spec 006 · ADR-0014). Estos valores solo
+    # configuran el segundo pase bajo demanda; no alteran `search_default_*`
+    # ni el muestreo del índice base.
+    refinement_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("XTRACE_REFINEMENT_ENABLED", "XTRACE_API_REFINEMENT_ENABLED"),
+    )
+    refinement_candidate_limit: int = Field(
+        default=3,
+        validation_alias=AliasChoices(
+            "XTRACE_REFINEMENT_CANDIDATE_LIMIT", "XTRACE_API_REFINEMENT_CANDIDATE_LIMIT"
+        ),
+    )
+    refinement_max_assets_per_candidate: int = Field(
+        default=30,
+        validation_alias=AliasChoices(
+            "XTRACE_REFINEMENT_MAX_ASSETS_PER_CANDIDATE",
+            "XTRACE_API_REFINEMENT_MAX_ASSETS_PER_CANDIDATE",
+        ),
+    )
+    refinement_search_timeout_ms: int = Field(
+        default=10_000,
+        validation_alias=AliasChoices(
+            "XTRACE_REFINEMENT_SEARCH_TIMEOUT_MS", "XTRACE_API_REFINEMENT_SEARCH_TIMEOUT_MS"
+        ),
+    )
+    refinement_candidate_timeout_ms: int = Field(
+        default=3_000,
+        validation_alias=AliasChoices(
+            "XTRACE_REFINEMENT_CANDIDATE_TIMEOUT_MS",
+            "XTRACE_API_REFINEMENT_CANDIDATE_TIMEOUT_MS",
+        ),
+    )
+    refinement_max_asset_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        validation_alias=AliasChoices(
+            "XTRACE_REFINEMENT_MAX_ASSET_BYTES", "XTRACE_API_REFINEMENT_MAX_ASSET_BYTES"
+        ),
+    )
+    refinement_policy_version: str = Field(
+        default="temporal-refinement-v1",
+        validation_alias=AliasChoices(
+            "XTRACE_REFINEMENT_POLICY_VERSION", "XTRACE_API_REFINEMENT_POLICY_VERSION"
+        ),
+    )
+    # Se mantiene como texto para que `RefinementPolicy` pueda aplicar una
+    # validación fail-closed propia al JSON por fuente y no aceptar campos
+    # desconocidos silenciosamente.
+    refinement_source_overrides: str = Field(
+        default="{}",
+        validation_alias=AliasChoices(
+            "XTRACE_REFINEMENT_SOURCE_OVERRIDES", "XTRACE_API_REFINEMENT_SOURCE_OVERRIDES"
+        ),
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

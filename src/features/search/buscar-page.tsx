@@ -8,7 +8,7 @@ import {
   searchByImage,
   validateQueryImage,
 } from "@/lib/api/xtrace";
-import type { SearchResult } from "@/lib/api/schemas";
+import type { RefinementSummary, SearchResult } from "@/lib/api/schemas";
 
 /**
  * Página de búsqueda por imagen (spec 003 · D2 · contracts §6).
@@ -23,6 +23,7 @@ export default function BuscarPage() {
   const [file, setFile] = useState<File | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [refinement, setRefinement] = useState<RefinementSummary | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -40,6 +41,7 @@ export default function BuscarPage() {
     setValidationError(null);
     setErrorMessage(null);
     setResults([]);
+    setRefinement(null);
     setStatus("idle");
   };
 
@@ -62,6 +64,7 @@ export default function BuscarPage() {
     try {
       const response = await searchByImage(file, { signal: controller.signal });
       setResults(response.results);
+      setRefinement(response.refinement ?? null);
       setStatus("results");
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -69,6 +72,7 @@ export default function BuscarPage() {
         return;
       }
       setErrorMessage(err instanceof Error ? err.message : "Error inesperado al buscar.");
+      setRefinement(null);
       setStatus("error");
     }
   };
@@ -202,6 +206,20 @@ export default function BuscarPage() {
       )}
 
       {status === "results" &&
+        refinement &&
+        ["limited", "unavailable", "failed"].includes(refinement.status) && (
+          <p
+            data-testid="search-refinement-notice"
+            role="status"
+            aria-live="polite"
+            style={{ margin: 0, color: "#7a4b00" }}
+          >
+            Disponibilidad limitada: se muestran los resultados del índice base y sus timestamps
+            aproximados.
+          </p>
+        )}
+
+      {status === "results" &&
         (results.length === 0 ? (
           <p data-testid="search-empty" style={{ margin: 0 }}>
             No se encontraron resultados para esta imagen.
@@ -251,6 +269,39 @@ export default function BuscarPage() {
                       {formatMatchTimestamp(result.match_timestamp_ms)}
                     </span>
                   </p>
+                  {result.timestamp_provenance?.origin === "refined_asset" &&
+                    result.timestamp_provenance.status === "improved" && (
+                      <span
+                        data-testid="search-result-timestamp-badge"
+                        style={{
+                          display: "inline-block",
+                          marginTop: "0.25rem",
+                          padding: "0.15rem 0.4rem",
+                          borderRadius: 4,
+                          background: "#e6f4ea",
+                          color: "#137333",
+                          fontSize: "0.75rem",
+                        }}
+                      >
+                        Timestamp refinado (aproximado)
+                      </span>
+                    )}
+                  {result.timestamp_provenance?.origin === "base_index" && (
+                    <span
+                      data-testid="search-result-timestamp-badge"
+                      style={{
+                        display: "inline-block",
+                        marginTop: "0.25rem",
+                        padding: "0.15rem 0.4rem",
+                        borderRadius: 4,
+                        background: "#f1f3f4",
+                        color: "#5f6368",
+                        fontSize: "0.75rem",
+                      }}
+                    >
+                      Timestamp del índice base (aproximado)
+                    </span>
+                  )}
                   {result.page_url ? (
                     <a
                       href={result.page_url}

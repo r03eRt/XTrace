@@ -14,7 +14,14 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from xtrace_api.schemas import ApiError, Evidence, SearchResponse, SearchResultItem
+from xtrace_api.schemas import (
+    ApiError,
+    Evidence,
+    RefinementSummary,
+    SearchResponse,
+    SearchResultItem,
+    TimestampProvenance,
+)
 
 
 def test_search_response_parses_contract_example() -> None:
@@ -70,6 +77,8 @@ def test_search_response_keeps_nullable_fields_as_null_in_json() -> None:
     assert top["title"] is None
     assert top["page_url"] is None
     assert top["match_timestamp_ms"] is None
+    assert top["timestamp_provenance"] is None
+    assert dumped["refinement"] is None
 
 
 def test_search_response_requires_cli_fields() -> None:
@@ -100,3 +109,123 @@ def test_api_error_contract_shape() -> None:
         "error": "la imagen de consulta supera el límite de 10 MB",
         "error_type": "media_too_large",
     }
+
+
+def test_search_response_parses_refinement_summary_and_provenance() -> None:
+    response = SearchResponse.model_validate(
+        {
+            "search_id": "3f2a1c4e-8b6d-4f2e-9a1c-0e5d7b9a2c11",
+            "processing_ms": 1234,
+            "refinement": {
+                "status": "completed",
+                "candidates_requested": 3,
+                "candidates_processed": 2,
+                "assets_evaluated": 18,
+                "assets_discarded": 1,
+                "errors_count": 0,
+                "bytes_downloaded": 184320,
+                "embedding_count": 18,
+                "embedding_elapsed_ms": 72,
+                "improved_results": 1,
+                "elapsed_ms": 940,
+            },
+            "results": [
+                {
+                    "video_id": "1a2b3c4d-0000-0000-0000-000000000001",
+                    "local_ref": None,
+                    "match_score": 0.938,
+                    "matching_frames": 1,
+                    "match_timestamp_ms": 454000,
+                    "evidence": {"visual": 0.99, "phash": 0.91},
+                    "timestamp_provenance": {
+                        "origin": "refined_asset",
+                        "status": "improved",
+                        "source": "xvideos",
+                        "asset_kind": "thumbnail",
+                        "asset_url": "https://thumb-cdn77.xvideos-cdn.com/xv_12_t.jpg",
+                        "asset_position": 12,
+                    },
+                }
+            ],
+        }
+    )
+
+    assert response.refinement == RefinementSummary(
+        status="completed",
+        candidates_requested=3,
+        candidates_processed=2,
+        assets_evaluated=18,
+        assets_discarded=1,
+        errors_count=0,
+        bytes_downloaded=184320,
+        embedding_count=18,
+        embedding_elapsed_ms=72,
+        improved_results=1,
+        elapsed_ms=940,
+    )
+    assert response.results[0].timestamp_provenance == TimestampProvenance(
+        origin="refined_asset",
+        status="improved",
+        source="xvideos",
+        asset_kind="thumbnail",
+        asset_url="https://thumb-cdn77.xvideos-cdn.com/xv_12_t.jpg",
+        asset_position=12,
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"status": "unknown"},
+        {"status": "completed", "candidates_requested": -1},
+    ],
+)
+def test_search_response_rejects_invalid_refinement_summary(payload: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        SearchResponse.model_validate(
+            {
+                "search_id": "3f2a1c4e-8b6d-4f2e-9a1c-0e5d7b9a2c11",
+                "processing_ms": 1,
+                "refinement": payload,
+                "results": [],
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("origin", "invented"),
+        ("status", "invented"),
+        ("asset_kind", "preview"),
+    ],
+)
+def test_search_response_rejects_invalid_timestamp_provenance(
+    field: str, value: str
+) -> None:
+    provenance = {
+        "origin": "base_index",
+        "status": "unchanged",
+        "source": None,
+        "asset_kind": None,
+        "asset_url": None,
+        "asset_position": None,
+    }
+    provenance[field] = value
+    with pytest.raises(ValidationError):
+        SearchResponse.model_validate(
+            {
+                "search_id": "3f2a1c4e-8b6d-4f2e-9a1c-0e5d7b9a2c11",
+                "processing_ms": 1,
+                "results": [
+                    {
+                        "video_id": "1a2b3c4d-0000-0000-0000-000000000001",
+                        "match_score": 0.5,
+                        "matching_frames": 1,
+                        "match_timestamp_ms": 1,
+                        "evidence": {"visual": 0.5, "phash": 0.5},
+                        "timestamp_provenance": provenance,
+                    }
+                ],
+            }
+        )

@@ -1,0 +1,57 @@
+{
+  "search_id": "3f2a1c4e-8b6d-4f2e-9a1c-0e5d7b9a2c14",
+  "processing_ms": 1520,
+  "refinement": {
+    "status": "unavailable",
+    "candidates_requested": 3,
+    "candidates_processed": 0,
+    "assets_evaluated": 0,
+    "assets_discarded": 0,
+    "errors_count": 1,
+    "bytes_downloaded": 0,
+    "embedding_count": 0,
+    "embedding_elapsed_ms": 0,
+    "improved_results": 0,
+    "elapsed_ms": 25
+  },
+  "results": [
+    {
+      "video_id": "1a2b3c4d-0000-0000-0000-000000000001",
+      "local_ref": "MAYO 2026 (386).mp4",
+      "title": "Video de ejemplo del corpus",
+      "page_url": "https://www.xvideos.com/video.abc123/ejemplo",
+      "match_score": 0.938,
+      "matching_frames": 2,
+      "match_timestamp_ms": 51000,
+      "timestamp_provenance": {
+        "origin": "base_index",
+        "status": "unavailable",
+        "source": null,
+        "asset_kind": null,
+        "asset_url": null,
+        "asset_position": null
+      },
+      "evidence": { "visual": 0.95, "phash": 0.84 }
+    },
+    {
+      "video_id": "1a2b3c4d-0000-0000-0000-000000000002",
+      "local_ref": "LOCAL 002.mp4",
+      "title": null,
+      "page_url": null,
+      "match_score": 0.812,
+      "matching_frames": 1,
+      "match_timestamp_ms": null,
+      "evidence": { "visual": 0.81, "phash": 0.72 }
+    },
+    {
+      "video_id": "1a2b3c4d-0000-0000-0000-000000000003",
+      "local_ref": "MAYO 2026 (389).mp4",
+      "title": "Otro video del corpus",
+      "page_url": "https://www.example.com/watch/xyz",
+      "match_score": 0.705,
+      "matching_frames": 3,
+      "match_timestamp_ms": 39500,
+      "evidence": { "visual": 0.7, "phash": 0.66 }
+    }
+  ]
+}

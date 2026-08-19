@@ -4,9 +4,31 @@
 > orquestador tras cada PR. Fuente de verdad de requisitos: `docs/PRODUCT_IDEA.md` y
 > `specs/`. Contrato: `AGENTS.md` + `.specify/memory/constitution.md`.
 
-**Última actualización**: 2026-08-17 · por DeepSeek V4 Flash (implementador PR-058, cierre).
+**Última actualización**: 2026-08-19 · por el orquestador de la feature 006.
 
-> 🧪 **Feature 005 en implementación**: el benchmark de muestreo adaptativo ya
+> 🧭 **Feature 006 — refinamiento temporal bajo demanda**: spec `006-temporal-refinement`
+> en `APPROVED`, rama `feature/006-temporal-refinement`. El segundo pase refina solo
+> candidatos principales con thumbnails/storyboards públicos permitidos, conserva el
+> primer pase cuando la fuente no puede aportar evidencia y persiste únicamente
+> métricas server-side. Los límites por defecto son 3 candidatos, 30 assets por
+> candidato, 10 s por búsqueda y 3 s por candidato; la política fail-closed no permite
+> superar 5/30/10 000 ms/3 000 ms.
+
+> **Operación**: la guía reproducible está en
+> [`specs/006-temporal-refinement/quickstart.md`](../specs/006-temporal-refinement/quickstart.md)
+> y el runbook en [`docs/runbooks/temporal-refinement.md`](runbooks/temporal-refinement.md).
+> La feature no reindexa ni escribe `frames` durante una búsqueda. El benchmark exige
+> 30 positivos pareados, verdad temporal independiente y cobertura local/web por
+> duración; sus informes se guardan fuera de Git y no cambian defaults por sí solos.
+
+> **Cierre de implementación**: la validación constitucional, la revisión
+> independiente y la revisión de seguridad/cumplimiento ya están completadas en los
+> handoffs T028–T030. Sigue pendiente la evidencia de benchmark real pareado (30
+> consultas con verdad temporal independiente) para decidir adopción; hasta entonces
+> no se cambian defaults ni se reindexa el corpus actual. La rama queda lista para
+> revisión humana del PR.
+
+> 🧪 **Feature 005 como referencia**: el benchmark de muestreo adaptativo ya
 > dispone de sidecar con fuente/duración/timestamp, comparación pareada adaptive
 > vs dense, métricas Top-1/Top-5, error temporal y puertas SC-004..SC-008
 > fail-closed. El default histórico de 30 frames no cambia hasta validar una

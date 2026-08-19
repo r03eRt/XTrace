@@ -17,12 +17,28 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from xtrace_spike.repo import PgRepo, parse_uuid  # type: ignore[import-untyped]
 
 from xtrace_api.config import Settings
 
 logger = logging.getLogger(__name__)
+
+
+# The refinement writer lives next to its domain code while this module keeps
+# the legacy ``searches`` analytics/TTL helpers.  Re-exporting it preserves one
+# server-side analytics import path for callers and tests.
+from xtrace_api.refinement.analytics import (  # noqa: E402
+    record_refinement as _record_refinement,
+)
+
+
+def record_refinement(*args: Any, **kwargs: Any) -> Any:
+    """Compatibility entry point for temporal-refinement telemetry."""
+
+    kwargs["_repo_factory"] = PgRepo
+    return _record_refinement(*args, **kwargs)
 
 
 def record_search(*, search_id: str, processing_ms: int, results_count: int) -> None:

@@ -136,7 +136,7 @@ def _run_parity(work_dir: Path) -> None:
         shutil.copyfile(image, cli_image)  # la CLI borra la media tras procesar
         cli_payload = _cli_search(cli_image)
         api_payload = _api_search(image)
-        assert set(api_payload) == {"search_id", "processing_ms", "results"}
+        assert set(api_payload) == {"search_id", "processing_ms", "refinement", "results"}
         _assert_same_results(cli_payload, api_payload)
 
 

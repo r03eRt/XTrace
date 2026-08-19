@@ -138,4 +138,61 @@ describe("Buscar por imagen (smoke) — spec 003 · SC-005", () => {
     // El 415 viene del stub por HTTP real (contracts §5): la petición sí llegó.
     expect(await stubSearchCalls()).toBe(callsBefore + 1);
   });
+
+  it("distingue un timestamp refinado y conserva el enlace del candidato (UX-001)", async () => {
+    await browser.url("/buscar");
+    await selectFileAndSubmit("refined.png");
+
+    const results = await browser.$('[data-testid="search-results"]');
+    await results.waitForDisplayed({ timeout: 10000 });
+    const first = await browser.$('[data-testid="search-result-0"]');
+
+    await expect(await first.$('[data-testid="search-result-timestamp"]')).toHaveText("02:34");
+    await expect(await first.$('[data-testid="search-result-timestamp-badge"]')).toHaveText(
+      "Timestamp refinado (aproximado)",
+    );
+    await expect(await first.$('[data-testid="search-result-link"]')).toHaveAttribute(
+      "href",
+      "https://www.xvideos.com/video.abc123/ejemplo",
+    );
+    await expect(await browser.$('[data-testid="search-refinement-notice"]')).not.toBeExisting();
+    await expect(await browser.$('[data-testid="search-error"]')).not.toBeExisting();
+  });
+
+  it("muestra el resultado base y disponibilidad limitada si se agota el presupuesto (UX-002, UX-003)", async () => {
+    await browser.url("/buscar");
+    await selectFileAndSubmit("limited.png");
+
+    const results = await browser.$('[data-testid="search-results"]');
+    await results.waitForDisplayed({ timeout: 10000 });
+    const first = await browser.$('[data-testid="search-result-0"]');
+
+    await expect(await first.$('[data-testid="search-result-timestamp"]')).toHaveText("00:51");
+    await expect(await first.$('[data-testid="search-result-timestamp-badge"]')).toHaveText(
+      "Timestamp del índice base (aproximado)",
+    );
+    await expect(await browser.$('[data-testid="search-refinement-notice"]')).toHaveText(
+      "Disponibilidad limitada: se muestran los resultados del índice base y sus timestamps aproximados.",
+    );
+    await expect(await browser.$('[data-testid="search-error"]')).not.toBeExisting();
+  });
+
+  it("mantiene resultados válidos y explica una fuente no disponible (SC-004, SC-008)", async () => {
+    await browser.url("/buscar");
+    await selectFileAndSubmit("unavailable.png");
+
+    const results = await browser.$('[data-testid="search-results"]');
+    await results.waitForDisplayed({ timeout: 10000 });
+    const first = await browser.$('[data-testid="search-result-0"]');
+
+    await expect(await first.$('[data-testid="search-result-timestamp"]')).toHaveText("00:51");
+    await expect(await first.$('[data-testid="search-result-timestamp-badge"]')).toHaveText(
+      "Timestamp del índice base (aproximado)",
+    );
+    await expect(await browser.$('[data-testid="search-refinement-notice"]')).toHaveText(
+      "Disponibilidad limitada: se muestran los resultados del índice base y sus timestamps aproximados.",
+    );
+    await expect(await browser.$('[data-testid="search-error"]')).not.toBeExisting();
+    await expect(await first.$('[data-testid="search-result-link"]')).toHaveText("Ver original");
+  });
 });
