@@ -89,9 +89,7 @@ def test_asset_host_outside_allowlist_is_rejected_before_network(
 
     # The host check must happen before SafeHTTPClient construction, not merely
     # after a failed socket request.
-    monkeypatch.setattr(
-        "xtrace_api.refinement.adapters.SafeHTTPClient", ExplodingHTTPClient
-    )
+    monkeypatch.setattr("xtrace_api.refinement.adapters.SafeHTTPClient", ExplodingHTTPClient)
     with pytest.raises(HostNotAllowedError):
         asyncio.run(bridge.fetch_asset_bytes(approved, asset, max_bytes=1024))
 

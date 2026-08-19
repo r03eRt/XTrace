@@ -34,9 +34,7 @@ class ColourEmbeddings:
     def embed_images(self, images: list[Image.Image]) -> np.ndarray[Any, Any]:
         rows: list[list[float]] = []
         for image in images:
-            pixel = cast(
-                tuple[int, int, int], image.convert("RGB").resize((1, 1)).getpixel((0, 0))
-            )
+            pixel = cast(tuple[int, int, int], image.convert("RGB").resize((1, 1)).getpixel((0, 0)))
             red, _green, blue = pixel
             vector = np.array([float(red), float(blue)], dtype=np.float32)
             vector /= np.linalg.norm(vector)
@@ -99,9 +97,7 @@ def test_source_http_errors_preserve_base_result(status_code: int) -> None:
     response = httpx.Response(status_code, request=request)
 
     async def resolve_assets(_candidate: Any) -> tuple[MaterializedAsset, ...]:
-        raise httpx.HTTPStatusError(
-            f"HTTP {status_code}", request=request, response=response
-        )
+        raise httpx.HTTPStatusError(f"HTTP {status_code}", request=request, response=response)
 
     orchestrator = TemporalRefinementOrchestrator(
         embeddings=ColourEmbeddings(),

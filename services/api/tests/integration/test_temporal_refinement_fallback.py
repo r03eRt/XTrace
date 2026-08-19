@@ -65,9 +65,7 @@ class _OwnedRows:
 
 
 @pytest.fixture(autouse=True)
-def _postgres_api_env(
-    monkeypatch: pytest.MonkeyPatch, api_env: Path
-) -> Iterator[Path]:
+def _postgres_api_env(monkeypatch: pytest.MonkeyPatch, api_env: Path) -> Iterator[Path]:
     """Backend Postgres/fake determinista, con un work root aislado por test."""
     monkeypatch.setenv("SUPABASE_DB_URL", resolve_dsn())
     monkeypatch.delenv("XTRACE_EMBEDDING_PROVIDER", raising=False)

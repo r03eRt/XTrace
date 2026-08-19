@@ -200,9 +200,7 @@ def test_search_response_rejects_invalid_refinement_summary(payload: dict[str, o
         ("asset_kind", "preview"),
     ],
 )
-def test_search_response_rejects_invalid_timestamp_provenance(
-    field: str, value: str
-) -> None:
+def test_search_response_rejects_invalid_timestamp_provenance(field: str, value: str) -> None:
     provenance = {
         "origin": "base_index",
         "status": "unchanged",
