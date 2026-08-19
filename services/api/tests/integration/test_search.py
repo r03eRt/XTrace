@@ -65,14 +65,16 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture(autouse=True)
-def _postgres_api_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Path]:
+def _postgres_api_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, api_env: Path
+) -> Iterator[Path]:
     """Backend postgres determinista por test: env, work_root y cachés reset."""
     monkeypatch.setenv("SUPABASE_DB_URL", resolve_dsn())
     monkeypatch.delenv("XTRACE_EMBEDDING_PROVIDER", raising=False)
     monkeypatch.setenv("XTRACE_API_WORK_ROOT", str(tmp_path / "work"))
     get_settings.cache_clear()
     build_backend.cache_clear()
-    yield tmp_path / "work"
+    yield api_env
     get_settings.cache_clear()
     build_backend.cache_clear()
 
@@ -147,9 +149,9 @@ def _searches_rows() -> list[tuple[object, ...]]:
             return cur.fetchall()
 
 
-def test_search_end_to_end_with_enrichment(api_env: Path) -> None:
+def test_search_end_to_end_with_enrichment(api_env: Path, tmp_path: Path) -> None:
     """POST /search end-to-end contra postgres: resultados + extensión MAY + FR-012."""
-    query = make_query_image(api_env / "query.png")
+    query = make_query_image(tmp_path / "query.png")
     video_id, _ = _seed_video(
         image=query,
         title="Vídeo de ejemplo del corpus",
@@ -161,7 +163,8 @@ def test_search_end_to_end_with_enrichment(api_env: Path) -> None:
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert set(payload) == {"search_id", "processing_ms", "results"}
+    assert set(payload) == {"search_id", "processing_ms", "refinement", "results"}
+    assert payload["refinement"]["status"] == "unavailable"
     search_id = uuid.UUID(payload["search_id"])
     assert search_id.version == 4
     assert isinstance(payload["processing_ms"], int)
@@ -179,6 +182,7 @@ def test_search_end_to_end_with_enrichment(api_env: Path) -> None:
         "matching_frames",
         "match_timestamp_ms",
         "evidence",
+        "timestamp_provenance",
     }
     assert top["video_id"] == video_id
     assert top["local_ref"] == f"local-{video_id[:8]}.mp4"
@@ -188,6 +192,8 @@ def test_search_end_to_end_with_enrichment(api_env: Path) -> None:
     assert top["matching_frames"] == 1
     assert top["match_timestamp_ms"] == 94_000
     assert top["evidence"] == {"visual": 1.0, "phash": 1.0}
+    assert top["timestamp_provenance"]["origin"] == "base_index"
+    assert top["timestamp_provenance"]["status"] == "unavailable"
 
     # FR-012: la fila de analítica existe con search_type='image' (contracts §7.6).
     rows = _searches_rows()
@@ -237,7 +243,7 @@ def test_search_concurrent_requests_get_unique_ids(api_env: Path) -> None:
     assert len(_searches_rows()) == 4  # FR-012: una fila por búsqueda
 
 
-def test_search_validation_errors_do_not_run_search(api_env: Path) -> None:
+def test_search_validation_errors_do_not_run_search(api_env: Path, tmp_path: Path) -> None:
     """SC-006: 413/415/400 sin ejecutar búsqueda (ni fila en searches)."""
     with TestClient(app) as client:
         # 413: media > 10 MB (sin procesar).
@@ -253,13 +259,13 @@ def test_search_validation_errors_do_not_run_search(api_env: Path) -> None:
         }
 
         # 415: firma MIME no soportada.
-        bogus = make_bogus_file(api_env / "fake.png")
+        bogus = make_bogus_file(tmp_path / "fake.png")
         response = _search(client, bogus)
         assert response.status_code == 415
         assert response.json()["error_type"] == "media_type_not_supported"
 
         # 400: contenido corrupto con firma válida.
-        corrupt = make_bogus_file(api_env / "corrupt.png", with_png_signature=True)
+        corrupt = make_bogus_file(tmp_path / "corrupt.png", with_png_signature=True)
         response = _search(client, corrupt)
         assert response.status_code == 400
         assert response.json()["error_type"] == "media_corrupt"

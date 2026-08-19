@@ -24,6 +24,20 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
 
+      # The temporal-refinement benchmark contract executes the metadata-only
+      # Python validator from the Vitest suite. Keep the JS quality job
+      # self-contained instead of relying on a runner-global uv installation.
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install API benchmark dependencies
+        run: uv sync --locked --project services/api
+
       - name: Install (reproducible)
         run: pnpm install --frozen-lockfile
 

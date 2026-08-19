@@ -109,7 +109,7 @@ from xtrace_crawler.adapters.models import (
     VideoSource,
     VisualAsset,
 )
-from xtrace_crawler.crawling.http import SafeHTTPClient
+from xtrace_crawler.crawling.http import Resolver, SafeHTTPClient
 
 # Hosts permitidos para este adapter (SEC-001, anti-SSRF): solo xvideos.com y
 # su subdominio www (los redirects entre ambos están permitidos).
@@ -753,14 +753,35 @@ class XvideosAdapter:
     # de las URLs parseadas (fail-closed).
     asset_hosts: list[str] = XV_ASSET_HOSTS
 
-    def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+        resolver: Resolver | None = None,
+    ) -> None:
         """Crea el adapter con su cliente HTTP seguro (allowlist de hosts).
 
         Args:
             transport: transporte inyectable (`httpx.MockTransport` en tests);
                 `None` → red real (solo uso operativo tras habilitación).
+            resolver: resolución inyectable para la validación anti-DNS-rebinding;
+                cuando se usa un `httpx.MockTransport` sin resolver explícito se
+                emplea una IP pública fija para mantener los tests sin DNS real.
         """
-        self._client = SafeHTTPClient(allowed_hosts=XV_VIDEO_HOSTS, transport=transport)
+        if isinstance(transport, httpx.MockTransport) and resolver is None:
+            # `MockTransport` no resuelve DNS. Mantener esta ruta determinista
+            # permite conservar `validate_resolved_ip=True` sin red real en
+            # tests y deja la resolución real para el transporte operativo.
+            def mock_resolver(_host: str) -> list[str]:
+                return ["93.184.216.34"]
+
+            resolver = mock_resolver
+        self._client = SafeHTTPClient(
+            allowed_hosts=XV_VIDEO_HOSTS,
+            transport=transport,
+            validate_resolved_ip=True,
+            resolver=resolver,
+        )
         # Protección anti-bucle de discover (PR-043): IDs ya vistos en esta
         # instancia (una instancia por proceso de worker vía el registry). Se
         # reinicia al arrancar una cadena nueva (cursor=None).

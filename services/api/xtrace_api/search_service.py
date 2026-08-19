@@ -16,12 +16,13 @@ in-memory los tres quedan `null` (paridad PR-014 del spike).
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from PIL import Image
 from xtrace_spike.cli import CliBackend  # type: ignore[import-untyped]
+from xtrace_spike.embeddings.provider import EmbeddingProvider  # type: ignore[import-untyped]
 from xtrace_spike.repo import PgRepo, parse_uuid  # type: ignore[import-untyped]
 from xtrace_spike.search import ImageSearch, ImageSearchResult  # type: ignore[import-untyped]
 from xtrace_spike.search.ranking import rank_candidates  # type: ignore[import-untyped]
@@ -29,6 +30,12 @@ from xtrace_spike.vectorstore.in_memory import InMemoryVectorStore  # type: igno
 from xtrace_spike.vectorstore.pgvector import PgVectorStore  # type: ignore[import-untyped]
 
 from xtrace_api.deps import get_search_components
+from xtrace_api.refinement.adapters import RefinementAdapterBridge
+from xtrace_api.refinement.assets import AssetMaterializer
+from xtrace_api.refinement.catalog import candidate_from_record
+from xtrace_api.refinement.models import RefinementCandidate
+from xtrace_api.refinement.policy import RefinementPolicy
+from xtrace_api.refinement.service import TemporalRefinementOrchestrator
 
 
 @dataclass(frozen=True)
@@ -38,6 +45,11 @@ class VideoMetadata:
     local_ref: str | None
     title: str | None
     page_url: str | None
+    source: str | None = None
+    adapter: str | None = None
+    external_id: str | None = None
+    duration_ms: int | None = None
+    source_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -54,6 +66,7 @@ class SearchOutcome:
     ranked: tuple[Any, ...]
     metadata: dict[str, VideoMetadata]
     backend_label: str
+    embeddings: EmbeddingProvider
 
 
 def run_image_search(
@@ -81,7 +94,89 @@ def run_image_search(
     frame_phashes = _resolve_frame_phashes(components.backend, result)
     ranked = rank_candidates(result, frame_phashes=frame_phashes, min_score=min_score)
     metadata = _resolve_metadata(components.backend, [item.video_id for item in ranked])
-    return SearchOutcome(ranked=ranked, metadata=metadata, backend_label=components.backend.label)
+    return SearchOutcome(
+        ranked=ranked,
+        metadata=metadata,
+        backend_label=components.backend.label,
+        embeddings=components.embeddings,
+    )
+
+
+def build_refinement_orchestrator(
+    outcome: SearchOutcome,
+    *,
+    policy: RefinementPolicy,
+) -> TemporalRefinementOrchestrator:
+    """Compose the approved crawler boundary for one search request.
+
+    The registry is loaded at the composition root, not by the refinement
+    value objects. Local/in-memory results have no source metadata and therefore
+    fail closed without making a network request.
+    """
+
+    from xtrace_crawler.cli import _default_registry  # type: ignore[import-untyped]
+
+    bridge = RefinementAdapterBridge(_default_registry())
+
+    def resolve_candidate(
+        item: Any, metadata: Mapping[str, VideoMetadata]
+    ) -> RefinementCandidate | None:
+        record = metadata.get(item.video_id)
+        if record is None or record.source is None or record.adapter is None:
+            return None
+        if record.external_id is None:
+            return None
+        return candidate_from_record(
+            {
+                "video_id": item.video_id,
+                "source": record.source,
+                "adapter": record.adapter,
+                "external_id": record.external_id,
+                "page_url": record.page_url,
+                "duration_ms": record.duration_ms,
+                "base_timestamp_ms": item.match_timestamp_ms,
+                "base_visual_similarity": item.visual_similarity,
+            }
+        )
+
+    async def resolve_assets(candidate: Any) -> Any:
+        record = outcome.metadata.get(candidate.video_id)
+        if record is None or not record.source_enabled:
+            return ()
+        adapter_name = candidate.adapter or candidate.source
+        if adapter_name is None:
+            return ()
+        adapter = bridge.resolve(adapter_name, enabled_in_db=record.source_enabled)
+        video = await bridge.get_video(
+            adapter_name,
+            candidate.external_id,
+            page_url=candidate.page_url,
+            enabled_in_db=record.source_enabled,
+        )
+        if video is None:
+            return ()
+        assets = await bridge.get_visual_assets(adapter, video)
+        effective_policy = policy.for_source(candidate.source)
+
+        async def fetch_bytes(asset: Any) -> bytes:
+            return await bridge.fetch_asset_bytes(
+                adapter,
+                asset,
+                max_bytes=effective_policy.max_asset_bytes,
+            )
+
+        return await AssetMaterializer(fetch_bytes).materialize(
+            assets,
+            max_assets=effective_policy.max_assets_per_candidate,
+            max_bytes=effective_policy.max_asset_bytes,
+        )
+
+    return TemporalRefinementOrchestrator(
+        embeddings=outcome.embeddings,
+        candidate_resolver=resolve_candidate,
+        asset_resolver=resolve_assets,
+        cleanup=bridge.aclose,
+    )
 
 
 def _resolve_frame_phashes(backend: CliBackend, result: ImageSearchResult) -> dict[str, int]:
@@ -129,8 +224,11 @@ async def _fetch_video_metadata(video_ids: Sequence[str]) -> dict[str, VideoMeta
     async with await PgRepo().connect() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "select id::text, local_ref, title, page_url "
-                "from public.videos where id = any(%s::uuid[])",
+                "select v.id::text, v.local_ref, v.title, v.page_url, "
+                "s.name, s.adapter, v.external_id, v.duration_ms, "
+                "coalesce(s.enabled, false) "
+                "from public.videos v left join public.sources s on s.id = v.source_id "
+                "where v.id = any(%s::uuid[])",
                 ([str(video_uuid) for video_uuid in video_uuids],),
             )
             rows = await cur.fetchall()
@@ -139,6 +237,11 @@ async def _fetch_video_metadata(video_ids: Sequence[str]) -> dict[str, VideoMeta
             local_ref=str(row[1]) if row[1] is not None else None,
             title=row[2],
             page_url=row[3],
+            source=row[4],
+            adapter=row[5],
+            external_id=row[6],
+            duration_ms=row[7],
+            source_enabled=bool(row[8]),
         )
         for row in rows
     }

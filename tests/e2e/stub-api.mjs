@@ -13,7 +13,8 @@
  *   `services/api/xtrace_api/media.py`); en otro caso espera `SEARCH_DELAY_MS` (~1,5 s,
  *   para que la UI muestre el estado de carga — UX-002) y responde el fixture
  *   `tests/e2e/fixtures/search-response.json` (contracts §1, Content-Type
- *   application/json).
+ *   application/json). Refinement fixtures are selected by the image filename:
+ *   `refined.png`, `limited.png` or `unavailable.png`.
  * - `GET /health` → `{ "status": "ok", "service": "xtrace-api", "version": "0.1.0" }`
  *   (contracts §2).
  * - `GET /__count` → `{ "search_calls": N }`: contador de `POST /search` recibidos;
@@ -35,12 +36,18 @@ const SEARCH_DELAY_MS = Number(process.env.STUB_SEARCH_DELAY_MS ?? 1500);
 /** contracts §1: media ≤ 10 MB; margen para cabeceras multipart. */
 const MAX_BODY_BYTES = 11 * 1024 * 1024;
 
-const fixturePath = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "fixtures",
-  "search-response.json",
-);
-const searchFixture = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
+const fixtureDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
+
+function readFixture(filename) {
+  return JSON.parse(fs.readFileSync(path.join(fixtureDir, filename), "utf8"));
+}
+
+const searchFixture = readFixture("search-response.json");
+const responseFixtures = new Map([
+  ["refined.png", readFixture("search-response-refined.json")],
+  ["limited.png", readFixture("search-response-limited.json")],
+  ["unavailable.png", readFixture("search-response-unavailable.json")],
+]);
 
 /** Nº de peticiones `POST /search` recibidas (aserciones E2E vía `GET /__count`). */
 let searchCalls = 0;
@@ -110,7 +117,8 @@ function handleSearch(req, res) {
       return;
     }
     // Retardo deliberado: la UI debe mostrar el feedback de carga hasta la respuesta.
-    setTimeout(() => sendJson(res, 200, searchFixture), SEARCH_DELAY_MS);
+    const responseFixture = responseFixtures.get(filename) ?? searchFixture;
+    setTimeout(() => sendJson(res, 200, responseFixture), SEARCH_DELAY_MS);
   });
 }
 

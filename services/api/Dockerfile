@@ -15,6 +15,8 @@ WORKDIR /app
 # Spike reutilizado en solo lectura (ADR-0011/0012) + servicio API.
 COPY services/search-spike/pyproject.toml services/search-spike/README.md /app/services/search-spike/
 COPY services/search-spike/xtrace_spike /app/services/search-spike/xtrace_spike
+COPY services/crawler/pyproject.toml services/crawler/README.md /app/services/crawler/
+COPY services/crawler/xtrace_crawler /app/services/crawler/xtrace_crawler
 COPY services/api/pyproject.toml services/api/README.md /app/services/api/
 COPY services/api/xtrace_api /app/services/api/xtrace_api
 COPY services/api/uv.lock /app/services/api/uv.lock

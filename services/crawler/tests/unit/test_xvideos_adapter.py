@@ -91,6 +91,7 @@ from xtrace_crawler.adapters.xvideos import (
     parse_listing_page,
     parse_video_page,
 )
+from xtrace_crawler.crawling.http import PrivateIPError
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "xvideos"
 
@@ -257,6 +258,30 @@ def _fixture_handler() -> Callable[[httpx.Request], httpx.Response]:
 def _adapter() -> XvideosAdapter:
     """Adapter con transporte mock: ningún test toca la red (NFR-003, SEC-001)."""
     return XvideosAdapter(transport=httpx.MockTransport(_fixture_handler()))
+
+
+def test_xvideos_activa_anti_dns_rebinding_sin_red_real() -> None:
+    """SEC-001..003: el adapter valida IPs resueltas antes de usar el mock."""
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        return _fixture_handler()(request)
+
+    def private_resolver(host: str) -> list[str]:
+        assert host == "www.xvideos.com"
+        return ["192.168.1.10"]
+
+    async def scenario() -> None:
+        adapter = XvideosAdapter(
+            transport=httpx.MockTransport(handler),
+            resolver=private_resolver,
+        )
+        with pytest.raises(PrivateIPError):
+            await adapter.discover(cursor=None, limit=100)
+
+    _run(scenario)
+    assert requested == []
 
 
 # ---------------------------------------------------------------------------

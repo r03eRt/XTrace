@@ -19,8 +19,9 @@ metadatos, fuente y enlace original.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Evidence(BaseModel):
@@ -28,6 +29,41 @@ class Evidence(BaseModel):
 
     visual: float
     phash: float
+
+
+class TimestampProvenance(BaseModel):
+    """Procedencia trazable del timestamp mostrado (spec 006 · DATA-001)."""
+
+    origin: Literal["base_index", "refined_asset"]
+    status: Literal["improved", "unchanged", "unavailable", "limited", "disabled"]
+    source: str | None = None
+    asset_kind: Literal["thumbnail", "storyboard"] | None = None
+    asset_url: str | None = None
+    asset_position: int | None = None
+
+
+class RefinementSummary(BaseModel):
+    """Bounded aggregate metrics returned with a search response."""
+
+    status: Literal["completed", "disabled", "unavailable", "limited", "failed"]
+    candidates_requested: int = Field(ge=0)
+    candidates_processed: int = Field(ge=0)
+    assets_evaluated: int = Field(ge=0)
+    assets_discarded: int = Field(ge=0)
+    errors_count: int = Field(ge=0)
+    bytes_downloaded: int = Field(ge=0)
+    embedding_count: int = Field(ge=0)
+    embedding_elapsed_ms: int = Field(ge=0)
+    improved_results: int = Field(ge=0)
+    elapsed_ms: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_candidate_count(self) -> RefinementSummary:
+        """Never expose a summary claiming more processed candidates than requested."""
+
+        if self.candidates_processed > self.candidates_requested:
+            raise ValueError("candidates_processed no puede superar candidates_requested")
+        return self
 
 
 class SearchResultItem(BaseModel):
@@ -47,6 +83,7 @@ class SearchResultItem(BaseModel):
     matching_frames: int
     match_timestamp_ms: int | None = None
     evidence: Evidence
+    timestamp_provenance: TimestampProvenance | None = None
 
 
 class SearchResponse(BaseModel):
@@ -54,6 +91,7 @@ class SearchResponse(BaseModel):
 
     search_id: str
     processing_ms: int = Field(ge=0)
+    refinement: RefinementSummary | None = None
     results: list[SearchResultItem]
 
 

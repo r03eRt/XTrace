@@ -20,6 +20,9 @@ dependencies = [
     # Pipeline del spike reutilizado como dependencia editable (ADR-0011/0012):
     # la API añade solo transporte HTTP, contrato y analítica propios.
     "xtrace-spike",
+    # Contrato único de adapters, allowlists y assets públicos para el refinamiento
+    # temporal (spec 006 · ADR-0014). No se duplica el parser en la API.
+    "xtrace-crawler",
 ]
 
 # Extra opcional `siglip` (paridad con spike/crawler · ADR-0012): dependencias
@@ -48,6 +51,7 @@ xtrace-api = "xtrace_api.main:app"
 # (ADR-0011/0012; el spike permanece intocado y cerrado).
 [tool.uv.sources]
 xtrace-spike = { path = "../search-spike", editable = true }
+xtrace-crawler = { path = "../crawler", editable = true }
 
 [tool.ruff]
 target-version = "py311"
