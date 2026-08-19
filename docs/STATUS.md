@@ -7,7 +7,8 @@
 **Última actualización**: 2026-08-19 · por el orquestador de la feature 006.
 
 > 🧭 **Feature 006 — refinamiento temporal bajo demanda**: spec `006-temporal-refinement`
-> en `APPROVED`, rama `feature/006-temporal-refinement`. El segundo pase refina solo
+> en `IMPLEMENTED`, mergeada en `main` vía
+> [PR #15](https://github.com/r03eRt/XTrace/pull/15) (commit `ce8e846`). El segundo pase refina solo
 > candidatos principales con thumbnails/storyboards públicos permitidos, conserva el
 > primer pase cuando la fuente no puede aportar evidencia y persiste únicamente
 > métricas server-side. Los límites por defecto son 3 candidatos, 30 assets por

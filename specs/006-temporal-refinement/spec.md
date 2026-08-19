@@ -4,7 +4,7 @@
 
 **Created**: 2026-08-18
 
-**Status**: APPROVED
+**Status**: IMPLEMENTED
 
 **Input**: User direction: "El índice base identifica el vídeo, pero el timestamp puede
 ser demasiado impreciso. Refinar solo los candidatos principales con más assets públicos
