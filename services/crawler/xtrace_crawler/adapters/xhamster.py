@@ -190,11 +190,18 @@ def _external_id_from_url(url: str) -> str | None:
     return match.group("id")
 
 
-def _cursor_from_href(href: str) -> str:
-    """Normaliza el href de la paginación a un cursor (path)."""
+def _cursor_from_href(href: str) -> str | None:
+    """Normaliza el href de la paginación a un cursor (path) o None.
+
+    Un href **sin path real** (`#`, vacío, solo query/fragmento) devuelve
+    `None`: el llamador lo trata como fin de cadena — nunca se construye la
+    HOME (`https://xhamster.com/`) como cursor (Decisión D2: en v1 no se
+    explora la home). Hallazgo del revisor (F-1, revisión PR-062).
+    """
     if href.startswith("/"):
         return href
-    return urlsplit(href).path or "/"
+    path = urlsplit(href).path
+    return path if path else None
 
 
 def _list_pagination_cursor(tree: HTMLParser, *, current_path: str | None) -> str | None:
@@ -212,8 +219,10 @@ def _list_pagination_cursor(tree: HTMLParser, *, current_path: str | None) -> st
     activo es el último enlace (el duplicado del `page-limit-button` repite el
     path actual y se descarta) → `None`. Un candidato que repite el path actual
     de la respuesta devuelve `None` (anti-bucle, paridad PR-043). Sin activo →
-    `None` (fin de cadena, fail-safe). Los hrefs se normalizan a path con
-    `_cursor_from_href`.
+    `None` (fin de cadena, fail-safe). Un candidato **sin path real** (`#`,
+    vacío, solo query/fragmento) también es fin de cadena (`None`): nunca se
+    construye la HOME como cursor (Decisión D2 · hallazgo del revisor F-1).
+    Los hrefs se normalizan a path con `_cursor_from_href`.
     """
     links = tree.css(_LISTING_PAGE_SELECTOR)
     active_index = next(
@@ -228,9 +237,13 @@ def _list_pagination_cursor(tree: HTMLParser, *, current_path: str | None) -> st
         return None
     for node in links[active_index + 1 :]:
         href = node.attributes.get("href")
-        if not href:
+        if href is None:
             continue
         candidate = _cursor_from_href(href)
+        if candidate is None:
+            # Href sin path real (`#`, vacío, solo query/fragmento): fin de
+            # cadena — nunca se construye la HOME (D2).
+            return None
         # Anti-bucle: un siguiente que apunta a la página actual es fin.
         if current_path is None or candidate != current_path:
             return candidate

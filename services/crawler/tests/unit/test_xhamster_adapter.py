@@ -637,6 +637,67 @@ def test_parse_listing_page_sin_activo_cursor_none() -> None:
     assert page.next_cursor is None
 
 
+def test_parse_listing_page_cursor_hash_sin_path_fin_de_cadena() -> None:
+    """FR-003 · D2 (hallazgo del revisor F-1): `href="#"` tras el activo → fin.
+
+    Un enlace siguiente sin path real (`#`) NO puede producir el cursor `"/"`
+    (que pediría la HOME, prohibida en v1 por D2): la cadena termina con
+    `next_cursor=None`.
+    """
+    html = (
+        "<html><body><div class='video-thumb' data-video-id='s000014'>"
+        "<a class='video-thumb__image-container' data-role='thumb-link' "
+        "href='/videos/titulo-de-ejemplo-14-3000014'>v</a>"
+        "</div>"
+        "<ol class='page-list'>"
+        "<li class='page-button'>"
+        "<a class='page-button-link page-button-link--active' href='/categories/amateur'>1</a>"
+        "</li>"
+        "<li class='page-button'>"
+        "<a class='page-button-link' href='#'>siguiente</a>"
+        "</li>"
+        "</ol></body></html>"
+    )
+    page = parse_listing_page(html, current_path="/categories/amateur")
+    assert page.external_ids == ["3000014"]
+    assert page.next_cursor is None
+
+
+def test_parse_listing_page_cursor_vacio_o_solo_query_fin_de_cadena() -> None:
+    """FR-003 · D2 (hallazgo del revisor F-1): href vacío o solo query → fin.
+
+    Igual que `#`: un href vacío o con solo query/fragmento no produce cursor
+    (nunca la HOME) — la cadena termina con `next_cursor=None`. Control: con
+    path real después, el cursor sí avanza.
+    """
+    html = (
+        "<html><body><div class='video-thumb' data-video-id='s000015'>"
+        "<a class='video-thumb__image-container' data-role='thumb-link' "
+        "href='/videos/titulo-de-ejemplo-15-3000015'>v</a>"
+        "</div>"
+        "<ol class='page-list'>"
+        "<li class='page-button'>"
+        "<a class='page-button-link page-button-link--active' href='/categories/amateur/2'>2</a>"
+        "</li>"
+        "<li class='page-button'>"
+        "<a class='page-button-link' href=''>vacío</a>"
+        "</li>"
+        "<li class='page-button'>"
+        "<a class='page-button-link' href='?page=3'>solo query</a>"
+        "</li>"
+        "<li class='page-button'>"
+        "<a class='page-button-link' href='/categories/amateur/3'>3</a>"
+        "</li>"
+        "</ol></body></html>"
+    )
+    page = parse_listing_page(html, current_path="/categories/amateur/2")
+    assert page.next_cursor is None  # el primer candidato sin path corta la cadena
+    # Control (paridad): con un path real como primer siguiente, el cursor avanza.
+    control = html.replace("href=''>vacío</a>", "href='/categories/amateur/3'>3a</a>")
+    page = parse_listing_page(control, current_path="/categories/amateur/2")
+    assert page.next_cursor == "/categories/amateur/3"
+
+
 def test_parse_listing_page_estructura_cambiada_devuelve_vacio() -> None:
     """Edge: si el listado cambia de estructura, devuelve vacío sin crashear.
 
@@ -1237,14 +1298,43 @@ def test_fixtures_no_usan_dominio_real_xhamster_com() -> None:
 
 
 def _imported_module_names(path: Path) -> list[str]:
+    """Nombres de módulos importados por un fichero (para el test AST de SC-007).
+
+    Cubre `import a.b`, `from a.b import c` (módulo) y también los **alias** de
+    `ImportFrom` (`from xtrace_crawler.adapters import xhamster` → alias
+    `xhamster`, hallazgo del revisor F-2) y los imports relativos (`from . import
+    x` → alias `x`).
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"))
     names: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            names.append(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                names.append(node.module)
+            names.extend(alias.name for alias in node.names)
     return names
+
+
+def test_imported_module_names_detecta_import_from_con_alias(tmp_path: Path) -> None:
+    """SC-007 (hallazgo del revisor F-2): el helper AST marca también los alias.
+
+    `from xtrace_crawler.adapters import xhamster` no aparece en `node.module`
+    (es `xtrace_crawler.adapters`): el nombre del alias (`xhamster`) debe
+    detectarse, igual que el import relativo `from . import xhamster`.
+    """
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "from xtrace_crawler.adapters import xhamster\n"
+        "from . import xhamster\n"
+        "import xtrace_crawler.adapters.xhamster\n",
+        encoding="utf-8",
+    )
+    names = _imported_module_names(sample)
+    parts = [part for name in names for part in name.split(".")]
+    assert "xhamster" in parts, f"alias/import no detectado: {names}"
+    assert "xtrace_crawler" in parts
 
 
 def test_core_no_importa_el_adapter_xhamster() -> None:
