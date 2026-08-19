@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>XHamster - sample category listing (fixture sintetico, page 2)</title>
+</head>
+<body>
+<div id="content">
+  <!--
+    Fixture SINTETICO (SEC-004): pagina 2 del listado de categoria. El
+    activo de la paginacion es la pagina 2 y el enlace siguiente salta
+    DIRECTAMENTE a la numeracion alta (/16828) — estructura observada en la
+    captura real (2026-08-19): /2, /3, ..., /6, /16828, /33654. El cursor
+    avanza por el href siguiente al activo, sea cual sea la numeracion.
+    Ambas formas de id: numerica (3000004) y alfanumerica (xhT0005).
+  -->
+  <div class="thumb-list">
+    <div class="container-c9dbd thumb-list__item video-thumb video-thumb--type-video"
+         data-video-id="s000004" data-video-type="video">
+      <a class="video-thumb__image-container role-pop thumb-image-container ist-trigger"
+         data-role="thumb-link" href="/videos/titulo-de-ejemplo-4-3000004"
+         data-previewvideo="https://thumb-v3.xhcdn.invalid/a/tokenejemplo0004/002/533/590/526x298.94.3.5.t.av1.mp4"
+         aria-label="Titulo de ejemplo 4">
+        <img class="thumb-image-container__image"
+             data-src="https://ic-vt-nss.xhcdn.invalid/a/tokenejemplo0004/002/533/590/640x360.6.jpg"
+             alt="Titulo de ejemplo 4">
+      </a>
+      <div class="video-thumb-uploader"><span>Titulo de ejemplo 4</span></div>
+    </div>
+    <div class="container-c9dbd thumb-list__item video-thumb video-thumb--type-video"
+         data-video-id="s000005" data-video-type="video">
+      <a class="video-thumb__image-container role-pop thumb-image-container ist-trigger"
+         data-role="thumb-link" href="/videos/titulo-de-ejemplo-5-xhT0005"
+         data-previewvideo="https://thumb-v5.xhcdn.invalid/a/tokenejemplo0005/002/533/591/526x298.94.3.5.t.av1.mp4"
+         aria-label="Titulo de ejemplo 5">
+        <img class="thumb-image-container__image"
+             data-src="https://ic-vt-nss.xhcdn.invalid/a/tokenejemplo0005/002/533/591/640x360.6.jpg"
+             alt="Titulo de ejemplo 5">
+      </a>
+      <div class="video-thumb-uploader"><span>Titulo de ejemplo 5</span></div>
+    </div>
+  </div>
+
+  <div class="page-list-container">
+    <ol class="page-list">
+      <li class="page-button">
+        <a class="page-button-link" href="/categories/amateur">1</a>
+      </li>
+      <li class="page-button">
+        <a class="page-button-link page-button-link--active" href="/categories/amateur/2">2</a>
+      </li>
+      <li class="page-button-separator">...</li>
+      <li class="page-button page-button--middle">
+        <a class="page-button-link" href="/categories/amateur/16828">16828</a>
+      </li>
+      <li class="page-button-separator">...</li>
+      <li class="page-hidden-button">
+        <a class="page-button-link" href="/categories/amateur/33654">33654</a>
+      </li>
+    </ol>
+    <div class="page-limit-button page-limit-button--right">
+      <a class="page-button-link" href="/categories/amateur/33654">33654</a>
+    </div>
+  </div>
+</div>
+</body>
+</html>
