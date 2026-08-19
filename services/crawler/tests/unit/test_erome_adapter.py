@@ -169,7 +169,7 @@ def test_discover_first_page_requires_query_section() -> None:
     async def scenario() -> None:
         adapter = _adapter()
         with pytest.raises(ValueError, match="empezar por"):
-            await adapter.discover(cursor=None, limit=10, section="q=amateur")
+            await adapter.discover(cursor=None, limit=10, section="search?q=amateur")
         await adapter.aclose()
 
     _run(scenario)
@@ -178,7 +178,7 @@ def test_discover_first_page_requires_query_section() -> None:
 def test_discover_paginates_across_two_pages() -> None:
     async def scenario() -> None:
         adapter = _adapter()
-        first = await adapter.discover(cursor=None, limit=10, section="?q=amateur")
+        first = await adapter.discover(cursor=None, limit=10, section="/search?q=amateur")
         assert first.external_ids == ["synth001", "synth003"]
         assert first.next_cursor == "/search?q=amateur&page=2"
 
@@ -195,10 +195,10 @@ def test_discover_zero_new_ids_ends_chain() -> None:
 
     async def scenario() -> None:
         adapter = _adapter()
-        await adapter.discover(cursor=None, limit=10, section="?q=amateur")
+        await adapter.discover(cursor=None, limit=10, section="/search?q=amateur")
         # Nueva cadena (cursor=None de nuevo): se reinicia _seen_external_ids,
         # así que la misma página vuelve a producir IDs "nuevos".
-        again = await adapter.discover(cursor=None, limit=10, section="?q=amateur")
+        again = await adapter.discover(cursor=None, limit=10, section="/search?q=amateur")
         assert again.external_ids == ["synth001", "synth003"]
         await adapter.aclose()
 
