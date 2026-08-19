@@ -98,8 +98,8 @@ export default function BuscarPagePreview() {
       <section className={styles.hero}>
         <h1 className={styles.heroTitle}>Encuentra el vídeo de origen</h1>
         <p className={styles.heroSubtitle}>
-          Sube una captura, un frame o un clip corto. XTrace lo compara contra el índice
-          visual y localiza el vídeo, la fuente y un timestamp aproximado de la escena.
+          Sube una captura, un frame o un clip corto. XTrace lo compara contra el índice visual y
+          localiza el vídeo, la fuente y un timestamp aproximado de la escena.
         </p>
 
         <form onSubmit={handleSubmit} className={styles.searchShell}>
@@ -133,7 +133,9 @@ export default function BuscarPagePreview() {
             </button>
           </label>
           <p className={styles.hint}>JPEG, PNG o WebP · máx. 10 MB</p>
-          {validationError && <p className={`${styles.hint} ${styles.errorStatus}`}>{validationError}</p>}
+          {validationError && (
+            <p className={`${styles.hint} ${styles.errorStatus}`}>{validationError}</p>
+          )}
         </form>
       </section>
 
@@ -186,11 +188,14 @@ export default function BuscarPagePreview() {
                         ) : (
                           <span>Sin miniatura</span>
                         )}
-                        {provenance?.origin === "refined_asset" && provenance.status === "improved" && (
-                          <span className={`${styles.provenanceBadge} ${styles.provenanceRefined}`}>
-                            Refinado
-                          </span>
-                        )}
+                        {provenance?.origin === "refined_asset" &&
+                          provenance.status === "improved" && (
+                            <span
+                              className={`${styles.provenanceBadge} ${styles.provenanceRefined}`}
+                            >
+                              Refinado
+                            </span>
+                          )}
                         {provenance?.origin === "base_index" && (
                           <span className={`${styles.provenanceBadge} ${styles.provenanceBase}`}>
                             Índice base
