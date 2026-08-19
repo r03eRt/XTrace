@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Titulo de ejemplo 1</title>
+  <!--
+    Fixture SINTETICO (SEC-004): reconstruccion anonimizada de la estructura
+    OBSERVADA de la pagina de video (prospeccion 2026-08-19; captura real en
+    /tmp/xh-video.html, fuera del repo). Dominio reservado
+    xhamster.invalid / xhcdn.invalid (RFC 2606), titulos, IDs y tokens
+    sinteticos, sin media real.
+
+    Estructura real: og:title / og:url / og:image (sin og:duration ni JSON-LD)
+    + window.initials (JSON valido en <script id='initials-script'>):
+    videoModel (id, duration s, title, created epoch s, tags[{name}],
+    keywords, spriteURL...) y el sprite del VIDE0 PRINCIPAL en
+    spriteLoader.template (160x160.50.s.jpg = 50 tiles de 160x131 en una fila,
+    spriteCount=50). Los data-sprite del HTML pertenecen a videos RELACIONADOS
+    (paths /NNN/NNN/NNN/ distintos) y NO se usan. Los mp4 (data-previewvideo,
+    trailerURL) NO se exponen (D3, preview_url=None).
+  -->
+  <meta property="og:title" content="Titulo de ejemplo 1" />
+  <meta property="og:url"
+        content="https://xhamster.invalid/videos/titulo-de-ejemplo-1-3000001" />
+  <meta property="og:image"
+        content="https://ic-vt-nss.xhcdn.invalid/a/tokenejemplo0001/002/533/587/1280x720.6.jpg" />
+</head>
+<body>
+  <h1 class="video-title">Titulo de ejemplo 1</h1>
+  <div class="video-player">
+    <!-- Bloque de video RELACIONADO: su data-sprite (hover 526x298.s.webp) y
+         su preview mp4 NO pertenecen al video principal: deben ignorarse. -->
+    <div class="thumb-list">
+      <div class="container-c9dbd thumb-list__item video-thumb video-thumb--type-video"
+           data-video-id="s099999" data-video-type="video">
+        <a class="video-thumb__image-container role-pop thumb-image-container ist-trigger"
+           data-role="thumb-link" href="/videos/titulo-de-ejemplo-relacionado-9999999"
+           data-previewvideo="https://thumb-v3.xhcdn.invalid/a/tokenejemplo0002/017/608/858/526x298.85.3.t.av1.mp4"
+           aria-label="Titulo de ejemplo relacionado">
+          <img class="thumb-image-container__image"
+               data-src="https://ic-vt-nss.xhcdn.invalid/a/tokenejemplo0002/017/608/858/640x360.6.jpg"
+               alt="Titulo de ejemplo relacionado">
+        </a>
+        <div class="thumb-image-container__sprite"
+             data-sprite="https://thumb-v8.xhcdn.invalid/a/tokenejemplo0002/017/608/858/526x298.s.webp"
+             id="9999999"></div>
+      </div>
+    </div>
+  </div>
+  <script id="initials-script">
+    window.initials={
+      "language":"es",
+      "videoModel":{
+        "id":3000001,
+        "idHashSlug":"3000001",
+        "duration":234,
+        "title":"Titulo de ejemplo 1",
+        "titleLocalized":"Titulo de ejemplo 1",
+        "created":1387872061,
+        "pageURL":"https://xhamster.invalid/videos/titulo-de-ejemplo-1-3000001",
+        "spriteURL":"https://thumb-v7.xhcdn.invalid/a/tokenejemplo0001/002/533/587/160x160.50.s.jpg",
+        "spriteCount":50,
+        "trailerURL":"https://thumb-v7.xhcdn.invalid/a/tokenejemplo0001/002/533/587/526x298.78.t.mp4",
+        "previewThumbURL":"https://thumb-nss.xhcdn.invalid/a/tokenejemplo0001/002/533/587/16x9.6.jpg",
+        "rating":{"modelName":"ratingModel","value":98},
+        "tags":[
+          {"id":100001,"name":"tag de ejemplo uno"},
+          {"id":100002,"name":"tag de ejemplo dos"}
+        ],
+        "views":12345
+      },
+      "spriteLoader":{
+        "template":"https://thumb-v7.xhcdn.invalid/a/tokenejemplo0001/002/533/587/160x160.50.s.jpg",
+        "introDuration":0
+      },
+      "xplayerSettings":{"modelName":"xplayerSettingsModel"}
+    };
+  </script>
+</body>
+</html>

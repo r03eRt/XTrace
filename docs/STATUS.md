@@ -4,7 +4,28 @@
 > orquestador tras cada PR. Fuente de verdad de requisitos: `docs/PRODUCT_IDEA.md` y
 > `specs/`. Contrato: `AGENTS.md` + `.specify/memory/constitution.md`.
 
-**Última actualización**: 2026-08-19 · por el orquestador de la feature 006.
+**Última actualización**: 2026-08-19 · por el orquestador de la feature 007 (planificación).
+
+> 🧭 **Feature 007 — adapter xhamster.com (segunda fuente real)**: spec
+> `007-xhamster-adapter` **`APPROVED`** (frase exacta "Especificación aprobada",
+> 2026-08-19), con `plan.md` + `ADR-0015` + `tasks.md` **planteados y listos para
+> implementar** (PR-062…PR-065, nada toca el core). Decisiones del humano: host base
+> `xhamster.com` (allowlist + `es.*` como redirect), discover solo por
+> `--section /categories/amateur` (fail-fast sin sección), assets v1 = sprite webp
+> 20×1 + thumbnail (previews mp4 fuera), backfill real `--limit 64 --max-videos 50`,
+> puerta legal SEC-002 **OK en modo prueba** (manifest revisado 2026-08-19; la fuente
+> sigue `enabled=false` en BD hasta acción humana).
+>
+> **PR-062 COMPLETADO y REVISADO (2026-08-19)**: adapter `xhamster.py` + fixtures
+> sintéticos + 57 tests unitarios sin red (gates ruff/mypy/pytest verdes en los
+> ficheros del PR; veredicto de revisión independiente: APPROVED, hallazgos LOW
+> F-1/F-2 resueltos). Rama `feature/007-xhamster-adapter-PR-062-xhamster-adapter`
+> (6 commits). PR-063 (registro CLI + seed) es el siguiente paso.
+>
+> **Próximo paso**: asignar PR-063 (registro en `cli._default_registry()` + wire de
+> `storyboard_grid` + seed `enabled=false` + tests de gate SEC-002); puerta de
+> salida de la feature = SC-002…SC-005 con la validación real del operador (PR-065).
+> Ver `specs/007-xhamster-adapter/plan.md` y `tasks.md`.
 
 > 🧭 **Feature 006 — refinamiento temporal bajo demanda**: spec `006-temporal-refinement`
 > en `IMPLEMENTED`, mergeada en `main` vía

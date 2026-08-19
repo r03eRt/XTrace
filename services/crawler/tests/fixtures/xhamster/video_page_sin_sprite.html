@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Titulo de ejemplo 3</title>
+  <!--
+    Fixture SINTETICO (SEC-004): pagina de video SIN SPRITE — videoModel
+    completo (duracion, fecha, tags) y og:image presente, pero SIN
+    spriteLoader.template ni videoModel.spriteURL: storyboard_urls queda []
+    y los assets degradan a thumbnail unico (FR-005). Tambien cubre el
+    fallback de tags por keywords (string separada por comas, forma observada
+    en la prospeccion 2026-08-19).
+  -->
+  <meta property="og:title" content="Titulo de ejemplo 3" />
+  <meta property="og:url"
+        content="https://xhamster.invalid/videos/titulo-de-ejemplo-3-3000003" />
+  <meta property="og:image"
+        content="https://ic-vt-nss.xhcdn.invalid/a/tokenejemplo0003/002/533/587/1280x720.6.jpg" />
+</head>
+<body>
+  <h1 class="video-title">Titulo de ejemplo 3</h1>
+  <script id="initials-script">
+    window.initials={
+      "language":"es",
+      "videoModel":{
+        "id":3000003,
+        "idHashSlug":"3000003",
+        "duration":120,
+        "title":"Titulo de ejemplo 3",
+        "created":1500000000,
+        "pageURL":"https://xhamster.invalid/videos/titulo-de-ejemplo-3-3000003",
+        "keywords":"tag de ejemplo uno, tag de ejemplo dos, tag de ejemplo tres",
+        "trailerURL":"https://thumb-v7.xhcdn.invalid/a/tokenejemplo0003/002/533/587/526x298.78.t.mp4"
+      }
+    };
+  </script>
+</body>
+</html>

@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>XHamster - sample category listing (fixture sintetico, page 1)</title>
+</head>
+<body>
+<div id="content">
+  <!--
+    Fixture SINTETICO (SEC-004): reconstruccion anonimizada de la estructura
+    OBSERVADA del listado de categoria (prospeccion 2026-08-19; captura real
+    en /tmp/xh-amateur.html, fuera del repo). Dominio reservado
+    xhamster.invalid (RFC 2606), titulos e IDs sinteticos, sin media real.
+    Estructura real: 46-51 items div.video-thumb[data-video-id] con enlaces
+    a.video-thumb__image-container[data-role="thumb-link"] a
+    /videos/<slug>-<id> (en la captura real el href es ABSOLUTO, p. ej.
+    https://es.<dominio-real>/videos/amateur-11-2533587; aqui se usan
+    relativos, el parser acepta ambos). Los atributos data-previewvideo (mp4)
+    y data-sprite NO se usan (D3: previews no expuestos en v1).
+  -->
+  <div class="thumb-list">
+    <div class="container-c9dbd thumb-list__item video-thumb video-thumb--type-video"
+         data-video-id="s000001" data-video-type="video">
+      <a class="video-thumb__image-container role-pop thumb-image-container ist-trigger"
+         data-role="thumb-link" href="/videos/titulo-de-ejemplo-1-3000001"
+         data-previewvideo="https://thumb-v3.xhcdn.invalid/a/tokenejemplo0001/002/533/587/526x298.85.3.t.av1.mp4"
+         data-previewvideo-fallback="https://thumb-v3.xhcdn.invalid/a/tokenejemplo0001/002/533/587/526x298.78.t.mp4"
+         aria-label="Titulo de ejemplo 1">
+        <img class="thumb-image-container__image"
+             data-src="https://ic-vt-nss.xhcdn.invalid/a/tokenejemplo0001/002/533/587/640x360.6.jpg"
+             alt="Titulo de ejemplo 1">
+      </a>
+      <!-- Segundo enlace al mismo video (overlay): debe deduplicarse por id. -->
+      <a class="video-thumb__image-container role-pop thumb-image-container"
+         data-role="thumb-link" href="/videos/titulo-de-ejemplo-1-3000001"></a>
+      <div class="video-thumb-uploader"><span>Titulo de ejemplo 1</span></div>
+      <div class="video-thumb-views" aria-hidden="true">12345</div>
+    </div>
+    <div class="container-c9dbd thumb-list__item video-thumb video-thumb--type-video"
+         data-video-id="s000002" data-video-type="video">
+      <a class="video-thumb__image-container role-pop thumb-image-container ist-trigger"
+         data-role="thumb-link" href="/videos/titulo-de-ejemplo-2-xhT0001"
+         data-previewvideo="https://thumb-v5.xhcdn.invalid/a/tokenejemplo0002/002/533/588/526x298.94.3.5.t.av1.mp4"
+         aria-label="Titulo de ejemplo 2">
+        <img class="thumb-image-container__image"
+             data-src="https://ic-vt-nss.xhcdn.invalid/a/tokenejemplo0002/002/533/588/640x360.6.jpg"
+             alt="Titulo de ejemplo 2">
+      </a>
+      <div class="video-thumb-uploader"><span>Titulo de ejemplo 2</span></div>
+    </div>
+    <div class="container-c9dbd thumb-list__item video-thumb video-thumb--type-video"
+         data-video-id="s000003" data-video-type="video">
+      <a class="video-thumb__image-container role-pop thumb-image-container ist-trigger"
+         data-role="thumb-link" href="/videos/titulo-de-ejemplo-3-3000003"
+         data-previewvideo="https://thumb-v7.xhcdn.invalid/a/tokenejemplo0003/002/533/589/526x298.94.3.5.t.av1.mp4"
+         aria-label="Titulo de ejemplo 3">
+        <img class="thumb-image-container__image"
+             data-src="https://ic-vt-nss.xhcdn.invalid/a/tokenejemplo0003/002/533/589/640x360.6.jpg"
+             alt="Titulo de ejemplo 3">
+      </a>
+      <div class="video-thumb-uploader"><span>Titulo de ejemplo 3</span></div>
+    </div>
+  </div>
+
+  <!--
+    Paginacion observada (2026-08-19): ol.page-list con li.page-button y
+    a.page-button-link (activo = page-button-link--active); separadores "...";
+    la numeracion salta de paginas pequenas a numeracion alta (/16828, /33654);
+    el div.page-limit-button repite el enlace de la ULTIMA pagina (mismo
+    a.page-button-link): el cursor es el path del enlace siguiente al activo.
+  -->
+  <div class="page-list-container">
+    <ol class="page-list">
+      <li class="page-button">
+        <a class="page-button-link page-button-link--active" href="/categories/amateur">1</a>
+      </li>
+      <li class="page-button">
+        <a class="page-button-link" href="/categories/amateur/2">2</a>
+      </li>
+      <li class="page-button">
+        <a class="page-button-link" href="/categories/amateur/3">3</a>
+      </li>
+      <li class="page-button-separator">...</li>
+      <li class="page-button page-button--middle">
+        <a class="page-button-link" href="/categories/amateur/16828">16828</a>
+      </li>
+      <li class="page-button-separator">...</li>
+      <li class="page-hidden-button">
+        <a class="page-button-link" href="/categories/amateur/33654">33654</a>
+      </li>
+    </ol>
+    <div class="page-limit-button page-limit-button--right">
+      <div class="limit-gradient limit-gradient--right"></div>
+      <a class="page-button-link" href="/categories/amateur/33654">33654</a>
+    </div>
+  </div>
+</div>
+</body>
+</html>

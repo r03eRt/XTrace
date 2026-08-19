@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Titulo de ejemplo 2</title>
+  <!--
+    Fixture SINTETICO (SEC-004): pagina de video MINIMA — solo og:title y
+    og:url + videoModel con id/title. Sin duracion, sin fecha, sin tags, sin
+    og:image y sin spriteLoader.template: todos los campos opcionales del
+    VideoSource quedan None/[] (edge case de la spec: metadatos incompletos no
+    bloquean el procesado). Id ALFANUMERICO (xhT0001) para cubrir la segunda
+    forma observada /videos/<slug>-<id>.
+  -->
+  <meta property="og:title" content="Titulo de ejemplo 2" />
+  <meta property="og:url"
+        content="https://xhamster.invalid/videos/titulo-de-ejemplo-2-xhT0001" />
+</head>
+<body>
+  <h1 class="video-title">Titulo de ejemplo 2</h1>
+  <script id="initials-script">
+    window.initials={
+      "language":"es",
+      "videoModel":{
+        "id":3000002,
+        "title":"Titulo de ejemplo 2"
+      }
+    };
+  </script>
+</body>
+</html>
