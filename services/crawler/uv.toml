@@ -1,0 +1,7 @@
+# Configuración de uv para este servicio (orquestador, 2026-08-19).
+#
+# La caché por defecto de uv (~/.cache/uv) puede no ser escribible en entornos
+# de desarrollo con sandbox/permisos restringidos. Redirigimos la caché al
+# directorio `.uv-cache/` del propio servicio (ya existente y gitignored) para
+# que `uv sync`/`uv run` funcionen en cualquier entorno sin pasos extra.
+cache-dir = ".uv-cache"
