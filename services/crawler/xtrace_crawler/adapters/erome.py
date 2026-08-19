@@ -105,16 +105,20 @@ def _resolve_album_href(href: str) -> str | None:
     """Resuelve un href de álbum al host canónico, o `None` si es ajeno (SEC-001).
 
     Acepta paths relativos (`/a/<id>` → `https://www.erome.com/a/<id>`) y URLs
-    absolutas de `erome.com`/`www.erome.com`. Cualquier otro host (p. ej. un
-    `og:url` con dominio distinto) devuelve `None`: el llamador cae al
-    template `EROME_ALBUM_URL_TEMPLATE` — igual que xvideos (`_resolve_listing_href`),
-    el `SafeHTTPClient` con allowlist es la segunda barrera.
+    absolutas de `erome.com`/`www.erome.com` en http o https — el esquema
+    siempre se normaliza a **https** en la salida: el `og:url` real de erome
+    declara `http://` (observado en la validación real), pero el sitio sirve
+    https sin problema y `SafeHTTPClient` solo permite https por defecto
+    (dev explícito para http). Cualquier otro host devuelve `None`: el
+    llamador cae al template `EROME_ALBUM_URL_TEMPLATE` — igual que xvideos
+    (`_resolve_listing_href`), el `SafeHTTPClient` con allowlist es la
+    segunda barrera.
     """
     if href.startswith("/"):
         return f"{EROME_BASE_URL}{href}"
     parsed = urlsplit(href)
     if parsed.scheme in ("http", "https") and parsed.netloc in EROME_VIDEO_HOSTS:
-        return href
+        return parsed._replace(scheme="https").geturl()
     return None
 
 
@@ -234,6 +238,10 @@ def parse_album_page(html: str, *, page_url: str) -> VideoSource:
             "¿cambió la estructura HTML de erome?"
         )
     resolved_url = url_from_og or page_url
+    if resolved_url.startswith("http://"):
+        # og:url real de erome declara http:// (validación real); el sitio
+        # sirve https sin problema y SafeHTTPClient exige https por defecto.
+        resolved_url = "https://" + resolved_url[len("http://") :]
     image_node = tree.css_first(_OG_IMAGE_SELECTOR)
     thumbnail_url = image_node.attributes.get("content") if image_node else None
 
@@ -296,7 +304,7 @@ class EromeAdapter:
         robots_reviewed=True,
         terms_reviewed=True,
         rate_limit=RateLimitSpec(min_interval_ms=2_000, max_rps=0.5),  # conservador (D5)
-        review_date=None,  # placeholder: fecha real de la revisión del operador
+        review_date="2026-08-20",  # SEC-002: revisión manual de robots.txt/ToS del operador
     )
 
     asset_hosts: list[str] = EROME_ASSET_HOSTS
@@ -328,22 +336,27 @@ class EromeAdapter:
     ) -> DiscoverPage:
         """Descubre álbumes-con-vídeo de una búsqueda (FR-004).
 
-        `section` es la **query de búsqueda**, SIEMPRE con forma
-        `?q=<término>` (erome no tiene categorías separadas del buscador). En
-        la primera página (`cursor=None`) la URL es
-        `https://www.erome.com/search<section>`; con cursor, la URL sale del
-        cursor (la sección solo fija el arranque). Igual que xvideos: si la
-        página trae más IDs que `limit` → `EromeParseError` (sin truncación
+        `section` es la **ruta de búsqueda completa**, SIEMPRE con '/' inicial
+        (mismo convenio que xvideos — la CLI valida el prefijo genérico), p.
+        ej. `/search?q=amateur` (erome no tiene categorías separadas del
+        buscador). En la primera página (`cursor=None`) la URL es
+        `https://www.erome.com<section>`; con cursor, la URL sale del cursor
+        (la sección solo fija el arranque). Igual que xvideos: si la página
+        trae más IDs que `limit` → `EromeParseError` (sin truncación
         silenciosa); 0 IDs nuevos → fin (anti-bucle).
         """
-        if section is not None and not section.startswith("?"):
+        if section is not None and not section.startswith("/"):
             raise ValueError(
-                f"section debe empezar por '?'; recibido {section!r} "
-                "(query de búsqueda de erome, p. ej. ?q=amateur)"
+                f"section debe empezar por '/'; recibido {section!r} "
+                "(ruta de búsqueda de erome, p. ej. /search?q=amateur)"
             )
         if cursor is None:
             self._seen_external_ids.clear()
-            url = f"{EROME_BASE_URL}/search{section or '?q='}"
+            url = (
+                f"{EROME_BASE_URL}{section}"
+                if section is not None
+                else f"{EROME_BASE_URL}/search?q="
+            )
         else:
             url = f"{EROME_BASE_URL}{cursor}"
         response = await self._client.get(url)

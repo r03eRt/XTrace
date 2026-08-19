@@ -34,3 +34,16 @@ insert into public.sources (name, adapter, manifest, enabled) values (
     "rate_limit":{"min_interval_ms":2000,"max_rps":0.5},
     "review_date":null}', false)
 on conflict (name) do nothing;
+
+-- erome: DESHABILITADO hasta la acción humana explícita (SEC-002). El manifest
+-- del adapter (código) ya documenta robots_reviewed=true/terms_reviewed=true
+-- (revisión de robots.txt/ToS previa a escribir el adapter); el seed se queda
+-- deliberadamente sin fecha/enabled hasta que un humano decida habilitarla.
+insert into public.sources (name, adapter, manifest, enabled) values (
+  'erome', 'erome',
+  '{"source":"erome","access_method":"html",
+    "assets_accessed":["thumbnail","storyboard"],
+    "robots_reviewed":false,"terms_reviewed":false,
+    "rate_limit":{"min_interval_ms":2000,"max_rps":0.5},
+    "review_date":null}', false)
+on conflict (name) do nothing;

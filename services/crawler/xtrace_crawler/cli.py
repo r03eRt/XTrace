@@ -851,22 +851,25 @@ def _counts_human(counts: dict[str, int]) -> str:
 
 
 def _default_registry() -> AdapterRegistry:
-    """Registry por defecto del CLI: mock (exento del gate, FR-003) + xvideos (real).
+    """Registry por defecto del CLI: mock (exento del gate, FR-003) + fuentes reales.
 
     `XvideosAdapter` tiene el manifest **revisado** (2026-08-16, SEC-002 ·
-    PR-042): la habilitación **efectiva** sigue exigiendo `sources.enabled=true`
-    en BD (gate del registry, PR-028) — `backfill --source xvideos` falla con
-    el detalle del gate en vez de "fuente desconocida".
+    PR-042); `EromeAdapter` igual (revisión de robots.txt/ToS previa a su
+    adapter): la habilitación **efectiva** de cualquiera sigue exigiendo
+    `sources.enabled=true` en BD (gate del registry, PR-028) — `backfill
+    --source <x>` falla con el detalle del gate en vez de "fuente desconocida".
 
-    SC-007 (PR-031): ningún módulo del core importa **estáticamente** el adapter
-    xvideos (test AST `test_core_no_importa_el_adapter_xvideos`); la composición
-    raíz del CLI es el punto de registro de adapters concretos y lo resuelve con
-    import dinámico (la instancia cumple el protocolo `SourceAdapter`).
+    SC-007 (PR-031): ningún módulo del core importa **estáticamente** estos
+    adapters (tests AST `test_core_no_importa_el_adapter_*`); la composición
+    raíz del CLI es el punto de registro de adapters concretos y los resuelve
+    con import dinámico (la instancia cumple el protocolo `SourceAdapter`).
     """
     registry = AdapterRegistry()
     registry.register(MockAdapter(), real=False)
-    module: Any = importlib.import_module("xtrace_crawler.adapters.xvideos")
-    registry.register(module.XvideosAdapter(), real=True)
+    xvideos_module: Any = importlib.import_module("xtrace_crawler.adapters.xvideos")
+    registry.register(xvideos_module.XvideosAdapter(), real=True)
+    erome_module: Any = importlib.import_module("xtrace_crawler.adapters.erome")
+    registry.register(erome_module.EromeAdapter(), real=True)
     return registry
 
 
