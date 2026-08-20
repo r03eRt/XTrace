@@ -1,0 +1,25 @@
+{
+  "gif": {
+    "id": "JklImagePostFour",
+    "description": "fixture image post",
+    "createDate": 1700000300,
+    "duration": null,
+    "tags": ["amateur"],
+    "userName": "fixture-user-4",
+    "views": 7,
+    "likes": 1,
+    "hasAudio": false,
+    "hls": false,
+    "type": 2,
+    "urls": {
+      "thumbnail": "https://media.redgifs.invalid/JklImagePostFour-mobile.jpg",
+      "poster": "https://media.redgifs.invalid/JklImagePostFour-poster.jpg",
+      "sd": null,
+      "hd": null,
+      "silent": null,
+      "html": "https://media.redgifs.invalid/JklImagePostFour.html"
+    }
+  },
+  "user": {"username": "fixture-user-4"},
+  "niches": ["homemade"]
+}

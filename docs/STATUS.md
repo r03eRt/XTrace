@@ -4,7 +4,88 @@
 > orquestador tras cada PR. Fuente de verdad de requisitos: `docs/PRODUCT_IDEA.md` y
 > `specs/`. Contrato: `AGENTS.md` + `.specify/memory/constitution.md`.
 
-**Última actualización**: 2026-08-19 · por el orquestador de la feature 007 (planificación).
+**Última actualización**: 2026-08-20 · por el orquestador de la feature 008 (PR-068 completado: integración con fixtures + quickstart; los 4 PRs de la feature están DONE).
+
+> 🧭 **Feature 008 — adapter redgifs.com (fuente real vía API oficial)**: spec
+> `008-redgifs-adapter` **`APPROVED`** (2026-08-19, instrucción explícita del humano
+> "quiero que se apruebe pero que no hagas nada todavía"; Q1–Q5 adoptadas como
+> D1–D5 según recomendación: assets v1 = thumbnail+poster solo imágenes, discover
+> solo por `--section /niches/<id>` fail-fast, backfill real `--max-videos 50` sobre
+> `homemade` + `real-cellphone-clips`, puerta legal SEC-002 OK en modo prueba
+> (manifest revisado 2026-08-19; `enabled=false` en BD hasta acción humana), page_url
+> `/watch/<id>` como referencia nunca accedida). Prospección factual completa:
+> robots.txt permite `/niches/` y disallows `/watch/`+`/ifr/`; **API oficial pública**
+> `api.redgifs.com` con token temporal `GET /v2/auth/temporary` — primer adapter con
+> `access_method="api"` — endpoints verificados `/v2/niches`, `/v2/niches/{id}/gifs`
+> (paginación por `page`, `count` máx. 100), `/v2/gifs/{id}` (wrapper `{"gif":…}`,
+> 404 → retirado), `/v2/gifs/search`; nichos `homemade` (66 084 gifs) y
+> `real-cellphone-clips` (3 669 gifs) confirmados; posts-imagen `type=2` con
+> `duration=null`. Sin storyboard: assets v1 = thumbnail+poster (imágenes,
+> `timestamp_ms=None`); mp4 = contenido completo del ítem (SC-006, prohibidos).
+> **▶️ IMPLEMENTACIÓN REANUDADA (2026-08-20)** por instrucción explícita del
+> humano ("podemos empezar con redgifs"): `technical-planning` produjo `plan.md` +
+> `docs/adr/0016-redgifs-adapter-api-token.md`; `task-planning` produjo `tasks.md`
+> con PR-066 → PR-067 → PR-068 → PR-069.
+>
+> **PR-066 COMPLETADO (2026-08-20)**: `RedgifsAdapter` (`adapters/redgifs.py`,
+> primer adapter `access_method="api"`: token temporal, discover por
+> `/niches/<id>` con paginación `page`, thumbnail+poster sin timestamp, nunca
+> mp4) + fixtures JSON sintéticos (`tests/fixtures/redgifs/`) + 44 tests
+> unitarios sin red (`tests/unit/test_redgifs_adapter.py`); ruff/mypy/pytest
+> en verde para los ficheros del PR. **Amendment documentado**: `crawling/
+> http.py` gana un parámetro `headers` opcional en `get()` (aditivo, `None` por
+> defecto preserva el comportamiento de siempre) — necesario porque redgifs es
+> el primer adapter con auth por header; pendiente de validación del revisor
+> antes de PR-067 (ver `docs/handoffs/PR-066.md`, sección "Amendment de
+> infraestructura").
+>
+> **PR-067 COMPLETADO (2026-08-20)**: `RedgifsAdapter` registrado en
+> `cli._default_registry()` (import dinámico, sin wire de `storyboard_grid` —
+> no aplica) + fila de seed `redgifs` (manifest D4: `robots_reviewed=true`,
+> `terms_reviewed=true`, `review_date="2026-08-19"`, `enabled=false`) + test
+> de composición en `test_registry.py`. **Verificado contra Supabase local
+> real** (`supabase db reset` + `xtrace-crawler sources --json` lista
+> `redgifs`; `backfill --source redgifs` falla correctamente por
+> `sources.enabled=false`, gate SEC-002 intacto). ruff/pytest en verde.
+>
+> **PR-069 COMPLETADO (2026-08-20)** — validación real del operador, **por
+> instrucción explícita** ("prueba cuando puedas real homemade y
+> real-cellphone-clips"), habilitación en BD hecha por el humano (bloqueo del
+> clasificador de permisos por ser una escritura en BD; el humano dijo "sigue
+> tu" y se ejecutó): backfill real acotado `--max-videos 50` sobre
+> `/niches/homemade` (50 indexados) y `/niches/real-cellphone-clips` (48
+> indexados) contra `api.redgifs.com` real, sin mocks. **Bug real
+> encontrado y corregido**: `discover()` pedía `count=100` fijo a la API en
+> vez de seguir el `limit` del pipeline (default 50); con `limit=50` la API
+> devolvía 100 IDs y el guard de truncación los rechazaba
+> (`RedgifsParseError`) — fix: `count = min(limit, 100)` + 2 tests de
+> regresión (46 tests en total, verdes). Tras el fix: INCREMENTAL sobre ambos
+> nichos → 101 vídeos (+3 genuinamente nuevos, feed `order=new`), **0
+> duplicados**, 202 frames sin timestamp (thumbnail+poster) con embedding +
+> pHash, 0 descargas de mp4, rate limit respetado en logs (~1s/request).
+> SC-002…SC-005 evidenciados con datos reales, no solo fixtures. La fuente
+> queda `enabled=true` en la Supabase local de desarrollo (decisión reversible
+> del operador). Ver `docs/handoffs/PR-069.md`.
+>
+> **PR-068 COMPLETADO (2026-08-20)** — 3 tests de integración deterministas
+> (fixtures + `MockTransport`, sin red) en `test_pipeline.py`: flujo completo
+> (frames sin timestamp, degradación sin poster), INCREMENTAL sin duplicados,
+> y aislamiento (US3: un 401 persistente de redgifs no bloquea los jobs de
+> `mock`). `specs/008-redgifs-adapter/quickstart.md` y sección `redgifs` en
+> el README del servicio. **Nota operativa**: correr esta suite requiere
+> `XTRACE_CRAWLER_ALLOW_DB_RESET=1` y **trunca** `jobs`/`videos`/`sources` —
+> se ejecutó con consentimiento explícito del humano, lo que borró el
+> backfill real de PR-069; tras verificar (30/30 tests de integración en
+> verde) se restauró la BD local al estado limpio del seed
+> (`supabase db reset`). El corpus real de `homemade`/`real-cellphone-clips`
+> ya no está en la BD local — rehacer con los comandos de `quickstart.md`
+> si se necesita consultarlo de nuevo. Ver `docs/handoffs/PR-068.md`.
+>
+> **Feature 008: los 4 PRs (066-069) están `DONE`** con evidencia real y
+> offline. Revisión independiente pendiente para pasar la spec a
+> `IMPLEMENTED` (constitución §12). Ver
+> `specs/008-redgifs-adapter/{spec,plan,tasks,quickstart}.md` +
+> `docs/handoffs/{PR-066,PR-067,PR-068,PR-069}.md`.
 
 > 🧭 **Feature 007 — adapter xhamster.com (segunda fuente real)**: spec
 > `007-xhamster-adapter` **`APPROVED`** (frase exacta "Especificación aprobada",

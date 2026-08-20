@@ -314,6 +314,25 @@ def test_user_agent_override() -> None:
     assert seen[0].headers["User-Agent"] == "CustomUA/1.0"
 
 
+def test_get_headers_opcionales_se_anaden_sin_sustituir_los_por_defecto() -> None:
+    """PR-066: `get(..., headers=...)` añade headers (p. ej. Authorization) sin
+    perder el User-Agent por defecto — necesario para el adapter redgifs
+    (token temporal en `Authorization: Bearer <token>` por request, SEC-005).
+    """
+    seen: list[httpx.Request] = []
+
+    async def scenario() -> None:
+        async with SafeHTTPClient(
+            allowed_hosts={"example.com"},
+            transport=httpx.MockTransport(_handler(record=seen)),
+        ) as client:
+            await client.get("https://example.com/a", headers={"Authorization": "Bearer tok123"})
+
+    _run(scenario)
+    assert seen[0].headers["Authorization"] == "Bearer tok123"
+    assert seen[0].headers["User-Agent"] == DEFAULT_USER_AGENT
+
+
 # --- Descarga de bytes a buffer (plan) ---
 
 

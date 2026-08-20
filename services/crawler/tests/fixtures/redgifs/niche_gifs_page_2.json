@@ -1,0 +1,28 @@
+{
+  "gifs": [
+    {
+      "id": "GhiHomemadeThree",
+      "description": "fixture gif three",
+      "createDate": 1700000200,
+      "duration": 4.0,
+      "tags": ["amateur"],
+      "userName": "fixture-user-3",
+      "views": 42,
+      "likes": 3,
+      "hasAudio": true,
+      "type": 1,
+      "urls": {
+        "thumbnail": "https://media.redgifs.invalid/GhiHomemadeThree-mobile.jpg",
+        "poster": "https://media.redgifs.invalid/GhiHomemadeThree-poster.jpg",
+        "sd": "https://media.redgifs.invalid/GhiHomemadeThree-sd.mp4",
+        "hd": "https://media.redgifs.invalid/GhiHomemadeThree-hd.mp4",
+        "silent": "https://media.redgifs.invalid/GhiHomemadeThree-silent.mp4",
+        "html": "https://media.redgifs.invalid/GhiHomemadeThree.html"
+      }
+    }
+  ],
+  "page": 2,
+  "pages": 2,
+  "total": 3,
+  "cursor": "opaque-cursor-does-not-paginate"
+}

@@ -47,3 +47,19 @@ insert into public.sources (name, adapter, manifest, enabled) values (
     "rate_limit":{"min_interval_ms":2000,"max_rps":0.5},
     "review_date":null}', false)
 on conflict (name) do nothing;
+
+-- redgifs: DESHABILITADO hasta la habilitación explícita en BD (SEC-002),
+-- pero con la revisión legal/ToS/robots ya dada por el humano **en modo
+-- prueba** (Decisión D4 de la spec 008, 2026-08-19; PR-067): a diferencia de
+-- xvideos/erome arriba, aquí robots_reviewed/terms_reviewed/review_date SÍ
+-- reflejan esa revisión (paridad exacta con el manifest en código,
+-- adapters/redgifs.py) — solo falta `enabled=true`, acción humana explícita
+-- reservada para la validación real (PR-069).
+insert into public.sources (name, adapter, manifest, enabled) values (
+  'redgifs', 'redgifs',
+  '{"source":"redgifs","access_method":"api",
+    "assets_accessed":["thumbnail"],
+    "robots_reviewed":true,"terms_reviewed":true,
+    "rate_limit":{"min_interval_ms":2000,"max_rps":0.5},
+    "review_date":"2026-08-19"}', false)
+on conflict (name) do nothing;
