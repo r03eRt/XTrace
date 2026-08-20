@@ -4,7 +4,7 @@
 > orquestador tras cada PR. Fuente de verdad de requisitos: `docs/PRODUCT_IDEA.md` y
 > `specs/`. Contrato: `AGENTS.md` + `.specify/memory/constitution.md`.
 
-**Última actualización**: 2026-08-20 · por el orquestador de la feature 008 (PR-068 completado: integración con fixtures + quickstart; los 4 PRs de la feature están DONE).
+**Última actualización**: 2026-08-20 · por el orquestador de la feature 008 (revisión independiente aplicada + rama `feature/008-redgifs-adapter` commiteada, commit `8b95b78`).
 
 > 🧭 **Feature 008 — adapter redgifs.com (fuente real vía API oficial)**: spec
 > `008-redgifs-adapter` **`APPROVED`** (2026-08-19, instrucción explícita del humano
@@ -81,9 +81,28 @@
 > ya no está en la BD local — rehacer con los comandos de `quickstart.md`
 > si se necesita consultarlo de nuevo. Ver `docs/handoffs/PR-068.md`.
 >
-> **Feature 008: los 4 PRs (066-069) están `DONE`** con evidencia real y
-> offline. Revisión independiente pendiente para pasar la spec a
-> `IMPLEMENTED` (constitución §12). Ver
+> **Revisión independiente completada (2026-08-20)**: 8 ángulos de búsqueda +
+> verificación (constitución §12) sobre todo el diff de la feature. 10
+> hallazgos; 6 aplicados como fix con test de regresión (anti-bucle de
+> `discover()` aislado por nicho — antes compartido entre jobs en el
+> adapter-singleton del registry; cache de objetos gif acotada con evicción
+> FIFO — antes crecía sin límite; lock en la obtención/renovación del token;
+> `discover()` rechaza `limit<=0` y `section` con segmentos extra en vez de
+> degradar en silencio), 2 marcados `no_change_needed` (diseño razonado,
+> sin cambio) y 2 `skipped` (duplicación de código entre adapters —
+> requeriría tocar xhamster/erome/xvideos, fuera de alcance; el amendment de
+> `crawling/http.py` — funcionalmente necesario, queda documentado a la
+> espera de aprobación explícita del humano, no revertido). **Todo el
+> trabajo se movió a la rama `feature/008-redgifs-adapter` y se commiteó**
+> (commit `8b95b78`) — excluyendo deliberadamente el cambio no relacionado
+> y preexistente en `adapters/erome.py` (de otra sesión/agente, sin tocar).
+> ruff/mypy/pytest (unit + integración offline) en verde tras los fixes.
+>
+> **Feature 008: los 4 PRs (066-069) están `DONE`**, con revisión
+> independiente aplicada y commiteados en su rama. Pendiente: aprobación
+> humana explícita del amendment de `crawling/http.py`, y (si se quiere) PR
+> hacia `main` + CI verde antes de marcar la spec `IMPLEMENTED`
+> (constitución §12). Ver
 > `specs/008-redgifs-adapter/{spec,plan,tasks,quickstart}.md` +
 > `docs/handoffs/{PR-066,PR-067,PR-068,PR-069}.md`.
 
