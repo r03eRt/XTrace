@@ -98,11 +98,13 @@
 > y preexistente en `adapters/erome.py` (de otra sesión/agente, sin tocar).
 > ruff/mypy/pytest (unit + integración offline) en verde tras los fixes.
 >
+> **Amendment de `crawling/http.py` aprobado explícitamente por el humano
+> responsable** ("lo apruebo", 2026-08-20) — ver `docs/handoffs/PR-066.md`.
+>
 > **Feature 008: los 4 PRs (066-069) están `DONE`**, con revisión
-> independiente aplicada y commiteados en su rama. Pendiente: aprobación
-> humana explícita del amendment de `crawling/http.py`, y (si se quiere) PR
-> hacia `main` + CI verde antes de marcar la spec `IMPLEMENTED`
-> (constitución §12). Ver
+> independiente aplicada, amendment aprobado y todo commiteado en su rama.
+> Pendiente: abrir PR hacia `main` + CI verde antes de marcar la spec
+> `IMPLEMENTED` (constitución §12). Ver
 > `specs/008-redgifs-adapter/{spec,plan,tasks,quickstart}.md` +
 > `docs/handoffs/{PR-066,PR-067,PR-068,PR-069}.md`.
 
