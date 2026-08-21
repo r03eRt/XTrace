@@ -4,7 +4,10 @@
 
 **Created**: 2026-08-19
 
-**Status**: APPROVED (implementación reanudada 2026-08-20 por instrucción explícita del humano; ver `plan.md`, ADR-0016 y `tasks.md`)
+**Status**: APPROVED
+
+> Implementación reanudada 2026-08-20 por instrucción explícita del humano; ver
+> `plan.md`, ADR-0016 y `tasks.md`.
 
 **Input**: User description: "puedes hacerlo ahora el adaptador de redgif,
 https://www.redgifs.com/niches/homemade y
