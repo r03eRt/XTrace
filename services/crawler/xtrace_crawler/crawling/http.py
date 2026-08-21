@@ -218,12 +218,18 @@ class SafeHTTPClient:
 
     # -- Operaciones -----------------------------------------------------------
 
-    async def get(self, url: str) -> httpx.Response:
+    async def get(self, url: str, *, headers: dict[str, str] | None = None) -> httpx.Response:
         """GET validado; devuelve la respuesta para que el adapter inspeccione
         estado/headers (p. ej. 404 → vídeo no disponible).
+
+        `headers` (opcional, PR-066 · FR-002 · SEC-005) se añade a los headers
+        por defecto del cliente (nunca los sustituye) — primer uso: el
+        adapter `redgifs` inyecta `Authorization: Bearer <token temporal>`
+        por request sin persistir el token en el cliente ni en logs. `None`
+        (default) preserva el comportamiento exacto de siempre.
         """
         self._validate_url(url)
-        return await self._client.get(url)
+        return await self._client.get(url, headers=headers)
 
     async def get_bytes(self, url: str, *, max_bytes: int | None = None) -> bytes:
         """Descarga la URL a un buffer en memoria (bytes), en streaming.

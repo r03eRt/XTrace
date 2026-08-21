@@ -215,3 +215,34 @@ def test_get_does_not_apply_gate() -> None:
     adapter = _FakeAdapter(manifest=make_manifest(robots_reviewed=False))
     registry = _registry_with((adapter, True))
     assert registry.get("fake") is adapter
+
+
+# ---------------------------------------------------------------------------
+# Registro por defecto del CLI: redgifs registrado con manifest D4 (PR-067)
+# ---------------------------------------------------------------------------
+
+
+def test_default_registry_includes_redgifs_gated_by_enabled_in_db() -> None:
+    """PR-067 · FR-007 · SEC-002 · Decisión D4 de la spec 008.
+
+    `RedgifsAdapter` se registra en `cli._default_registry()` (import
+    dinámico, SC-007) con manifest ya revisado en modo prueba
+    (`robots_reviewed=terms_reviewed=True`, `review_date="2026-08-19"`): la
+    única condición que falta para habilitarlo es `sources.enabled=true` en
+    BD (aprobación humana explícita, gate del registry sin cambios).
+    """
+    from xtrace_crawler.cli import _default_registry  # import tardío: evita ciclos en el módulo
+
+    registry = _default_registry()
+    assert "redgifs" in registry.names()
+
+    with pytest.raises(AdapterNotEnabledError) as excinfo:
+        registry.get_enabled("redgifs", enabled_in_db=False)
+    reasons = str(excinfo.value)
+    assert "sources.enabled=false" in reasons
+    assert "robots_reviewed" not in reasons
+    assert "terms_reviewed" not in reasons
+
+    adapter = registry.get_enabled("redgifs", enabled_in_db=True)
+    assert adapter.manifest.source == "redgifs"
+    assert adapter.manifest.access_method == "api"

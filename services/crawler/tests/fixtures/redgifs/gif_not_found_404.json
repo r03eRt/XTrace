@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "GifNotFound",
+    "description": "resource not found or not accessible"
+  }
+}

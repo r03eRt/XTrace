@@ -87,9 +87,22 @@ Hardening de la ruta de descarga de assets (PR-036 · SEC-001 · contracts §1/�
   **deshabilitado** (gate SEC-002): sin allowlist revisada no hay descarga
   (fail-closed).
 
+## Fuente `redgifs` (spec 008 — primer adapter `access_method="api"`)
+
+A diferencia de xvideos/xhamster/erome (HTML), `redgifs` habla con la **API
+oficial** `api.redgifs.com` (token temporal, `GET /v2/auth/temporary`, nunca
+logueado/persistido — SEC-005) y solo expone **thumbnail + poster** como
+visual assets (sin storyboard/sprite; `timestamp_ms=None`, ADR-0016). Manifest
+revisado en modo prueba (SEC-002 · D4); `enabled=false` en el seed hasta
+habilitación humana explícita. **Validado con backfill real acotado el
+2026-08-20** sobre `/niches/homemade` y `/niches/real-cellphone-clips` (ver
+`specs/008-redgifs-adapter/quickstart.md` y `docs/handoffs/PR-069.md`) — 0
+descargas de mp4, 0 duplicados en INCREMENTAL.
+
 ## Referencias
 
 - Spec: `specs/002-source-sdk-crawler/spec.md` (APPROVED) · Plan: `plan.md` · Tareas: `tasks.md`
+- Spec: `specs/008-redgifs-adapter/spec.md` (APPROVED) · Plan · ADR-0016 · Tareas
 - ADR-0011: reutilización del spike como dependencia editable
 
 ## Muestreo adaptativo

@@ -1,0 +1,48 @@
+{
+  "gifs": [
+    {
+      "id": "AbcHomemadeOne",
+      "description": "fixture gif one",
+      "createDate": 1700000000,
+      "duration": 12.5,
+      "tags": ["amateur", "homemade"],
+      "userName": "fixture-user-1",
+      "views": 100,
+      "likes": 10,
+      "hasAudio": true,
+      "type": 1,
+      "urls": {
+        "thumbnail": "https://media.redgifs.invalid/AbcHomemadeOne-mobile.jpg",
+        "poster": "https://media.redgifs.invalid/AbcHomemadeOne-poster.jpg",
+        "sd": "https://media.redgifs.invalid/AbcHomemadeOne-sd.mp4",
+        "hd": "https://media.redgifs.invalid/AbcHomemadeOne-hd.mp4",
+        "silent": "https://media.redgifs.invalid/AbcHomemadeOne-silent.mp4",
+        "html": "https://media.redgifs.invalid/AbcHomemadeOne.html"
+      }
+    },
+    {
+      "id": "def-homemade-two",
+      "description": null,
+      "createDate": 1700000100,
+      "duration": null,
+      "tags": [],
+      "userName": "fixture-user-2",
+      "views": 5,
+      "likes": 0,
+      "hasAudio": false,
+      "type": 1,
+      "urls": {
+        "thumbnail": "https://media.redgifs.invalid/def-homemade-two-mobile.jpg",
+        "poster": null,
+        "sd": "https://media.redgifs.invalid/def-homemade-two-sd.mp4",
+        "hd": "https://media.redgifs.invalid/def-homemade-two-hd.mp4",
+        "silent": "https://media.redgifs.invalid/def-homemade-two-silent.mp4",
+        "html": "https://media.redgifs.invalid/def-homemade-two.html"
+      }
+    }
+  ],
+  "page": 1,
+  "pages": 2,
+  "total": 3,
+  "cursor": "opaque-cursor-does-not-paginate"
+}

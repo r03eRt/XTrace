@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
 import tempfile
 import zlib
@@ -62,6 +63,7 @@ from collections.abc import Callable, Sequence
 from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import numpy as np
@@ -75,7 +77,7 @@ from xtrace_spike.vectorstore.pgvector import EMBEDDING_DIMENSION, PgVectorStore
 
 from tests.fixtures.assets.preview_factory import ffmpeg_available, make_preview_mp4
 from tests.fixtures.harness import MockHarness
-from xtrace_crawler.adapters.base import RateLimitSpec
+from xtrace_crawler.adapters.base import RateLimitSpec, SourceAdapter
 from xtrace_crawler.adapters.mock import (
     MOCK_BASE_URL,
     MockAdapter,
@@ -90,6 +92,7 @@ from xtrace_crawler.adapters.models import (
     VideoSource,
     VisualAsset,
 )
+from xtrace_crawler.adapters.redgifs import RedgifsAdapter
 from xtrace_crawler.assets.preview import PreviewFrame
 from xtrace_crawler.crawling.http import SafeHTTPClient
 from xtrace_crawler.crawling.ratelimit import RateLimiter
@@ -1363,3 +1366,228 @@ def test_preview_failure_closes_frames_created_before_exception(
     with pytest.raises(ValueError, match="closed image"):
         partial[0].image.load()
     first_source.close()
+
+
+# ---------------------------------------------------------------------------
+# PR-068 · redgifs (spec 008): flujo completo con el adapter REAL, sin red
+# ---------------------------------------------------------------------------
+
+_REDGIFS_FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "redgifs"
+
+#: Host de assets usado por este test (dominio reservado `.invalid`, SEC-004):
+#: el `client` inyectado en `_build` fija su propia allowlist, así que el test
+#: nunca necesita el `asset_hosts` real (`media.redgifs.com`) del adapter.
+_REDGIFS_TEST_ASSET_HOST = "media.redgifs.invalid"
+
+
+def _redgifs_fixture_json(name: str) -> dict[str, Any]:
+    data = json.loads((_REDGIFS_FIXTURES_DIR / name).read_text(encoding="utf-8"))
+    assert isinstance(data, dict)
+    return data
+
+
+def _redgifs_api_handler() -> Callable[[httpx.Request], httpx.Response]:
+    """Sirve el token temporal + 2 páginas del listado de `/niches/homemade`.
+
+    Paridad con el handler de `test_redgifs_adapter.py` (PR-066); reducido a
+    lo que este escenario de integración necesita (sin `get_video` directo:
+    los 3 ítems del listado ya cachean el objeto gif completo, ADR-0016 §5).
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/v2/auth/temporary":
+            body = _redgifs_fixture_json("auth_temporary.json")
+            return httpx.Response(200, json=body, request=request)
+        if path == "/v2/niches/homemade/gifs":
+            page = parse_qs(urlsplit(str(request.url)).query).get("page", ["1"])[0]
+            if page == "1":
+                body = _redgifs_fixture_json("niche_gifs_page_1.json")
+                return httpx.Response(200, json=body, request=request)
+            if page == "2":
+                body = _redgifs_fixture_json("niche_gifs_page_2.json")
+                return httpx.Response(200, json=body, request=request)
+        return httpx.Response(500, json={"error": {"code": "Boom"}}, request=request)
+
+    return handler
+
+
+def _redgifs_adapter() -> RedgifsAdapter:
+    return RedgifsAdapter(transport=httpx.MockTransport(_redgifs_api_handler()))
+
+
+def _redgifs_asset_handler() -> Callable[[httpx.Request], httpx.Response]:
+    """Sirve una imagen JPEG sintética para cualquier thumbnail/poster pedido."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        image = Image.new("RGB", (64, 64), color=(10, 20, 30))
+        return httpx.Response(200, content=_jpeg_bytes(image), request=request)
+
+    return handler
+
+
+def _redgifs_asset_client() -> SafeHTTPClient:
+    return SafeHTTPClient(
+        allowed_hosts={_REDGIFS_TEST_ASSET_HOST},
+        transport=httpx.MockTransport(_redgifs_asset_handler()),
+    )
+
+
+def _fast_redgifs_rate(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_REDGIFS_MIN_INTERVAL_MS", "0")
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_REDGIFS_MAX_RPS", "1000")
+
+
+async def _redgifs_backfill_scenario(
+    pipeline: CrawlerPipeline,
+    worker: JobWorker,
+    jobs: JobsRepo,
+    *,
+    mode: str = "backfill",
+    limit: int = 50,
+) -> int:
+    await jobs.enqueue(
+        JobType.DISCOVER,
+        payload={
+            "source": "redgifs",
+            "cursor": None,
+            "limit": limit,
+            "mode": mode,
+            "max_videos": None,
+            "section": "/niches/homemade",
+            "videos_counted": 0,
+        },
+    )
+    return await worker.run_once()
+
+
+def test_redgifs_backfill_indexes_videos_without_timestamp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR-068 · FR-009 · SC-001(offline)/002/003 · ADR-0016.
+
+    Flujo completo (DISCOVER ×2 páginas → FETCH_METADATA ×3 → INDEX_VIDEO ×3)
+    con el adapter REAL `redgifs` (fixtures + `httpx.MockTransport`, sin red):
+    a diferencia de xvideos/mock (storyboard con timestamp), aquí los frames
+    salen de thumbnail+poster **sin `timestamp_ms`** (no hay storyboard,
+    ADR-0016 §4) — `def-homemade-two` no tiene poster (fixture) → 1 solo
+    frame, degradación sin fallar (FR-005).
+    """
+    _fast_redgifs_rate(monkeypatch)
+    adapter = _redgifs_adapter()
+    jobs = JobsRepo(delay_fn=lambda _attempts: 0.0)
+    pipeline, worker, _ = _build(
+        adapter, jobs=jobs, client=_redgifs_asset_client(), worker_id="it-pipeline-redgifs"
+    )
+    processed = _run(_redgifs_backfill_scenario(pipeline, worker, jobs))
+    assert processed == 8  # 2 DISCOVER + 3 FETCH_METADATA + 3 INDEX_VIDEO
+
+    videos = _videos()
+    assert {video["external_id"] for video in videos} == {
+        "abchomemadeone",
+        "def-homemade-two",
+        "ghihomemadethree",
+    }
+    assert all(video["status"] == "indexed" for video in videos)
+    assert all(job["status"] == JobStatus.DONE.value for job in _jobs())
+
+    by_external_id = {video["external_id"]: video for video in videos}
+    assert _frames_for(by_external_id["abchomemadeone"]["id"]) == 2  # thumbnail + poster
+    assert _frames_for(by_external_id["def-homemade-two"]["id"]) == 1  # sin poster (fixture)
+    assert _frames_for(by_external_id["ghihomemadethree"]["id"]) == 2
+    assert _total_frames() == 5
+
+    timestamp_rows = _rows("select distinct timestamp_ms from public.frames")
+    assert timestamp_rows == [{"timestamp_ms": None}]  # nunca hay timestamp (sin storyboard)
+
+    assert _leftover_asset_dirs() == []  # SC-004 (heredado): sin temporales tras el flujo
+
+
+def test_redgifs_incremental_does_not_duplicate_videos_nor_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SC-003: una segunda ejecución INCREMENTAL sobre redgifs no duplica nada.
+
+    Reutiliza el mismo listado de fixtures (0 IDs nuevos en la práctica): el
+    anti-bucle del adapter (0 IDs nuevos → `next_cursor=None`) corta la
+    cadena en la primera página sin re-procesar `def-homemade-two`/
+    `ghihomemadethree` — coherente con `videos`/`frames` sin duplicados.
+    """
+    _fast_redgifs_rate(monkeypatch)
+    adapter = _redgifs_adapter()
+    jobs = JobsRepo(delay_fn=lambda _attempts: 0.0)
+    pipeline, worker, _ = _build(
+        adapter, jobs=jobs, client=_redgifs_asset_client(), worker_id="it-pipeline-redgifs-incr"
+    )
+    _run(_redgifs_backfill_scenario(pipeline, worker, jobs))
+    assert len(_videos()) == 3
+    assert _total_frames() == 5
+
+    _run(_redgifs_backfill_scenario(pipeline, worker, jobs, mode="incremental"))
+    assert len(_videos()) == 3  # sin duplicados (SC-003)
+    assert _total_frames() == 5
+    assert all(job["status"] == JobStatus.DONE.value for job in _jobs())
+
+
+def test_redgifs_persistent_failure_does_not_block_other_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US3 (aislamiento): un fallo persistente de redgifs no afecta a otras fuentes.
+
+    Un `401` persistente en redgifs (token que nunca se acepta) deja su
+    DISCOVER `failed`, pero el DISCOVER de `mock` en la misma pasada del
+    worker se procesa con normalidad (paridad FR-010 de la spec 002).
+    """
+    _fast_redgifs_rate(monkeypatch)
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MIN_INTERVAL_MS", "0")
+    monkeypatch.setenv("XTRACE_CRAWLER_RATE_MOCK_MAX_RPS", "1000")
+
+    def _always_401(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v2/auth/temporary":
+            body = {"token": "fixture-token-not-a-secret"}
+            return httpx.Response(200, json=body, request=request)
+        return httpx.Response(401, json={"error": {"code": "AuthenticationError"}}, request=request)
+
+    broken_redgifs = RedgifsAdapter(transport=httpx.MockTransport(_always_401))
+    mock_adapter = MockAdapter(seed=7, catalog_size=1)
+
+    jobs = JobsRepo(delay_fn=lambda _attempts: 0.0)
+    adapters: dict[str, SourceAdapter] = {"redgifs": broken_redgifs, "mock": mock_adapter}
+    pipeline = CrawlerPipeline(
+        repo=CrawlerRepo(),
+        jobs=jobs,
+        adapter_for=lambda job: adapters[str(job.payload["source"])],
+    )
+    worker = JobWorker(jobs, concurrency=2, worker_id="it-pipeline-redgifs-isolation")
+    pipeline.register_handlers(worker)
+
+    async def scenario() -> None:
+        await jobs.enqueue(
+            JobType.DISCOVER,
+            payload={
+                "source": "redgifs",
+                "cursor": None,
+                "limit": 50,
+                "mode": "backfill",
+                "max_videos": None,
+                "section": "/niches/homemade",
+                "videos_counted": 0,
+            },
+        )
+        await jobs.enqueue(
+            JobType.DISCOVER,
+            payload={"source": "mock", "cursor": None, "limit": 2, "mode": "backfill"},
+        )
+        await worker.run_once()
+
+    _run(scenario())
+
+    jobs_rows = _jobs()
+    redgifs_jobs = [job for job in jobs_rows if job["payload"]["source"] == "redgifs"]
+    mock_jobs = [job for job in jobs_rows if job["payload"]["source"] == "mock"]
+    assert all(job["status"] == JobStatus.FAILED.value for job in redgifs_jobs)
+    assert all(job["status"] == JobStatus.DONE.value for job in mock_jobs)
+
+    videos = _videos()
+    assert {video["external_id"] for video in videos} == {"mock-vid-0000"}
+    assert all(video["status"] == "indexed" for video in videos)

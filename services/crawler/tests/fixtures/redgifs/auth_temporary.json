@@ -1,0 +1,5 @@
+{
+  "token": "fixture-token-not-a-secret",
+  "addr": "203.0.113.10",
+  "agent": "XTraceCrawler/0.1.0-fixture"
+}
